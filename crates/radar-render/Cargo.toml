@@ -1,0 +1,17 @@
+[package]
+name = "radar-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+radar-core = { workspace = true }
+anyhow.workspace = true
+log.workspace = true
+egui = "0.36"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+lru = "0.12"
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "rustls-tls",
+] }

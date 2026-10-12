@@ -1,0 +1,24 @@
+[package]
+name = "radar-decode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+radar-core = { workspace = true }
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+chrono.workspace = true
+
+# Existing NEXRAD Archive II decoders (ICD 2620010H). Prefer wrapping these
+# over hand-parsing; verified against real data (see tests/decode_volume.rs).
+# NOTE: nexrad-data 1.0.0-rc.7 has no "decode" feature (decoding lives in
+# nexrad-decode/nexrad-model); its features are: aws, aws-polling, default,
+# futures, nexrad-model, once_cell, parallel, rayon, reqwest, tokio, xml.
+# We only need local volume parsing here, so drop the aws/uom/model features
+# (radar-data enables nexrad-data's aws feature separately).
+nexrad-data = { version = "=1.0.0-rc.7", default-features = false }
+nexrad-decode = { version = "=1.0.0-rc.3", default-features = false }
+# Used for optional gzip handling of real-time chunk streams.
+flate2 = "1"

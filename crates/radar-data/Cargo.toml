@@ -1,0 +1,27 @@
+[package]
+name = "radar-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+radar-core = { workspace = true }
+radar-decode = { workspace = true }
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+chrono.workspace = true
+env_logger.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls-tls",
+] }
+flate2 = "1"
+# S3 listing/downloading for the NOAA OpenData buckets (anonymous).
+nexrad-data = { version = "=1.0.0-rc.7", default-features = false, features = ["aws"] }
+# nexrad-data's aws API is async (reqwest); we drive it from dedicated
+# current-thread runtimes inside blocking wrappers (no tokio macros needed).
+tokio = { version = "1", features = ["rt", "time", "net"] }

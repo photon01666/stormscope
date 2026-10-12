@@ -1,0 +1,3 @@
+# Large binary fixtures fetched by download.sh (several MB each).
+*
+!.gitignore

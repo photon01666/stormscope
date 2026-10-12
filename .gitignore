@@ -1,0 +1,11 @@
+# Rust build output
+/target
+
+# Downloaded NEXRAD fixtures (real radar volumes, several MB each)
+/crates/radar-decode/tests/fixtures/*
+!/crates/radar-decode/tests/fixtures/.gitignore
+!/crates/radar-decode/tests/fixtures/download.sh
+
+# Editor / OS cruft
+*.swp
+.DS_Store

@@ -1,0 +1,35 @@
+[package]
+name = "stormscope-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "stormscope"
+path = "src/main.rs"
+
+[dependencies]
+radar-core = { workspace = true }
+radar-decode = { workspace = true }
+radar-data = { workspace = true }
+radar-render = { workspace = true }
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Force the wgpu renderer (Vulkan on Linux) and native Wayland windows.
+# eframe's `default` includes both glow and wgpu; we drop glow so the app is
+# Vulkan-only, and keep wayland+x11 for native Hyprland/Wayland support.
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "wayland",
+    "x11",
+] }
+egui = "0.36"
+# Same wgpu line eframe uses, so there is a single GPU/Vulkan context and we
+# can name egui_wgpu::RenderState when handing the device to the renderer.
+egui-wgpu = "0.36"
+wgpu = { workspace = true }

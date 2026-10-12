@@ -186,11 +186,99 @@ impl Volume {
             .map(|(i, _)| i)
     }
 
+    /// Index of the sweep closest to `tilt_deg` **that also contains
+    /// `kind`**. NEXRAD splits cuts: REF+ZDR+PHI+CC and REF+VEL+SW live on
+    /// *separate sweeps at the same nominal tilt*, so a plain tilt lookup can
+    /// land on a sweep without the requested moment (selecting VEL on the
+    /// tilt-nearest sweep rendered nothing). Falls back to the plain tilt
+    /// match only when no sweep at all carries the moment.
+    pub fn sweep_index_for_tilt_moment(&self, tilt_deg: f32, kind: Moment) -> Option<usize> {
+        let with_moment = self
+            .sweeps
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.moment(kind).is_some())
+            .min_by(|a, b| {
+                (a.1.elevation_deg - tilt_deg)
+                    .abs()
+                    .partial_cmp(&(b.1.elevation_deg - tilt_deg))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i);
+        with_moment.or_else(|| self.sweep_index_for_tilt(tilt_deg))
+    }
+
     /// Distinct sorted tilt angles present in the volume.
     pub fn tilts(&self) -> Vec<f32> {
         let mut v: Vec<f32> = self.sweeps.iter().map(|s| s.elevation_deg).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         v.dedup_by(|a, b| (*a - *b).abs() < 0.05);
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sweep(elev: f32, moments: &[Moment]) -> Sweep {
+        Sweep {
+            elevation_deg: elev,
+            elevation_measured_deg: elev,
+            azimuth_width_deg: 1.0,
+            azimuths_deg: (0..360).map(|i| i as f32).collect(),
+            moments: moments
+                .iter()
+                .map(|&k| MomentData {
+                    kind: k,
+                    calibration: MomentCalibration::default(),
+                    range_start_m: 500.0,
+                    gate_size_m: 250.0,
+                    gate_count: 4,
+                    ray_count: 360,
+                    data: vec![0; 360 * 4],
+                })
+                .collect(),
+        }
+    }
+
+    fn vol(sweeps: Vec<Sweep>) -> Volume {
+        let n = sweeps.len();
+        Volume {
+            meta: VolumeMeta {
+                site_id: "KTEST".into(),
+                volume_start: Utc::now(),
+                vcp: None,
+                sequence_number: None,
+                sweep_count: n,
+                moments: vec![],
+            },
+            sweeps,
+        }
+    }
+
+    /// NEXRAD splits cuts: REF+pol and REF+VEL live on separate sweeps at the
+    /// same nominal tilt. Selecting VEL must find the second 0.5° cut, not
+    /// the tilt-nearest cut that lacks velocity (that bug rendered nothing).
+    #[test]
+    fn split_cut_moment_lookup() {
+        let v = vol(vec![
+            sweep(0.5, &[Moment::Reflectivity, Moment::CorrelationCoefficient]),
+            sweep(
+                0.5,
+                &[Moment::Reflectivity, Moment::Velocity, Moment::SpectrumWidth],
+            ),
+            sweep(0.9, &[Moment::Reflectivity]),
+        ]);
+        // VEL lives on the second 0.5° cut, though sweep 0 is tilt-nearest.
+        assert_eq!(v.sweep_index_for_tilt_moment(0.5, Moment::Velocity), Some(1));
+        // REF prefers the first 0.5° cut.
+        assert_eq!(
+            v.sweep_index_for_tilt_moment(0.5, Moment::Reflectivity),
+            Some(0)
+        );
+        // No 0.9 VEL cut in this synthetic volume: fall back to the nearest
+        // sweep that does carry velocity instead of rendering nothing.
+        assert_eq!(v.sweep_index_for_tilt_moment(0.9, Moment::Velocity), Some(1));
     }
 }

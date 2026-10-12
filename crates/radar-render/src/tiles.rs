@@ -200,8 +200,10 @@ fn decode_tile(bytes: &[u8]) -> Option<egui::ColorImage> {
         let l = (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0;
         // Invert: bright land/water becomes dark; dark ink becomes bright.
         let inv = 1.0 - l;
-        // Floor at ~0.10 so land reads as a dark charcoal, not black.
-        let out_l = 0.10 + 0.90 * inv;
+        // RadarScope-style near-black: land sits at ~2.5% luminance and even
+        // the brightest features (roads, labels) are capped at ~58% — a dim
+        // gray map, not a bright one.
+        let out_l = 0.025 + 0.55 * inv;
         // Gain toward the source hue: scale the original channel by how far
         // the target luminance moved, so tints (blue water, green land) survive.
         let scale = if l > 0.001 { out_l / l } else { out_l };
@@ -209,9 +211,17 @@ fn decode_tile(bytes: &[u8]) -> Option<egui::ColorImage> {
             let v = (c as f32 * scale).round();
             v.clamp(0.0, 255.0) as u8
         };
-        px[0] = ch(r);
-        px[1] = ch(g);
-        px[2] = ch(b);
+        let (sr, sg, sb) = (ch(r), ch(g), ch(b));
+        // Desaturate 55% toward the scaled luminance: RadarScope's basemap is
+        // essentially monochrome gray-on-black.
+        let gray = (0.2126 * sr as f32 + 0.7152 * sg as f32 + 0.0722 * sb as f32).round();
+        let mut mix = |c: u8| -> u8 {
+            let v = c as f32 + (gray - c as f32) * 0.55;
+            v.round().clamp(0.0, 255.0) as u8
+        };
+        px[0] = mix(sr);
+        px[1] = mix(sg);
+        px[2] = mix(sb);
     }
     Some(egui::ColorImage::from_rgba_unmultiplied(
         [img.width() as usize, img.height() as usize],

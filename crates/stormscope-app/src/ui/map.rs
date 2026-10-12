@@ -41,7 +41,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         }
     }
 
-    // Click to select the nearest radar site under the pointer. Use
+    // Map click priorities: edit an existing marker -> place a new marker
+    // (Shift or "＋ Place" mode) -> select the nearest radar site. Use
     // `interact_pointer_pos()` (the press position), not `hover_pos()`, so a
     // small drag does not also count as a click.
     if response.clicked() {
@@ -49,17 +50,50 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             // Viewport-relative click position -> same frame of reference as
             // `draw_sites` marker positions.
             let (cx, cy) = ((click.x - rect.min.x) as f64, (click.y - rect.min.y) as f64);
+
+            // 1) Clicking an existing pin opens its label editor.
             const HIT_PX: f64 = 14.0;
-            let mut best: Option<(&radar_core::sites::RadarSite, f64)> = None;
-            for site in radar_core::sites::SITES {
-                let (vx, vy) = view.lonlat_to_view_px(site.longitude, site.latitude);
-                let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
-                if d <= HIT_PX && best.map_or(true, |(_, bd)| d < bd) {
-                    best = Some((site, d));
+            let mut marker_hit: Option<usize> = None;
+            for (i, m) in app.state.markers.iter().enumerate() {
+                let (vx, vy) = view.lonlat_to_view_px(m.lon, m.lat);
+                if (vx - cx).hypot(vy - cy) <= HIT_PX {
+                    marker_hit = Some(i);
+                    break;
                 }
             }
-            if let Some((site, _)) = best {
-                app.select_site(site.id);
+            if let Some(i) = marker_hit {
+                // Seed the persistent draft the popup edits (egui's TextEdit
+                // is immediate-mode — the draft must live in app state).
+                app.state.pending_marker_label = app.state.markers[i].label.clone();
+                app.state.pending_marker = Some(i);
+            } else {
+                let shift = ui.input(|i| i.modifiers.shift);
+                if shift || app.state.add_marker_mode {
+                    // 2) Drop a new pin and ask for its label.
+                    let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+                    app.state.markers.push(crate::state::MapMarker {
+                        lat,
+                        lon,
+                        label: String::new(),
+                    });
+                    app.state.pending_marker = Some(app.state.markers.len() - 1);
+                    app.state.pending_marker_label.clear();
+                    app.state.add_marker_mode = false;
+                    app.state.persist_markers();
+                } else {
+                    // 3) Select the nearest radar site under the pointer.
+                    let mut best: Option<(&radar_core::sites::RadarSite, f64)> = None;
+                    for site in radar_core::sites::SITES {
+                        let (vx, vy) = view.lonlat_to_view_px(site.longitude, site.latitude);
+                        let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
+                        if d <= HIT_PX && best.map_or(true, |(_, bd)| d < bd) {
+                            best = Some((site, d));
+                        }
+                    }
+                    if let Some((site, _)) = best {
+                        app.select_site(site.id);
+                    }
+                }
             }
         }
     }
@@ -114,7 +148,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // moment, tilt, view, opacity) — never per frame.
     if let Some(frame) = app.state.current() {
         if let Some(site) = radar_core::sites::site(&app.state.site_id) {
-            if let Some(si) = frame.volume.sweep_index_for_tilt(app.state.tilt_deg) {
+            if let Some(si) =
+                frame
+                    .volume
+                    .sweep_index_for_tilt_moment(app.state.tilt_deg, app.state.moment)
+            {
                 let sweep = &frame.volume.sweeps[si];
                 if sweep.moment(app.state.moment).is_some() {
                     use std::hash::{Hash, Hasher};
@@ -214,8 +252,21 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Layer 4: warning polygons ----------------------------------------
     draw_warnings(&painter, origin, &view, app);
 
+    // --- Derived storm tracks (cell arrows + 30-min nowcast) ---------------
+    if app.state.show_tracks {
+        update_tracks(app);
+        draw_tracks(&painter, origin, &view, app);
+    }
+
+    // --- User-placed pins (topmost map layer, above radar + warnings) -----
+    draw_markers(&painter, origin, &view, app);
+
     // --- Attribution (required by OSM/Wikimedia tile usage policies) ------
     draw_attribution(&painter, tile_resp.rect);
+
+    // Label editor popup for the selected/new marker (drawn in its own
+    // egui layer; lives here so it has the map context).
+    marker_popup(ui, app);
 
     // Keep animating while a loop is playing (tiles may also arrive async).
     if app.state.loop_state == crate::state::LoopState::Playing {
@@ -376,6 +427,254 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
 
 /// Bottom-right tile attribution. Both Wikimedia and OSM tile policies
 /// require "© OpenStreetMap contributors" to stay visible.
+/// Recompute storm tracks when the frame pair or tilt changes. Cheap enough
+/// to redo per frame change (~30k gate projections), but cached anyway.
+fn update_tracks(app: &mut StormApp) {
+    let Some(site) = radar_core::sites::site(&app.state.site_id) else {
+        app.tracks_cache = None;
+        return;
+    };
+    let ph = app.state.playhead;
+    if ph == 0 || app.state.ring.len() < 2 {
+        app.tracks_cache = None;
+        return;
+    }
+    let prev = &app.state.ring[ph - 1];
+    let cur = &app.state.ring[ph];
+    let tilt = app.state.tilt_deg;
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    prev.volume_start.timestamp_millis().hash(&mut h);
+    cur.volume_start.timestamp_millis().hash(&mut h);
+    tilt.to_bits().hash(&mut h);
+    let sig = h.finish();
+    if app.tracks_cache.as_ref().map_or(true, |(s, _)| *s != sig) {
+        let tracks = radar_render::compute_tracks(
+            &prev.volume,
+            &cur.volume,
+            tilt,
+            site.latitude,
+            site.longitude,
+        );
+        app.tracks_cache = Some((sig, tracks));
+    }
+}
+
+/// Draw storm-motion arrows from each cell centroid plus a dashed 30-minute
+/// nowcast line and an mph speed label.
+fn draw_tracks(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
+    const NOWCAST_MIN: f64 = 30.0;
+    let Some((_, tracks)) = &app.tracks_cache else { return };
+    if tracks.is_empty() {
+        return;
+    }
+    let (w, h) = (view.width() as f64, view.height() as f64);
+    let m_per_px = radar_render::meters_per_pixel(view.center_lat, view.zoom).max(1e-6);
+    let ppk = 1000.0 / m_per_px; // pixels per kilometer
+    let white = egui::Color32::from_white_alpha(235);
+    let dim = egui::Color32::from_white_alpha(130);
+
+    for t in tracks {
+        let (vx, vy) = view.lonlat_to_view_px(t.lon, t.lat);
+        if vx < -40.0 || vy < -40.0 || vx > w + 40.0 || vy > h + 40.0 {
+            continue;
+        }
+        let pos = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+
+        // Motion direction in screen px (y grows south): east -> +x, north -> -y.
+        let (de, dn) = (t.vel_e, t.vel_n);
+        let mag = de.hypot(dn);
+        if mag < 1e-9 {
+            continue;
+        }
+        let ux = de / mag;
+        let uy = -dn / mag;
+
+        // Solid arrow, fixed 30 px length (direction over speed; speed is in
+        // the label).
+        let tip = egui::pos2(pos.x + (ux * 30.0) as f32, pos.y + (uy * 30.0) as f32);
+        painter.line_segment([pos, tip], egui::Stroke::new(2.0, white));
+        // Arrowhead.
+        let (cs, sn) = (25.0f64.to_radians().cos(), 25.0f64.to_radians().sin());
+        for sign in [-1.0, 1.0] {
+            let hx = ux * cs - uy * sn * sign;
+            let hy = ux * sn * sign + uy * cs;
+            let barb = egui::pos2(
+                tip.x - (hx * 9.0) as f32,
+                tip.y - (hy * 9.0) as f32,
+            );
+            painter.line_segment([tip, barb], egui::Stroke::new(2.0, white));
+        }
+
+        // Dashed 30-minute nowcast to where the cell is headed.
+        let (flat, flon) = radar_render::extrapolate(t, NOWCAST_MIN);
+        let (fvx, fvy) = view.lonlat_to_view_px(flon, flat);
+        let fut = egui::pos2(origin.x + fvx as f32, origin.y + fvy as f32);
+        draw_dashed(painter, pos, fut, dim, 7.0, 5.0);
+        painter.circle_stroke(fut, 3.5, egui::Stroke::new(1.5, dim));
+
+        // Centroid dot + speed label (mph — US convention).
+        painter.circle_filled(pos, 3.0, white);
+        let mph = (t.speed_kmh * 0.621371).round() as i64;
+        let text = format!("{mph} mph");
+        let at = egui::pos2(pos.x + 6.0, pos.y + 6.0);
+        let font = egui::FontId::proportional(11.0);
+        painter.text(
+            at + egui::vec2(1.0, 1.0),
+            egui::Align2::LEFT_TOP,
+            &text,
+            font.clone(),
+            egui::Color32::BLACK.gamma_multiply(0.85),
+        );
+        painter.text(at, egui::Align2::LEFT_TOP, &text, font, white);
+    }
+}
+
+/// Dashed line helper (egui has no built-in dash stroke).
+fn draw_dashed(
+    painter: &egui::Painter,
+    a: egui::Pos2,
+    b: egui::Pos2,
+    color: egui::Color32,
+    dash: f32,
+    gap: f32,
+) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1.0 {
+        return;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let period = dash + gap;
+    let mut d = 0.0;
+    while d < len {
+        let e = (d + dash).min(len);
+        painter.line_segment(
+            [
+                egui::pos2(a.x + ux * d, a.y + uy * d),
+                egui::pos2(a.x + ux * e, a.y + uy * e),
+            ],
+            egui::Stroke::new(1.6, color),
+        );
+        d += period;
+    }
+}
+
+/// User-placed pins: amber dot + ring with a shadowed label. Drawn above
+/// radar and warnings so they stay visible during storms.
+fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
+    let (w, h) = (view.width() as f64, view.height() as f64);
+    const PAD: f64 = 60.0;
+    for m in &app.state.markers {
+        let (vx, vy) = view.lonlat_to_view_px(m.lon, m.lat);
+        if vx < -PAD || vy < -PAD || vx > w + PAD || vy > h + PAD {
+            continue;
+        }
+        let pos = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+        let amber = egui::Color32::from_rgb(255, 209, 102);
+        // Pin: dark-backed amber ring + solid core.
+        painter.circle_filled(pos, 5.5, egui::Color32::from_black_alpha(200));
+        painter.circle_filled(pos, 4.5, amber);
+        painter.circle_stroke(
+            pos,
+            7.5,
+            egui::Stroke::new(1.4, egui::Color32::from_black_alpha(180)),
+        );
+        // Label with a hard shadow so it reads over radar colors.
+        let text = m.display();
+        let at = egui::pos2(pos.x + 9.0, pos.y - 6.0);
+        let font = egui::FontId::proportional(12.5);
+        painter.text(
+            at + egui::vec2(1.0, 1.0),
+            egui::Align2::LEFT_TOP,
+            &text,
+            font.clone(),
+            egui::Color32::BLACK.gamma_multiply(0.85),
+        );
+        painter.text(
+            at,
+            egui::Align2::LEFT_TOP,
+            &text,
+            font,
+            amber,
+        );
+    }
+}
+
+/// Small modal for naming a new marker or editing an existing one.
+fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
+    let Some(idx) = app.state.pending_marker else { return };
+    if idx >= app.state.markers.len() {
+        app.state.pending_marker = None;
+        return;
+    }
+    let is_new = app.state.markers[idx].label.trim().is_empty();
+    // The TextEdit is immediate-mode: its content must persist across frames
+    // in app state, or every keystroke is erased on the next repaint (it
+    // showed as "one flashing letter"). Edit the draft directly.
+    let draft = &mut app.state.pending_marker_label;
+    let mut to_save = false;
+    let mut to_delete = false;
+    let mut to_cancel = false;
+
+    egui::Window::new(if is_new { "Name this marker" } else { "Edit marker" })
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -140.0))
+        .show(ui.ctx(), |ui| {
+            ui.label("Label");
+            let resp = ui
+                .add(egui::TextEdit::singleline(draft).desired_width(260.0))
+                .on_hover_text("Type a name, then press Enter or Save");
+            // Grab focus automatically while naming a new pin so typing works
+            // immediately (no need to click the field first).
+            if is_new {
+                resp.request_focus();
+            }
+            let typed_ok = !draft.trim().is_empty();
+            if typed_ok && resp.lost_focus() {
+                to_save = true; // Enter or click-away commits a non-empty name
+            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(typed_ok, egui::Button::new("Save")).clicked() {
+                    to_save = true;
+                }
+                if ui.button("Delete").clicked() {
+                    to_delete = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    to_cancel = true;
+                }
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                to_cancel = true;
+            }
+        });
+
+    if to_save {
+        let name = app.state.pending_marker_label.trim().to_string();
+        if !name.is_empty() {
+            if let Some(m) = app.state.markers.get_mut(idx) {
+                m.label = name;
+            }
+            app.state.persist_markers();
+            app.state.pending_marker = None;
+            app.state.pending_marker_label.clear();
+        }
+    } else if to_delete {
+        if idx < app.state.markers.len() {
+            app.state.markers.remove(idx);
+        }
+        app.state.persist_markers();
+        app.state.pending_marker = None;
+        app.state.pending_marker_label.clear();
+    } else if to_cancel {
+        app.state.pending_marker = None;
+        app.state.pending_marker_label.clear();
+    }
+}
+
 fn draw_attribution(painter: &egui::Painter, rect: egui::Rect) {
     let text = "© OpenStreetMap contributors";
     let font = egui::FontId::proportional(10.0);

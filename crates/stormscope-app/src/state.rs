@@ -8,12 +8,31 @@ use radar_render::MapView;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-/// How many decoded volumes we keep resident for looping. Radars produce a
-/// volume every ~4-6 min, so 24 frames ~= the last ~2 hours.
 /// How many decoded volumes we keep resident for looping. 24 scans ≈ 2 hours
 /// of wall-clock radar time. The user's machine has 62 GB RAM and a decoded
 /// volume is ~150 MB, so this lands around 3-4 GB — comfortable.
 pub const RING_CAPACITY: usize = 24;
+
+/// A user-placed, labeled location pin on the map. Persisted to
+/// `~/.config/stormscope/markers.json`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MapMarker {
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default)]
+    pub label: String,
+}
+
+impl MapMarker {
+    /// Display name: the label, or a coordinate-based fallback.
+    pub fn display(&self) -> String {
+        if self.label.trim().is_empty() {
+            format!("{:.3}, {:.3}", self.lat, self.lon)
+        } else {
+            self.label.trim().to_string()
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -63,6 +82,8 @@ pub struct AppState {
     // Alerts
     pub alerts: Vec<radar_core::warnings::Warning>,
     pub show_alerts: bool,
+    /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
+    pub show_tracks: bool,
 
     // Status surfaced in the status bar (filled by the coordinator).
     pub status_text: String,
@@ -71,6 +92,18 @@ pub struct AppState {
     pub archive_total: usize,
     pub archive_start: usize,
     pub archive_len: usize,
+
+    // User-placed map markers.
+    pub markers: Vec<MapMarker>,
+    /// Index of a marker whose label popup is open, if any.
+    pub pending_marker: Option<usize>,
+    /// Draft text for the open label popup. MUST persist across frames —
+    /// egui's TextEdit is immediate-mode: cloning the stored label each frame
+    /// would erase every keystroke on the next repaint.
+    pub pending_marker_label: String,
+    /// When true the next map click drops a new marker (the "＋ Place"
+    /// toggle; Shift+click works regardless).
+    pub add_marker_mode: bool,
 
     /// Playhead advance accumulator for LoopState::Playing.
     _acc: f32,
@@ -103,16 +136,59 @@ impl Default for AppState {
             playhead: 0,
             alerts: Vec::new(),
             show_alerts: true,
+            show_tracks: true,
             status_text: "starting…".to_string(),
             archive_total: 0,
             archive_start: 0,
             archive_len: 0,
+            markers: load_markers(),
+            pending_marker: None,
+            pending_marker_label: String::new(),
+            add_marker_mode: false,
             _acc: 0.0,
         }
     }
 }
 
+/// `~/.config/stormscope/markers.json`, where user pins are persisted.
+fn markers_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                .join(".config")
+        });
+    base.join("stormscope").join("markers.json")
+}
+
+fn load_markers() -> Vec<MapMarker> {
+    match std::fs::read_to_string(markers_path()) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 impl AppState {
+    /// Write markers to disk (best-effort; a failed write is logged, not
+    /// fatal — losing pins shouldn't lose the session).
+    pub fn persist_markers(&self) {
+        let path = markers_path();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("markers dir: {e}");
+                return;
+            }
+        }
+        match serde_json::to_string_pretty(&self.markers) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    log::warn!("markers write: {e}");
+                }
+            }
+            Err(e) => log::warn!("markers serialize: {e}"),
+        }
+    }
+
     /// Current frame at the playhead, if any volume is loaded.
     pub fn current(&self) -> Option<&Frame> {
         self.ring.get(self.playhead)

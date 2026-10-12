@@ -244,4 +244,86 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     // Alerts toggle.
     ui.add_space(6.0);
     ui.checkbox(&mut app.state.show_alerts, "Show warnings");
+    ui.checkbox(&mut app.state.show_tracks, "Show storm tracks");
+
+    // --- User-placed map markers ------------------------------------------
+    ui.add_space(8.0);
+    ui.label("Markers");
+    ui.horizontal(|ui| {
+        let label = if app.state.add_marker_mode {
+            "✕ Cancel placement"
+        } else {
+            "＋ Place marker"
+        };
+        if ui
+            .button(label)
+            .on_hover_text("Then click the map (Shift+click works too)")
+            .clicked()
+        {
+            app.state.add_marker_mode = !app.state.add_marker_mode;
+        }
+        if !app.state.markers.is_empty()
+            && ui
+                .button("Clear all")
+                .on_hover_text("Remove every marker")
+                .clicked()
+        {
+            app.state.markers.clear();
+            app.state.pending_marker = None;
+            app.state.pending_marker_label.clear();
+            app.state.persist_markers();
+        }
+    });
+
+    // Rows: click = pan to it, ✎ = rename, ✕ = delete.
+    let mut pan_to: Option<(f64, f64)> = None;
+    let mut edit: Option<usize> = None;
+    let mut del: Option<usize> = None;
+    for (i, m) in app.state.markers.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if ui
+                .add(egui::Button::new(m.display()).wrap())
+                .on_hover_text(format!(
+                    "{:.4}, {:.4} — click to center the map",
+                    m.lat, m.lon
+                ))
+                .clicked()
+            {
+                pan_to = Some((m.lon, m.lat));
+            }
+            if ui.small_button("✎").on_hover_text("Rename").clicked() {
+                edit = Some(i);
+            }
+            if ui.small_button("✕").on_hover_text("Delete").clicked() {
+                del = Some(i);
+            }
+        });
+    }
+    if app.state.markers.is_empty() {
+        ui.label(
+            egui::RichText::new("Shift+click the map to drop a pin")
+                .weak()
+                .small(),
+        );
+    }
+    if let Some((lon, lat)) = pan_to {
+        app.state.view.center_lon = lon;
+        app.state.view.center_lat = lat;
+    }
+    if let Some(i) = edit {
+        // Seed the persistent draft the popup edits (immediate-mode TextEdit).
+        app.state.pending_marker_label =
+            app.state.markers.get(i).map(|m| m.label.clone()).unwrap_or_default();
+        app.state.pending_marker = Some(i);
+    }
+    if let Some(i) = del {
+        if i < app.state.markers.len() {
+            app.state.markers.remove(i);
+        }
+        if app.state.pending_marker == Some(i) {
+            app.state.pending_marker = None;
+            app.state.pending_marker_label.clear();
+        }
+        app.state.persist_markers();
+    }
 }

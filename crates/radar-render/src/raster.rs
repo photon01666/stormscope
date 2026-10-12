@@ -275,7 +275,7 @@ mod tests {
     fn single_gate_projects_to_expected_pixel() {
         let sweep = single_gate_sweep();
         let view = view();
-        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0);
+        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
 
         assert_eq!(img.width, 800);
         assert_eq!(img.height, 600);
@@ -306,17 +306,17 @@ mod tests {
         // DN 0 => no data.
         sweep.moments[0].data[0] = 0;
         let view = view();
-        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0);
+        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
         assert!(img.rgba.iter().all(|&b| b == 0), "DN 0 must leave the buffer transparent");
 
         // Below the REF floor (5 dBZ) => no paint either.
         sweep.moments[0].data[0] = 4;
-        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0);
+        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
         assert!(img.rgba.iter().all(|&b| b == 0), "below-floor gates must not paint");
 
         // Missing moment entirely => transparent, no panic.
         let empty = Sweep { moments: vec![], ..sweep };
-        let img = rasterize_sweep(&empty, Moment::Velocity, &view, 35.0, -97.0, 1.0);
+        let img = rasterize_sweep(&empty, Moment::Velocity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
         assert!(img.rgba.iter().all(|&b| b == 0));
     }
 
@@ -335,7 +335,7 @@ mod tests {
         let o = ((py as usize * w) + px as usize) * 4;
         let before = [buf[o], buf[o + 1], buf[o + 2], buf[o + 3]];
 
-        rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.5, &mut buf);
+        rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.5, f32::NEG_INFINITY, &mut buf);
 
         let after = [buf[o], buf[o + 1], buf[o + 2], buf[o + 3]];
         assert_eq!(after[3], 255, "opaque background stays opaque");
@@ -346,7 +346,7 @@ mod tests {
         // Opacity 0 must be a no-op.
         let mut untouched = vec![10u8; w * h * 4];
         let snapshot = untouched.clone();
-        rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.0, &mut untouched);
+        rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.0, f32::NEG_INFINITY, &mut untouched);
         assert_eq!(untouched, snapshot);
     }
 
@@ -369,7 +369,7 @@ mod tests {
             }],
         };
         let view = view();
-        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0);
+        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
         let mut last_px = -1.0;
         for gate in 0..4 {
             let slant = 10_000.0 + (gate as f32 + 0.5) * 10_000.0;

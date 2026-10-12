@@ -21,6 +21,7 @@ pub mod colormap;
 pub mod projection;
 pub mod raster;
 pub mod tiles;
+pub mod tracks;
 
 pub use colormap::{ColorTable, Stop};
 pub use projection::{
@@ -28,3 +29,4 @@ pub use projection::{
 };
 pub use raster::{rasterize_sweep, rasterize_sweep_into, RadarImage};
 pub use tiles::{tile_range, tile_scale, tile_view_rect, TileKey, TileLayer, TileRange};
+pub use tracks::{compute_tracks, extrapolate, StormTrack};

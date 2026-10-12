@@ -56,6 +56,9 @@ pub struct StormApp {
     pub radar_last_raster: std::time::Instant,
     /// Signature awaiting a re-raster once the drag throttle expires.
     pub radar_pending: Option<u64>,
+    /// Derived storm tracks for the (prev, cur) frame pair at the current
+    /// tilt: cached by signature, recomputed only when the frames change.
+    pub tracks_cache: Option<(u64, Vec<radar_render::StormTrack>)>,
 }
 
 /// One cached radar overlay raster plus the view it was produced for, so a
@@ -113,6 +116,7 @@ impl StormApp {
             radar_tex: None,
             radar_last_raster: std::time::Instant::now(),
             radar_pending: None,
+            tracks_cache: None,
         }
     }
 

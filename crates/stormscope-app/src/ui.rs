@@ -39,7 +39,7 @@ fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.label(format!("{}", app.state.moment.label()));
         ui.label(format!("{:.1}°", app.state.tilt_deg));
         if let Some(n) = app.state.newest_start() {
-            ui.label(format!("scan {}", n.format("%H:%M:%S UTC")));
+            ui.label(format!("scan {}", crate::timefmt::fmt_central(&n)));
         }
         if let Some(lat) = app.state.latency() {
             ui.label(format!("+{}m", lat.num_minutes()));
@@ -140,6 +140,17 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.add_space(6.0);
     ui.label("Opacity");
     ui.add(egui::Slider::new(&mut app.state.opacity, 0.0..=1.0));
+
+    // Min dBZ filter — suppresses weak returns (clear-air clutter/noise).
+    // Only affects Reflectivity-family products.
+    ui.add_space(6.0);
+    ui.label("Min dBZ (REF)");
+    ui.add(egui::Slider::new(&mut app.state.min_dbz, 0.0..=75.0).step_by(5.0));
+    ui.label(
+        egui::RichText::new("filters weak returns on REF products")
+            .weak()
+            .small(),
+    );
 
     // Alerts toggle.
     ui.add_space(6.0);

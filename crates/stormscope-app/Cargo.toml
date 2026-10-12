@@ -17,6 +17,7 @@ anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Force the wgpu renderer (Vulkan on Linux) and native Wayland windows.

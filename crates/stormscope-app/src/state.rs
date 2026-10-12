@@ -42,6 +42,10 @@ pub struct AppState {
     pub moment: Moment,
     pub tilt_deg: f32,
     pub opacity: f32,
+    /// Minimum dBZ filter (the "Min dBZ" slider): suppresses returns below
+    /// this strength — the fix for clear-air clutter reading as a green blob.
+    /// Only applied to Reflectivity-family moments.
+    pub min_dbz: f32,
 
     // Map
     pub view: MapView,
@@ -73,6 +77,7 @@ impl Default for AppState {
             moment: Moment::Reflectivity,
             tilt_deg: 0.5,
             opacity: 0.85,
+            min_dbz: 5.0,
             view: MapView {
                 center_lat: site.latitude,
                 center_lon: site.longitude,

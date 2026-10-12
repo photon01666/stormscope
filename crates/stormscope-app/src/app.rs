@@ -34,6 +34,16 @@ pub struct StormApp {
     /// Basemap tile layer (fetches + caches Carto/OSM tiles, paints under
     /// every other map layer). Fetches happen on background threads.
     pub tiles: radar_render::TileLayer,
+    /// Cached radar overlay texture for the current (frame, moment, tilt,
+    /// view, opacity) combination. Re-rasterized only when the signature
+    /// changes — never every frame.
+    pub radar_tex: Option<(egui::TextureHandle, u64)>,
+    /// Last time the radar overlay was rasterized — throttles re-rasters
+    /// during drags so panning stays smooth (the full-viewport splat is the
+    /// app's most expensive operation).
+    pub radar_last_raster: std::time::Instant,
+    /// Signature awaiting a re-raster once the drag throttle expires.
+    pub radar_pending: Option<u64>,
 }
 
 /// Mutable shared state the coordinator thread writes and the UI reads.
@@ -76,6 +86,9 @@ impl StormApp {
             data,
             render_state: cc.wgpu_render_state.clone(),
             tiles,
+            radar_tex: None,
+            radar_last_raster: std::time::Instant::now(),
+            radar_pending: None,
         }
     }
 

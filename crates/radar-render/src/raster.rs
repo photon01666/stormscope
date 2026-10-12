@@ -53,9 +53,10 @@ pub fn rasterize_sweep(
     radar_lat: f64,
     radar_lon: f64,
     opacity: f32,
+    min_dbz: f32,
 ) -> RadarImage {
     let mut img = RadarImage::transparent(view);
-    rasterize_sweep_into(sweep, moment, view, radar_lat, radar_lon, opacity, &mut img.rgba);
+    rasterize_sweep_into(sweep, moment, view, radar_lat, radar_lon, opacity, min_dbz, &mut img.rgba);
     img
 }
 
@@ -70,6 +71,7 @@ pub fn rasterize_sweep_into(
     radar_lat: f64,
     radar_lon: f64,
     opacity: f32,
+    min_dbz: f32,
     buf: &mut [u8],
 ) {
     let (w, h) = (view.width(), view.height());
@@ -98,6 +100,10 @@ pub fn rasterize_sweep_into(
 
     let table = ColorTable::for_moment(moment);
     let (floor, _) = table.range();
+    // User dBZ filter (the "Min dBZ" slider): raises the effective floor so
+    // clear-air clutter/noise can be suppressed. Ignored for non-REF moments
+    // (callers pass -inf there).
+    let thresh = floor.max(min_dbz);
 
     // Prefer the measured tilt when present; fall back to the requested one.
     let elevation_deg = if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
@@ -128,8 +134,8 @@ pub fn rasterize_sweep_into(
                 continue; // no data / range folded / below threshold
             }
             let value = (dn as f32 - md.calibration.offset) / md.calibration.scale;
-            if !value.is_finite() || value < floor {
-                continue; // below the moment's useful floor
+            if !value.is_finite() || value < thresh {
+                continue; // below the moment's floor or the user's Min dBZ
             }
             let color = table.map(value);
             if color[3] == 0 {

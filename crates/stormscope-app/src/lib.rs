@@ -10,6 +10,7 @@
 mod app;
 mod background;
 mod state;
+mod timefmt;
 mod timeline;
 mod ui;
 

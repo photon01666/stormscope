@@ -130,8 +130,8 @@ fn main() -> anyhow::Result<()> {
 
     // Layers: reflectivity first, then the velocity couplet on top, both
     // alpha-composited into the same buffer (no reallocation).
-    rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, RADAR_LAT, RADAR_LON, 0.9, &mut buf);
-    rasterize_sweep_into(&sweep, Moment::Velocity, &view, RADAR_LAT, RADAR_LON, 0.8, &mut buf);
+    rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, RADAR_LAT, RADAR_LON, 0.9, f32::NEG_INFINITY, &mut buf);
+    rasterize_sweep_into(&sweep, Moment::Velocity, &view, RADAR_LAT, RADAR_LON, 0.8, f32::NEG_INFINITY, &mut buf);
 
     // White cross marking the radar site (the view center).
     let (cx, cy) = (w / 2, h / 2);

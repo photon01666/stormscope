@@ -107,10 +107,79 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     draw_range_rings(&painter, origin, &view, app);
     draw_sites(&painter, origin, &view, app);
 
-    // --- Layer 3: radar sweep raster (placeholder until volumes flow) -----
-    // TODO(W4-live): rasterize the current frame's sweep for `view` and
-    // paint it as a texture at `origin`; the polar-warp pipeline will replace
-    // this once attached to `app.render_state`.
+    // --- Layer 3: radar sweep overlay --------------------------------------
+    // Rasterize the current frame's sweep for the selected moment+tilt and
+    // paint it as a texture covering the viewport. The texture is cached and
+    // only re-rasterized when something that affects pixels changes (frame,
+    // moment, tilt, view, opacity) — never per frame.
+    if let Some(frame) = app.state.current() {
+        if let Some(site) = radar_core::sites::site(&app.state.site_id) {
+            if let Some(si) = frame.volume.sweep_index_for_tilt(app.state.tilt_deg) {
+                let sweep = &frame.volume.sweeps[si];
+                if sweep.moment(app.state.moment).is_some() {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    frame.volume_start.timestamp_millis().hash(&mut h);
+                    app.state.moment.hash(&mut h);
+                    app.state.tilt_deg.to_bits().hash(&mut h);
+                    app.state.view.zoom.to_bits().hash(&mut h);
+                    app.state.view.center_lat.to_bits().hash(&mut h);
+                    app.state.view.center_lon.to_bits().hash(&mut h);
+                    app.state.view.width().hash(&mut h);
+                    app.state.view.height().hash(&mut h);
+                    ((app.state.opacity * 100.0) as u32).hash(&mut h);
+                    app.state.min_dbz.to_bits().hash(&mut h);
+                    let sig = h.finish();
+
+                    if app.radar_tex.as_ref().map_or(true, |(_, s)| *s != sig) {
+                        // Drag throttle: a full-viewport raster is the app's
+                        // most expensive op, so during a pan keep showing the
+                        // last raster and redo it once things settle.
+                        let settling = !response.dragged()
+                            || app.radar_last_raster.elapsed()
+                                >= std::time::Duration::from_millis(150);
+                        if settling {
+                            let min_dbz = match app.state.moment {
+                                radar_core::Moment::Reflectivity
+                                | radar_core::Moment::CompositeReflectivity => app.state.min_dbz,
+                                _ => f32::NEG_INFINITY, // filter is dBZ-only
+                            };
+                            let img = radar_render::rasterize_sweep(
+                                sweep,
+                                app.state.moment,
+                                &view,
+                                site.latitude,
+                                site.longitude,
+                                app.state.opacity,
+                                min_dbz,
+                            );
+                            let color = egui::ColorImage::from_rgba_unmultiplied(
+                                [img.width, img.height],
+                                &img.rgba,
+                            );
+                            let tex = ui.ctx().load_texture(
+                                format!("radar-{}-{}", app.state.site_id, sig),
+                                color,
+                                egui::TextureOptions::LINEAR,
+                            );
+                            app.radar_tex = Some((tex, sig));
+                            app.radar_last_raster = std::time::Instant::now();
+                            app.radar_pending = None;
+                        } else {
+                            app.radar_pending = Some(sig);
+                        }
+                    }
+                    if let Some((tex, _)) = &app.radar_tex {
+                        let uv = egui::Rect::from_min_max(
+                            egui::pos2(0.0, 0.0),
+                            egui::pos2(1.0, 1.0),
+                        );
+                        painter.image(tex.id(), tile_resp.rect, uv, egui::Color32::WHITE);
+                    }
+                }
+            }
+        }
+    }
 
     // --- Layer 4: warning polygons ----------------------------------------
     draw_warnings(&painter, origin, &view, app);
@@ -137,21 +206,22 @@ fn pan_view(dst: &mut MapView, cur: MapView, dx: f64, dy: f64) {
 /// stationary.
 fn zoom_view(dst: &mut MapView, cur: MapView, new_zoom: f64, anchor: (f64, f64)) {
     let new_zoom = new_zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-    // Geo point under the anchor before the zoom...
+    // Geo point currently under the anchor...
     let (lon, lat) = cur.view_px_to_lonlat(anchor.0, anchor.1);
-    dst.zoom = new_zoom;
-    // ...reproject it at the new zoom and shift the center so it lands on
-    // the same screen pixel.
+    // ...its world (Mercator) position at the new zoom...
     let (ax, ay) = radar_render::lonlat_to_merc_px(lon, lat, new_zoom);
-    let mut probe = *dst;
-    probe.center_lat = lat;
-    probe.center_lon = lon;
-    let (ox, oy) = probe.origin_px();
+    // ...which pins the new view center: after the zoom the anchor pixel must
+    // still show that same geo point, so center = point - anchor + halfsize.
+    // (An earlier "probe" formulation double-counted the offset and flung
+    // the view thousands of km away on every zoom — the vanishing-map bug.)
+    let half_w = cur.width() as f64 / 2.0;
+    let half_h = cur.height() as f64 / 2.0;
     let (cx, cy) = radar_render::merc_px_to_lonlat(
-        ax - (anchor.0 - ox),
-        ay - (anchor.1 - oy),
+        ax - anchor.0 + half_w,
+        ay - anchor.1 + half_h,
         new_zoom,
     );
+    dst.zoom = new_zoom;
     dst.center_lon = cx;
     dst.center_lat = cy.clamp(-85.0, 85.0);
 }
@@ -294,4 +364,50 @@ fn draw_attribution(painter: &egui::Painter, rect: egui::Rect) {
         font,
         egui::Color32::from_white_alpha(160),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view(zoom: f64) -> MapView {
+        MapView {
+            center_lat: 35.3331,
+            center_lon: -97.2778,
+            zoom,
+            width_px: 1200.0,
+            height_px: 800.0,
+        }
+    }
+
+    /// The geo point under the anchor must stay under the anchor after
+    /// zooming. A previous implementation double-counted the probe offset and
+    /// flung the view thousands of km away on every zoom ("map disappears").
+    #[test]
+    fn zoom_keeps_anchor_point_stable() {
+        for &(z0, z1) in &[(8.0, 9.0), (9.0, 8.0), (7.3, 11.9), (12.0, 4.0)] {
+            for &anchor in &[(600.0, 400.0), (100.0, 700.0), (1150.0, 50.0)] {
+                let cur = view(z0);
+                let (lon, lat) = cur.view_px_to_lonlat(anchor.0, anchor.1);
+                let mut dst = cur;
+                zoom_view(&mut dst, cur, z1, anchor);
+                let (nx, ny) = dst.lonlat_to_view_px(lon, lat);
+                assert!(
+                    (nx - anchor.0).abs() < 1e-6 && (ny - anchor.1).abs() < 1e-6,
+                    "zoom {z0}->{z1} anchor {anchor:?}: point drifted to ({nx}, {ny})"
+                );
+            }
+        }
+    }
+
+    /// Zooming straight in at the exact center must keep the center fixed.
+    #[test]
+    fn zoom_at_center_keeps_center() {
+        let cur = view(8.0);
+        let anchor = (600.0, 400.0);
+        let mut dst = cur;
+        zoom_view(&mut dst, cur, 9.5, anchor);
+        assert!((dst.center_lat - cur.center_lat).abs() < 1e-6);
+        assert!((dst.center_lon - cur.center_lon).abs() < 1e-6);
+    }
 }

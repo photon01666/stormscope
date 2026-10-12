@@ -34,36 +34,44 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     let _ = out.send(DataMsg::Status("starting live feed…".into()));
     start_live(&source, "KTLX", &mut live, &out);
 
-    while let Ok(cmd) = cmds.recv() {
-        match cmd {
-            DataCmd::SetSite(site) => {
-                let _ = out.send(DataMsg::Status(format!("switching to {site}…")));
-                start_live(&source, &site, &mut live, &out);
-            }
-            DataCmd::LoadArchiveDate(date) => {
-                let _ = out.send(DataMsg::Status(format!("loading archive {date}…")));
-                load_archive(&source, "KTLX", date, &out);
-            }
-            DataCmd::RefreshAlerts => {
-                if let Some(a) = &alerts {
-                    match a.active_near(35.3331, -97.2778, 400.0) {
-                        Ok(w) => {
-                            let n = w.len();
-                            let _ = out.send(DataMsg::Alerts(w));
-                            let _ = out.send(DataMsg::Status(format!("{n} active alerts")));
-                        }
-                        Err(e) => {
-                            log::warn!("alerts fetch failed: {e:#}");
-                            let _ = out.send(DataMsg::Error(format!("alerts: {e:#}")));
+    // Drain on a timer, not just on commands: `recv()` would block forever
+    // waiting for a UI command that never comes, leaving the poller's
+    // channel full and the UI ring empty (that bug showed up as "no radar
+    // data at all").
+    loop {
+        match cmds.recv_timeout(Duration::from_millis(250)) {
+            Ok(cmd) => match cmd {
+                DataCmd::SetSite(site) => {
+                    let _ = out.send(DataMsg::Status(format!("switching to {site}…")));
+                    start_live(&source, &site, &mut live, &out);
+                }
+                DataCmd::LoadArchiveDate(date) => {
+                    let _ = out.send(DataMsg::Status(format!("loading archive {date}…")));
+                    load_archive(&source, "KTLX", date, &out);
+                }
+                DataCmd::RefreshAlerts => {
+                    if let Some(a) = &alerts {
+                        match a.active_near(35.3331, -97.2778, 400.0) {
+                            Ok(w) => {
+                                let n = w.len();
+                                let _ = out.send(DataMsg::Alerts(w));
+                                let _ = out.send(DataMsg::Status(format!("{n} active alerts")));
+                            }
+                            Err(e) => {
+                                log::warn!("alerts fetch failed: {e:#}");
+                                let _ = out.send(DataMsg::Error(format!("alerts: {e:#}")));
+                            }
                         }
                     }
                 }
-            }
-            DataCmd::Shutdown => break,
+                DataCmd::Shutdown => break,
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        // Drain any live volume that arrived while we were handling the
-        // command, so backpressure doesn't stall the poller across a pause.
+        // Always drain whatever the live poller has produced this tick, so
+        // volumes flow to the UI even when no command ever arrives.
         drain_live(&mut live, &out);
     }
 }
@@ -95,7 +103,10 @@ fn drain_live(live: &mut Option<Receiver<radar_core::Volume>>, out: &Sender<Data
             Ok(volume) => {
                 let scan = volume.meta.volume_start;
                 let _ = out.send(DataMsg::Volume(std::sync::Arc::new(volume)));
-                let _ = out.send(DataMsg::Status(format!("live scan {}", scan.format("%H:%M:%S"))));
+                let _ = out.send(DataMsg::Status(format!(
+                    "live scan {}",
+                    crate::timefmt::fmt_central(&scan)
+                )));
             }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
@@ -131,7 +142,7 @@ fn load_archive(source: &S3Source, site: &str, date: NaiveDate, out: &Sender<Dat
                 let _ = out.send(DataMsg::Volume(volume));
                 let _ = out.send(DataMsg::Status(format!(
                     "archive {} {}/{}",
-                    scan.format("%H:%M:%S"),
+                    crate::timefmt::fmt_central(&scan),
                     site,
                     date.format("%m-%d")
                 )));

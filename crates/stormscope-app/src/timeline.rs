@@ -25,7 +25,7 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
 
         ui.separator();
         if let Some(f) = app.state.current() {
-            ui.label(format!("{}", f.volume_start.format("%H:%M:%S UTC")));
+            ui.label(crate::timefmt::fmt_central(&f.volume_start));
         } else {
             ui.label("no frames");
         }

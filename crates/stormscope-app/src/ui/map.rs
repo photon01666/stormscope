@@ -264,6 +264,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Attribution (required by OSM/Wikimedia tile usage policies) ------
     draw_attribution(&painter, tile_resp.rect);
 
+    // --- Scan-mode badge (precip vs clear-air) at top-center ---------------
+    draw_mode_badge(ui, &painter, tile_resp.rect, app);
+
     // Label editor popup for the selected/new marker (drawn in its own
     // egui layer; lives here so it has the map context).
     marker_popup(ui, app);
@@ -559,6 +562,51 @@ fn draw_dashed(
         );
         d += period;
     }
+}
+
+/// Top-center badge: whether the radar is scanning in precip or clear-air
+/// mode (with the VCP number). Clear-air returns are legitimately thin and
+/// speckled — this badge answers "why does the radar look like dots?" at a
+/// glance.
+fn draw_mode_badge(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app: &StormApp) {
+    use radar_core::vcp::ScanMode;
+    if app.state.current().is_none() {
+        return; // nothing loaded yet — don't flash a confusing badge
+    }
+    let mode = app.state.scan_mode();
+    let vcp = app.state.current().and_then(|f| f.volume.meta.vcp);
+    let text = match vcp {
+        Some(v) => format!("{} · VCP {v}", mode.label()),
+        None => mode.label().to_string(),
+    };
+    let color = match mode {
+        ScanMode::Precip => egui::Color32::from_rgb(125, 255, 176), // green
+        ScanMode::ClearAir => egui::Color32::from_rgb(255, 209, 102), // amber
+        ScanMode::Unknown => egui::Color32::from_white_alpha(190),
+    };
+    let font = egui::FontId::proportional(15.0);
+    let galley = ui
+        .ctx()
+        .fonts_mut(|f| f.layout_no_wrap(text, font, color));
+    let size = galley.size();
+    let top = rect.min.y + 8.0;
+    let center_x = rect.center().x;
+    let bg = egui::Rect::from_center_size(
+        egui::pos2(center_x, top + size.y / 2.0 + 5.0),
+        size + egui::vec2(24.0, 12.0),
+    );
+    painter.rect_filled(bg, 7.0, egui::Color32::from_black_alpha(200));
+    painter.rect_stroke(
+        bg,
+        7.0,
+        egui::Stroke::new(1.0, color.gamma_multiply(0.5)),
+        egui::StrokeKind::Outside,
+    );
+    painter.galley(
+        egui::pos2(center_x - size.x / 2.0, top + 5.0),
+        galley,
+        color,
+    );
 }
 
 /// User-placed pins: amber dot + ring with a shadowed label. Drawn above

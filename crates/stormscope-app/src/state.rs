@@ -194,6 +194,23 @@ impl AppState {
         self.ring.get(self.playhead)
     }
 
+    /// Whether the radar is scanning in precip or clear-air mode: VCP table
+    /// first, else the median scan-to-scan cadence in the ring (precip
+    /// volumes arrive every ~4-6 min, clear-air every ~9-12 min).
+    pub fn scan_mode(&self) -> radar_core::vcp::ScanMode {
+        let vcp = self.current().and_then(|f| f.volume.meta.vcp);
+        let mut dts: Vec<f64> = (1..self.ring.len())
+            .map(|i| {
+                (self.ring[i].volume_start - self.ring[i - 1].volume_start).num_seconds() as f64
+                    / 60.0
+            })
+            .filter(|d| (0.0..120.0).contains(d))
+            .collect();
+        dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = if dts.is_empty() { None } else { Some(dts[dts.len() / 2]) };
+        radar_core::vcp::ScanMode::detect(vcp, median)
+    }
+
     /// Push a newly decoded volume onto the ring, keeping it ordered oldest
     /// -> newest and evicting the oldest when full. In Live mode the playhead
     /// jumps to the newest frame; otherwise it stays put.

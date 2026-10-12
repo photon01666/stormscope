@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lru::LruCache;
@@ -38,23 +39,101 @@ const OSM_URL: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 /// Descriptive User-Agent (OSM tile usage policy asks for one).
 const USER_AGENT: &str = "stormscope/0.1 (Linux NEXRAD radar viewer; github.com/stormscope/stormscope)";
 /// Concurrent tile downloads. Deliberately small: be polite to the servers.
-/// Concurrent tile downloads. Deliberately small: Wikimedia rate-limits
-/// anonymous clients (HTTP 403) if we burst, so we stay polite and pace
-/// spawns in `pump`. Ancestor-fallback painting keeps the map on screen
-/// while a cold viewport fills.
-const MAX_IN_FLIGHT: usize = 3;
+/// Concurrent tile *worker threads*. Disk-cache hits finish in ~2ms, so
+/// this mainly bounds thread count while a warm viewport loads — it must NOT
+/// pace the queue, otherwise a warm 100-tile cache takes seconds to trickle
+/// in and looks like re-downloading.
+const MAX_IN_FLIGHT: usize = 8;
 /// Decoded textures kept alive (~64 MB of 256x256 RGBA).
 const TEXTURE_CACHE_TILES: usize = 640;
 const TILE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Minimum gap between tile worker spawns. Wikimedia rate-limits anonymous
-/// clients (403) on bursts, so we trickle requests instead of flooding.
-const SPAWN_PACING: Duration = Duration::from_millis(60);
+/// Minimum gap between actual *network* requests (enforced inside workers by
+/// `NetGate`, so cached tiles never wait on it). Wikimedia rate-limits
+/// anonymous clients (403) on bursts.
+const NET_SPACING: Duration = Duration::from_millis(60);
+/// Concurrent *network* fetches across all workers.
+const MAX_NET_IN_FLIGHT: usize = 3;
+/// After every provider rate-limits us, pause network fetches this long
+/// (disk-cache reads keep flowing).
+const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(15);
 /// How long a failed tile stays suppressed before we try it again (so a
 /// transient 403/timeout isn't a permanent blank spot).
-const FAILED_RETRY: Duration = Duration::from_secs(45);
+const FAILED_RETRY: Duration = Duration::from_secs(180);
+/// On-disk cache policy: tiles older than 30 days are evicted...
+const CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// ...and the cache never exceeds 2 GB.
+const CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// How many zoom levels up the ancestor fallback searches for a cached tile
 /// (parent, grand-parent, great-grand-parent).
 const ANCESTOR_MAX_LEVELS: usize = 3;
+
+/// Shared network politeness gate: spaces request starts, caps network
+/// concurrency across all worker threads, and carries the rate-limit pause.
+/// Disk-cache reads never touch it.
+struct NetGate {
+    last_start: std::sync::Mutex<Instant>,
+    paused_until: std::sync::Mutex<Instant>,
+    active: std::sync::atomic::AtomicUsize,
+}
+
+impl NetGate {
+    fn new() -> Self {
+        let past = Instant::now() - Duration::from_secs(3600);
+        Self {
+            last_start: std::sync::Mutex::new(past),
+            paused_until: std::sync::Mutex::new(past),
+            active: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Wait for a network slot + spacing. `Err(())` means we are in a
+    /// rate-limit pause — caller should skip the network entirely.
+    fn enter(&self) -> Result<NetSlot<'_>, ()> {
+        use std::sync::atomic::Ordering;
+        if Instant::now()
+            < *self.paused_until.lock().unwrap_or_else(|e| e.into_inner())
+        {
+            return Err(());
+        }
+        // Concurrency cap.
+        loop {
+            if self.active.fetch_add(1, Ordering::Relaxed) < MAX_NET_IN_FLIGHT {
+                break;
+            }
+            self.active.fetch_sub(1, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        // Start-of-request spacing.
+        loop {
+            let mut last = self.last_start.lock().unwrap_or_else(|e| e.into_inner());
+            let elapsed = last.elapsed();
+            if elapsed >= NET_SPACING {
+                *last = Instant::now();
+                break;
+            }
+            let wait = NET_SPACING - elapsed;
+            drop(last);
+            std::thread::sleep(wait);
+        }
+        Ok(NetSlot { gate: self })
+    }
+
+    fn pause(&self) {
+        let mut p = self.paused_until.lock().unwrap_or_else(|e| e.into_inner());
+        *p = Instant::now() + RATE_LIMIT_PAUSE;
+    }
+}
+
+/// RAII network slot; released on drop even on error paths.
+struct NetSlot<'a> {
+    gate: &'a NetGate,
+}
+
+impl Drop for NetSlot<'_> {
+    fn drop(&mut self) {
+        self.gate.active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 /// Identity of one tile in the standard XYZ scheme.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -164,6 +243,68 @@ pub fn ancestor_uv(child: &TileKey, anc: &TileKey) -> Option<egui::Rect> {
     ))
 }
 
+/// On-disk cache policy: delete tiles older than `max_age`, then (if still
+/// over `max_bytes`) delete oldest-first until under the cap. Runs on a
+/// background thread at startup; all errors are best-effort.
+fn sweep_cache(dir: &Path, max_age: Duration, max_bytes: u64) {
+    fn walk(d: &Path, out: &mut Vec<(std::path::PathBuf, std::time::SystemTime, u64)>, depth: u8) {
+        if depth > 6 {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out, depth + 1);
+            } else if p.extension().is_some_and(|x| x == "tile") {
+                if let Ok(md) = e.metadata() {
+                    let mtime = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    out.push((p, mtime, md.len()));
+                }
+            }
+        }
+    }
+    let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
+    walk(dir, &mut entries, 0);
+    if entries.is_empty() {
+        return;
+    }
+    let now = std::time::SystemTime::now();
+    let mut total: u64 = entries.iter().map(|e| e.2).sum();
+    let mut removed = 0usize;
+
+    // 1) Expiry pass: drop tiles older than max_age.
+    entries.retain(|(p, mtime, len)| {
+        let age = now.duration_since(*mtime).unwrap_or_default();
+        if age > max_age {
+            let _ = std::fs::remove_file(p);
+            total -= len;
+            removed += 1;
+            false
+        } else {
+            true
+        }
+    });
+
+    // 2) Size cap pass: oldest-first until under the cap.
+    if total > max_bytes {
+        entries.sort_by_key(|(_, mtime, _)| *mtime);
+        for (p, _, len) in &entries {
+            if total <= max_bytes {
+                break;
+            }
+            let _ = std::fs::remove_file(p);
+            total -= len;
+            removed += 1;
+        }
+    }
+
+    log::info!(
+        "tile cache sweep: removed {removed} tiles, {:.1} MB remain",
+        total as f64 / (1024.0 * 1024.0)
+    );
+}
+
 fn tile_path(cache_dir: &Path, key: TileKey) -> PathBuf {
     cache_dir
         .join(key.z.to_string())
@@ -253,26 +394,41 @@ fn validate_tile(key: TileKey, bytes: &[u8]) -> Option<egui::ColorImage> {
     Some(image)
 }
 
-fn http_get(client: &reqwest::blocking::Client, key: TileKey) -> Option<Vec<u8>> {
+/// Returns `(bytes, rate_limited)`: `rate_limited` means the attempt failed
+/// AND at least one provider answered 403/429 — the caller should pause.
+fn http_get(client: &reqwest::blocking::Client, key: TileKey) -> (Option<Vec<u8>>, bool) {
+    let mut saw_throttle = false;
     for template in PROVIDERS {
         let url = tile_url(template, key);
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => match resp.bytes() {
-                Ok(b) if !b.is_empty() => return Some(b.to_vec()),
+                Ok(b) if !b.is_empty() => return (Some(b.to_vec()), false),
                 Ok(_) => log::warn!("tile {key:?}: empty body from {url}"),
                 Err(e) => log::warn!("tile {key:?}: body read error from {url}: {e}"),
             },
-            Ok(resp) => log::warn!("tile {key:?}: HTTP {} from {url}", resp.status()),
+            Ok(resp) => {
+                let status = resp.status();
+                if status.as_u16() == 403 || status.as_u16() == 429 {
+                    saw_throttle = true;
+                }
+                log::warn!("tile {key:?}: HTTP {status} from {url}");
+            }
             Err(e) => log::warn!("tile {key:?}: fetch error from {url}: {e}"),
         }
     }
-    None
+    (None, saw_throttle)
 }
 
 /// Worker: disk cache first, then the provider list. Never runs on the UI
 /// thread. Every byte path goes through [`validate_tile`] so a bad cached
 /// tile (e.g. a pre-fix watermark) is evicted and refetched.
-fn fetch_tile(client: &reqwest::blocking::Client, cache_dir: &Path, key: TileKey) -> TileMsg {
+fn fetch_tile(
+    client: &reqwest::blocking::Client,
+    cache_dir: &Path,
+    key: TileKey,
+    net: &NetGate,
+) -> TileMsg {
+    // Disk cache first — never gated (this is what makes warm startups fast).
     let path = tile_path(cache_dir, key);
     if let Ok(bytes) = std::fs::read(&path) {
         if let Some(image) = validate_tile(key, &bytes) {
@@ -281,18 +437,32 @@ fn fetch_tile(client: &reqwest::blocking::Client, cache_dir: &Path, key: TileKey
         log::warn!("tile {key:?}: evicting invalid cache file {path:?}");
         let _ = std::fs::remove_file(&path);
     }
-    if let Some(bytes) = http_get(client, key) {
-        if let Some(image) = validate_tile(key, &bytes) {
-            if let Some(parent) = path.parent() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    log::debug!("tile {key:?}: mkdir {parent:?}: {e}");
-                }
-            }
-            if let Err(e) = std::fs::write(&path, &bytes) {
-                log::debug!("tile {key:?}: cache write {path:?}: {e}");
-            }
-            return TileMsg { key, image: Some(image) };
+    // Network path — gated for politeness (spacing + concurrency + pause).
+    let _slot = match net.enter() {
+        Ok(slot) => slot,
+        Err(()) => {
+            // Rate-limit pause: skip the network; the tile goes to the
+            // failed set and retries after FAILED_RETRY.
+            return TileMsg { key, image: None };
         }
+    };
+    let (bytes, throttled) = http_get(client, key);
+    if throttled {
+        net.pause();
+    }
+    let Some(bytes) = bytes else {
+        return TileMsg { key, image: None };
+    };
+    if let Some(image) = validate_tile(key, &bytes) {
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::debug!("tile {key:?}: mkdir {parent:?}: {e}");
+            }
+        }
+        if let Err(e) = std::fs::write(&path, &bytes) {
+            log::debug!("tile {key:?}: cache write {path:?}: {e}");
+        }
+        return TileMsg { key, image: Some(image) };
     }
     TileMsg { key, image: None }
 }
@@ -313,14 +483,23 @@ pub struct TileLayer {
     queue: VecDeque<TileKey>,
     /// Tiles that failed this session (retried on a cooldown, see `pump`).
     failed: HashMap<TileKey, Instant>,
-    /// Last time we spawned a tile worker, for pacing.
-    last_spawn: Instant,
+    /// Network politeness gate shared by all workers (spacing/concurrency/
+    /// rate-limit pause). Disk reads never go through it.
+    net: Arc<NetGate>,
     rx: Receiver<TileMsg>,
     tx: Sender<TileMsg>,
 }
 
 impl TileLayer {
     pub fn new(cache_dir: PathBuf) -> Self {
+        // Apply the cache policy (30-day expiry, 2 GB cap) off-thread so
+        // startup isn't blocked walking the directory.
+        {
+            let dir = cache_dir.clone();
+            let _ = std::thread::Builder::new()
+                .name("tile-cache-sweep".into())
+                .spawn(move || sweep_cache(&dir, CACHE_MAX_AGE, CACHE_MAX_BYTES));
+        }
         let client = match reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(TILE_TIMEOUT)
@@ -346,7 +525,7 @@ impl TileLayer {
             pending: HashSet::new(),
             queue: VecDeque::new(),
             failed: HashMap::new(),
-            last_spawn: Instant::now(),
+            net: Arc::new(NetGate::new()),
             rx,
             tx,
         }
@@ -414,10 +593,11 @@ impl TileLayer {
         };
         let tx = self.tx.clone();
         let dir = self.cache_dir.clone();
+        let net = Arc::clone(&self.net);
         let res = std::thread::Builder::new()
             .name(format!("tile-{}/{}/{}", key.z, key.x, key.y))
             .spawn(move || {
-                let msg = fetch_tile(&client, &dir, key);
+                let msg = fetch_tile(&client, &dir, key, &net);
                 let _ = tx.send(msg);
             });
         if let Err(e) = res {
@@ -436,8 +616,14 @@ impl TileLayer {
     /// position of view pixel `(x, y)` is `response.rect.min + (x, y)`.
     pub fn paint(&mut self, ui: &egui::Ui, view: &MapView) -> egui::Response {
         // 1) Collect finished tiles (disk/HTTP work happened off-thread).
+        // Capped per frame: a warm startup can deliver ~150 tiles at once and
+        // uploading them all in one frame causes a visible hitch.
+        const MAX_TEXTURE_UPLOADS: usize = 16;
         let mut got_new_texture = false;
-        while let Ok(msg) = self.rx.try_recv() {
+        let mut drained = 0usize;
+        while drained < MAX_TEXTURE_UPLOADS {
+            let Ok(msg) = self.rx.try_recv() else { break };
+            drained += 1;
             self.pending.remove(&msg.key);
             match msg.image {
                 Some(image) => {
@@ -518,13 +704,11 @@ impl TileLayer {
             }
         });
 
-        // 5) Start workers for queued tiles, respecting the in-flight cap and
-        // pacing spawns so we never burst enough to trip rate limiting.
-        while self.in_flight() < MAX_IN_FLIGHT
-            && now.duration_since(self.last_spawn) >= SPAWN_PACING
-        {
+        // 5) Start workers for queued tiles. No spawn pacing here: workers
+        // hit the disk cache first (fast) and only the network path is gated
+        // by NetGate — pacing spawns made warm caches trickly-slow.
+        while self.in_flight() < MAX_IN_FLIGHT {
             let Some(key) = self.queue.pop_front() else { break };
-            self.last_spawn = now;
             self.spawn(key);
         }
 

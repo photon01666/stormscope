@@ -6,6 +6,7 @@
 //! semantically stable; extend additively.
 
 pub mod sites;
+pub mod vcp;
 pub mod warnings;
 
 use chrono::{DateTime, Utc};

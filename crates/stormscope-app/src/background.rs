@@ -76,11 +76,18 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     // Listed archive day + loaded window, so ◀/▶ can page through the day
     // without re-listing S3.
     let mut archive: Option<ArchiveDay> = None;
+    // Freshness tracking + archive catch-up watchdog: the app should show
+    // whichever upstream (live chunks vs archive bucket) is AHEAD, not
+    // whichever it happens to be listening to.
+    let mut last_delivered: Option<chrono::DateTime<Utc>> = None;
+    let mut watchdog_enabled = true; // off while browsing archive/last-hour
+    let mut last_watchdog = std::time::Instant::now();
+    const ARCHIVE_CATCHUP_INTERVAL: Duration = Duration::from_secs(60);
 
     let _ = out.send(DataMsg::Status("starting live feed…".into()));
     start_live(&source, radar_core::DEFAULT_SITE, &mut live, &out);
     // First frame in seconds, not minutes: the poller warms up in parallel.
-    instant_refresh(&source, radar_core::DEFAULT_SITE, &out);
+    last_delivered = instant_refresh(&source, radar_core::DEFAULT_SITE, &out);
 
     // Dev harness: STORMSCOPE_BOOTSTRAP_ARCHIVE=YYYY-MM-DD[=SITE] pre-loads
     // an archive day at startup so the archive path can be exercised (and
@@ -91,6 +98,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
         let site = parts.next().unwrap_or(radar_core::DEFAULT_SITE).to_string();
         if let Some(date) = date {
             let _ = out.send(DataMsg::Status(format!("bootstrap: loading {site} {date}…")));
+            watchdog_enabled = false; // browsing a day, not live
             archive = open_archive_day(&source, &site, date, &mut current_site, &out);
         }
     }
@@ -104,19 +112,27 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             Ok(cmd) => match cmd {
                 DataCmd::SetSite(site) => {
                     let _ = out.send(DataMsg::Status(format!("switching to {site}…")));
+                    // Drop the old station's frames FIRST — otherwise its
+                    // sweeps render (georeferenced to the new site!) until
+                    // the new station's data arrives.
+                    let _ = out.send(DataMsg::ClearFrames);
                     current_site = site.clone();
                     start_live(&source, &site, &mut live, &out);
                     // Radar for the new site within seconds; the poller's
                     // first complete scan would otherwise take ~4-5 min.
-                    instant_refresh(&source, &site, &out);
+                    if let Some(ts) = instant_refresh(&source, &site, &out) {
+                        last_delivered = Some(ts);
+                    }
                 }
                 DataCmd::LoadArchiveDate(site, date) => {
                     let _ = out.send(DataMsg::Status(format!("loading {site} archive {date}…")));
+                    watchdog_enabled = false; // browsing a day, not live
                     archive = open_archive_day(&source, &site, date, &mut current_site, &out);
                 }
                 DataCmd::LoadLastHour(site) => {
                     current_site = site.clone();
                     archive = None;
+                    watchdog_enabled = false; // browsing a fixed window
                     let _ = out.send(DataMsg::ArchiveInfo { total: 0, start: 0, len: 0 });
                     load_last_hour(&source, &site, &out);
                 }
@@ -130,12 +146,15 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     // and show the newest scan immediately. The live poller
                     // keeps future scans coming.
                     archive = None;
+                    watchdog_enabled = true;
                     let _ = out.send(DataMsg::ClearFrames);
                     let _ = out.send(DataMsg::Status("returning to live…".into()));
                     if live.is_none() {
                         start_live(&source, &current_site, &mut live, &out);
                     }
-                    instant_refresh(&source, &current_site, &out);
+                    if let Some(ts) = instant_refresh(&source, &current_site, &out) {
+                        last_delivered = Some(ts);
+                    }
                 }
                 DataCmd::RefreshAlerts => {
                     if let Some(a) = &alerts {
@@ -160,7 +179,19 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
 
         // Always drain whatever the live poller has produced this tick, so
         // volumes flow to the UI even when no command ever arrives.
-        drain_live(&mut live, &out);
+        if let Some(ts) = drain_live(&mut live, &out) {
+            last_delivered = Some(ts);
+        }
+
+        // Archive catch-up watchdog: if the archive bucket already has a
+        // newer scan than we've shown, take it — the app is then only as
+        // slow as the fastest upstream. ~2 S3 list req/min, no rate risk.
+        if watchdog_enabled && last_watchdog.elapsed() >= ARCHIVE_CATCHUP_INTERVAL {
+            last_watchdog = std::time::Instant::now();
+            if let Some(ts) = archive_catchup(&source, &current_site, last_delivered, &out) {
+                last_delivered = Some(ts);
+            }
+        }
     }
 }
 
@@ -256,31 +287,86 @@ fn stream_window(
 }
 
 /// Immediately fetch + emit the newest completed scan of `site` for *today*
-/// from the archive bucket, so the UI shows radar within seconds of startup
-/// or a site switch. The live poller only produces a frame every ~4-5 min (a
-/// full NEXRAD scan takes that long), which felt like "not downloading".
-fn instant_refresh(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
+/// from the archive bucket. Returns the delivered scan time (for freshness
+/// tracking). The live poller only produces a frame every ~4-7 min (a full
+/// NEXRAD scan takes that long), which felt like "not downloading".
+fn instant_refresh(
+    source: &S3Source,
+    site: &str,
+    out: &Sender<DataMsg>,
+) -> Option<chrono::DateTime<Utc>> {
     let today = chrono::Utc::now()
         .with_timezone(crate::timefmt::central())
         .date_naive();
     match list_central_day(source, site, today) {
         Ok(vols) => {
-            if let Some(r) = vols.first() {
-                match source.fetch_archive(r) {
-                    Ok(v) => {
-                        let _ = out.send(DataMsg::Volume(v));
-                        let _ = out.send(DataMsg::Status(format!(
-                            "live · {}",
-                            crate::timefmt::fmt_central(&r.volume_start)
-                        )));
-                    }
-                    Err(e) => log::warn!("instant refresh fetch failed: {e:#}"),
+            let r = vols.first()?;
+            match source.fetch_archive(r) {
+                Ok(v) => {
+                    log::info!("live refresh: scan {}", crate::timefmt::fmt_central(&r.volume_start));
+                    let _ = out.send(DataMsg::Volume(v));
+                    let _ = out.send(DataMsg::Status(format!(
+                        "live · {}",
+                        crate::timefmt::fmt_central(&r.volume_start)
+                    )));
+                    Some(r.volume_start)
                 }
-            } else {
-                log::warn!("instant refresh: no scans today for {site}");
+                Err(e) => {
+                    log::warn!("instant refresh fetch failed: {e:#}");
+                    None
+                }
             }
         }
-        Err(e) => log::warn!("instant refresh listing failed: {e:#}"),
+        Err(e) => {
+            log::warn!("instant refresh listing failed: {e:#}");
+            None
+        }
+    }
+}
+
+/// One polite catch-up check: if the archive bucket has a scan *newer* than
+/// what we've already shown, fetch and emit it now. Combined with the live
+/// chunk poller, the app is then only as slow as the FASTEST upstream instead
+/// of whichever one it happened to be listening to. Cost: ~2 S3 list
+/// requests per interval — far below any rate limit (and unrelated to the
+/// tile server's limits).
+fn archive_catchup(
+    source: &S3Source,
+    site: &str,
+    last_delivered: Option<chrono::DateTime<Utc>>,
+    out: &Sender<DataMsg>,
+) -> Option<chrono::DateTime<Utc>> {
+    let today = chrono::Utc::now()
+        .with_timezone(crate::timefmt::central())
+        .date_naive();
+    let vols = match list_central_day(source, site, today) {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("catchup list failed: {e:#}");
+            return None;
+        }
+    };
+    let newest = vols.first()?.volume_start;
+    if Some(newest) <= last_delivered {
+        return None; // we're already current
+    }
+    match source.fetch_archive(vols.first()?) {
+        Ok(v) => {
+            log::info!(
+                "catchup: archive ahead of live feed — scan {}",
+                crate::timefmt::fmt_central(&newest)
+            );
+            let _ = out.send(DataMsg::Volume(v));
+            let _ = out.send(DataMsg::Status(format!(
+                "live · {}",
+                crate::timefmt::fmt_central(&newest)
+            )));
+            Some(newest)
+        }
+        Err(e) => {
+            log::warn!("catchup fetch failed: {e:#}");
+            None
+        }
     }
 }
 
@@ -355,15 +441,19 @@ fn start_live(
 }
 
 /// Forward any volumes the live poller has produced. Non-blocking.
+/// Returns the newest delivered scan time this tick (for freshness tracking).
 fn drain_live(
     live: &mut Option<(Receiver<radar_core::Volume>, radar_data::RealtimePoller)>,
     out: &Sender<DataMsg>,
-) {
-    let Some((rx, _poller)) = live else { return };
+) -> Option<chrono::DateTime<Utc>> {
+    let Some((rx, _poller)) = live else { return None };
+    let mut newest: Option<chrono::DateTime<Utc>> = None;
     loop {
         match rx.try_recv() {
             Ok(volume) => {
                 let scan = volume.meta.volume_start;
+                log::info!("delivered live scan {}", crate::timefmt::fmt_central(&scan));
+                newest = Some(scan);
                 let _ = out.send(DataMsg::Volume(std::sync::Arc::new(volume)));
                 let _ = out.send(DataMsg::Status(format!(
                     "live scan {}",
@@ -378,5 +468,6 @@ fn drain_live(
             }
         }
     }
+    newest
 }
 

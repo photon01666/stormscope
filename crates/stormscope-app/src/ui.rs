@@ -60,12 +60,101 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         let mut live = app.state.mode == Mode::Live;
         if ui.selectable_value(&mut live, true, "Live").changed() {
             app.state.mode = Mode::Live;
+            let _ = app.tx.send(crate::app::DataCmd::EnterLive);
         }
         let mut arch = app.state.mode == Mode::Archive;
         if ui.selectable_value(&mut arch, true, "Archive").changed() {
             app.state.mode = Mode::Archive;
         }
     });
+
+    // Loop the last hour — loads the newest ~13 scans into the ring and
+    // switches to Archive so the playhead doesn't auto-jump as live frames
+    // keep arriving.
+    ui.add_space(4.0);
+    if ui
+        .button("⟳ Loop last hour")
+        .on_hover_text("Load the newest hour of scans and loop them")
+        .clicked()
+    {
+        app.state.mode = Mode::Archive;
+        let _ = app.tx.send(crate::app::DataCmd::LoadLastHour(
+            app.state.site_id.clone(),
+        ));
+    }
+
+    // Archive date picker — only meaningful in Archive mode.
+    if app.state.mode == Mode::Archive {
+        ui.add_space(6.0);
+        ui.label("Archive day (Central)");
+        ui.horizontal(|ui| {
+            if ui.button("◀").clicked() {
+                app.state.archive_date = app.state.archive_date
+                    .pred_opt()
+                    .unwrap_or(app.state.archive_date);
+            }
+            ui.label(
+                egui::RichText::new(app.state.archive_date.format("%a %b %-d, %Y").to_string())
+                    .strong(),
+            );
+            if ui.button("▶").clicked() {
+                let today = chrono::Utc::now()
+                    .with_timezone(crate::timefmt::central())
+                    .date_naive();
+                if app.state.archive_date < today {
+                    app.state.archive_date = app.state.archive_date
+                        .succ_opt()
+                        .unwrap_or(app.state.archive_date);
+                }
+            }
+        });
+        if ui.button("Load day").clicked() {
+            let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
+                app.state.site_id.clone(),
+                app.state.archive_date,
+            ));
+        }
+        // Window paging: the day is listed newest-first; a window of
+        // RING_CAPACITY scans is loaded at a time. Page earlier/later through
+        // the whole day.
+        if app.state.archive_total > 0 {
+            ui.add_space(4.0);
+            let first = app.state.archive_start + 1;
+            let last = app.state.archive_start + app.state.archive_len;
+            ui.horizontal(|ui| {
+                let at_oldest = app.state.archive_start == 0;
+                if ui
+                    .add_enabled(at_oldest, egui::Button::new("◀ earlier"))
+                    .clicked()
+                {
+                    let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(-1));
+                }
+                if ui
+                    .add_enabled(
+                        last < app.state.archive_total,
+                        egui::Button::new("later ▶"),
+                    )
+                    .clicked()
+                {
+                    let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(1));
+                }
+            });
+            ui.label(
+                egui::RichText::new(format!(
+                    "scans {}–{} of {} (newest first)",
+                    first, last, app.state.archive_total
+                ))
+                .weak()
+                .small(),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new("loads that day's scans oldest→newest; then use Play")
+                    .weak()
+                    .small(),
+            );
+        }
+    }
 
     // Site selector.
     ui.add_space(6.0);

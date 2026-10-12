@@ -131,10 +131,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     app.state.min_dbz.to_bits().hash(&mut h);
                     let sig = h.finish();
 
-                    if app.radar_tex.as_ref().map_or(true, |(_, s)| *s != sig) {
+                    if app.radar_tex.as_ref().map_or(true, |t| t.sig != sig) {
                         // Drag throttle: a full-viewport raster is the app's
-                        // most expensive op, so during a pan keep showing the
-                        // last raster and redo it once things settle.
+                        // most expensive op, so during a pan keep the last
+                        // raster and redo it once things settle. The stale
+                        // raster stays georeferenced by *translating* it with
+                        // the drag offset when painting (below), instead of
+                        // letting it rubber-band against the moving tiles.
                         let settling = !response.dragged()
                             || app.radar_last_raster.elapsed()
                                 >= std::time::Duration::from_millis(150);
@@ -162,19 +165,46 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                 color,
                                 egui::TextureOptions::LINEAR,
                             );
-                            app.radar_tex = Some((tex, sig));
+                            // Record the world origin this raster is anchored
+                            // to, so later pans can translate it correctly.
+                            let (ox0, oy0) = view.origin_px();
+                            app.radar_tex = Some(crate::app::RadarTex {
+                                handle: tex,
+                                sig,
+                                ox: ox0,
+                                oy: oy0,
+                                zoom: view.zoom,
+                            });
                             app.radar_last_raster = std::time::Instant::now();
                             app.radar_pending = None;
                         } else {
                             app.radar_pending = Some(sig);
                         }
                     }
-                    if let Some((tex, _)) = &app.radar_tex {
+                    if let Some(rt) = &app.radar_tex {
                         let uv = egui::Rect::from_min_max(
                             egui::pos2(0.0, 0.0),
                             egui::pos2(1.0, 1.0),
                         );
-                        painter.image(tex.id(), tile_resp.rect, uv, egui::Color32::WHITE);
+                        if rt.sig == sig {
+                            // Current view: draw in place.
+                            painter.image(rt.handle.id(), tile_resp.rect, uv, egui::Color32::WHITE);
+                        } else if (rt.zoom - view.zoom).abs() < 1e-9 {
+                            // Stale-by-pan only (zoom unchanged): keep the
+                            // raster glued to the ground by shifting it by the
+                            // world-origin delta — one image() call, no
+                            // re-raster, so no rubber-banding.
+                            let (ox_now, oy_now) = view.origin_px();
+                            let dx = (rt.ox - ox_now) as f32;
+                            let dy = (rt.oy - oy_now) as f32;
+                            let moved = egui::Rect::from_min_size(
+                                egui::pos2(tile_resp.rect.min.x + dx, tile_resp.rect.min.y + dy),
+                                tile_resp.rect.size(),
+                            );
+                            painter.image(rt.handle.id(), moved, uv, egui::Color32::WHITE);
+                        }
+                        // Zoom changed under a deferred raster: skip the one
+                        // stale frame (translation would be scale-wrong).
                     }
                 }
             }

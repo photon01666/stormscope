@@ -9,4 +9,4 @@ pub mod sites_gen;
 
 pub use alerts::AlertSource;
 pub use cache::DiskCache;
-pub use s3::{ArchiveVolumeRef, S3Source};
+pub use s3::{ArchiveVolumeRef, RealtimePoller, S3Source};

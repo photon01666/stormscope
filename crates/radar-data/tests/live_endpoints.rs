@@ -166,7 +166,7 @@ fn realtime_poller_emits_a_volume() {
     // Surface the poller's diagnostics: RUST_LOG=radar_data=debug cargo test ...
     let _ = env_logger::builder().is_test(true).parse_default_env().try_init();
     let src = scratch_source();
-    let rx = src.start_realtime("KTLX").expect("poller thread");
+    let (rx, _poller) = src.start_realtime("KTLX").expect("poller thread");
     let volume = rx
         .recv_timeout(Duration::from_secs(15 * 60))
         .expect("one assembled volume within 15 minutes");

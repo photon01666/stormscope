@@ -7,13 +7,55 @@
 //! here, never on the UI thread.
 
 use crate::app::{DataCmd, DataMsg};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use radar_data::{AlertSource, DiskCache, S3Source};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 /// How far back an archive request reaches when listing a day's volumes.
 const ARCHIVE_MAX_VOLUMES: usize = 24;
+
+/// Inclusive-exclusive UTC instant window of a Central calendar day.
+fn central_day_window(date: NaiveDate) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
+    use chrono::TimeZone;
+    let start = Utc
+        .from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+        .with_timezone(crate::timefmt::central())
+        .with_timezone(&Utc);
+    (start, start + chrono::Duration::days(1))
+}
+
+/// List a site's volumes for a *Central* calendar day, newest-first.
+///
+/// NOAA's S3 archive is keyed by UTC dates, but the user's "day" is Central:
+/// the Central day D spans UTC [D 05:00, D+1 05:00) in summer (CDT), so the
+/// day can touch two UTC date prefixes. Querying only the same-numbered UTC
+/// day is why "the newest of Oct 11" ended at 6:55 PM CDT.
+fn list_central_day(
+    source: &S3Source,
+    site: &str,
+    date: NaiveDate,
+) -> anyhow::Result<Vec<radar_data::ArchiveVolumeRef>> {
+    let (start, end) = central_day_window(date);
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<radar_data::ArchiveVolumeRef> = Vec::new();
+    for utc_date in [start.date_naive(), (end - chrono::Duration::seconds(1)).date_naive()] {
+        for r in source.list_archive(site, utc_date)? {
+            if r.volume_start >= start && r.volume_start < end && seen.insert(r.key.clone()) {
+                out.push(r);
+            }
+        }
+    }
+    // Newest-first, matching the previous contract.
+    out.sort_by(|a, b| b.volume_start.cmp(&a.volume_start));
+    Ok(out)
+}
+
+/// One listed archive day plus where the loaded window starts in it.
+struct ArchiveDay {
+    vols: Vec<radar_data::ArchiveVolumeRef>,
+    window_start: usize,
+}
 
 /// Entry point for the background "data" thread.
 pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
@@ -29,10 +71,29 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
 
     // Live poller for the currently selected site. Replaced on SetSite; the
     // old one exits when its receiver is dropped.
-    let mut live: Option<Receiver<radar_core::Volume>> = None;
+    let mut live: Option<(Receiver<radar_core::Volume>, radar_data::RealtimePoller)> = None;
+    let mut current_site = radar_core::DEFAULT_SITE.to_string();
+    // Listed archive day + loaded window, so ◀/▶ can page through the day
+    // without re-listing S3.
+    let mut archive: Option<ArchiveDay> = None;
 
     let _ = out.send(DataMsg::Status("starting live feed…".into()));
-    start_live(&source, "KTLX", &mut live, &out);
+    start_live(&source, radar_core::DEFAULT_SITE, &mut live, &out);
+    // First frame in seconds, not minutes: the poller warms up in parallel.
+    instant_refresh(&source, radar_core::DEFAULT_SITE, &out);
+
+    // Dev harness: STORMSCOPE_BOOTSTRAP_ARCHIVE=YYYY-MM-DD[=SITE] pre-loads
+    // an archive day at startup so the archive path can be exercised (and
+    // demoed) without driving the GUI.
+    if let Ok(spec) = std::env::var("STORMSCOPE_BOOTSTRAP_ARCHIVE") {
+        let mut parts = spec.split('=');
+        let date = parts.next().and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+        let site = parts.next().unwrap_or(radar_core::DEFAULT_SITE).to_string();
+        if let Some(date) = date {
+            let _ = out.send(DataMsg::Status(format!("bootstrap: loading {site} {date}…")));
+            archive = open_archive_day(&source, &site, date, &mut current_site, &out);
+        }
+    }
 
     // Drain on a timer, not just on commands: `recv()` would block forever
     // waiting for a UI command that never comes, leaving the poller's
@@ -43,11 +104,38 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             Ok(cmd) => match cmd {
                 DataCmd::SetSite(site) => {
                     let _ = out.send(DataMsg::Status(format!("switching to {site}…")));
+                    current_site = site.clone();
                     start_live(&source, &site, &mut live, &out);
+                    // Radar for the new site within seconds; the poller's
+                    // first complete scan would otherwise take ~4-5 min.
+                    instant_refresh(&source, &site, &out);
                 }
-                DataCmd::LoadArchiveDate(date) => {
-                    let _ = out.send(DataMsg::Status(format!("loading archive {date}…")));
-                    load_archive(&source, "KTLX", date, &out);
+                DataCmd::LoadArchiveDate(site, date) => {
+                    let _ = out.send(DataMsg::Status(format!("loading {site} archive {date}…")));
+                    archive = open_archive_day(&source, &site, date, &mut current_site, &out);
+                }
+                DataCmd::LoadLastHour(site) => {
+                    current_site = site.clone();
+                    archive = None;
+                    let _ = out.send(DataMsg::ArchiveInfo { total: 0, start: 0, len: 0 });
+                    load_last_hour(&source, &site, &out);
+                }
+                DataCmd::ArchiveWindowShift(delta) => {
+                    if let Some(day) = archive.as_mut() {
+                        shift_archive_window(&source, day, delta, &out);
+                    }
+                }
+                DataCmd::EnterLive => {
+                    // Back to live: drop the archive listing, clear the ring,
+                    // and show the newest scan immediately. The live poller
+                    // keeps future scans coming.
+                    archive = None;
+                    let _ = out.send(DataMsg::ClearFrames);
+                    let _ = out.send(DataMsg::Status("returning to live…".into()));
+                    if live.is_none() {
+                        start_live(&source, &current_site, &mut live, &out);
+                    }
+                    instant_refresh(&source, &current_site, &out);
                 }
                 DataCmd::RefreshAlerts => {
                     if let Some(a) = &alerts {
@@ -76,28 +164,202 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     }
 }
 
+/// List a Central day, remember it for window paging, and stream the newest
+/// window into the UI ring.
+fn open_archive_day(
+    source: &S3Source,
+    site: &str,
+    date: NaiveDate,
+    current_site: &mut String,
+    out: &Sender<DataMsg>,
+) -> Option<ArchiveDay> {
+    *current_site = site.to_string();
+    let vols = match list_central_day(source, site, date) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = out.send(DataMsg::Error(format!("archive {site} {date}: {e:#}")));
+            return None;
+        }
+    };
+    if vols.is_empty() {
+        let _ = out.send(DataMsg::Status(format!("no scans for {site} on {date}")));
+        return None;
+    }
+    let total = vols.len();
+    let window_len = ARCHIVE_MAX_VOLUMES.min(total);
+    // vols is newest-first; the newest window is the head.
+    let mut day = ArchiveDay { vols, window_start: 0 };
+    stream_window(source, site, date, &day, window_len, out);
+    let _ = out.send(DataMsg::ArchiveInfo { total, start: 0, len: window_len });
+    Some(day)
+}
+
+/// Page the archive window earlier (delta<0) or later (delta>0) by one
+/// window, clear the ring, and stream the new window.
+fn shift_archive_window(
+    source: &S3Source,
+    day: &mut ArchiveDay,
+    delta: i32,
+    out: &Sender<DataMsg>,
+) {
+    let total = day.vols.len();
+    if total == 0 {
+        return;
+    }
+    let window_len = ARCHIVE_MAX_VOLUMES.min(total);
+    let max_start = total - window_len;
+    let new_start = (day.window_start as i32 + delta * window_len as i32).clamp(0, max_start as i32) as usize;
+    if new_start == day.window_start {
+        let _ = out.send(DataMsg::Status(
+            "already at the end of that day".into(),
+        ));
+        return;
+    }
+    day.window_start = new_start;
+    let site = day.vols[0].site.clone();
+    let date = day.vols[0].date;
+    let _ = out.send(DataMsg::ClearFrames);
+    stream_window(source, &site, date, day, window_len, out);
+    let _ = out.send(DataMsg::ArchiveInfo { total, start: new_start, len: window_len });
+}
+
+/// Fetch+emit one window's volumes oldest→newest into the UI ring.
+fn stream_window(
+    source: &S3Source,
+    site: &str,
+    date: NaiveDate,
+    day: &ArchiveDay,
+    window_len: usize,
+    out: &Sender<DataMsg>,
+) {
+    // vols newest-first: the window slice [start..start+len] played in
+    // reverse gives oldest→newest forward playback.
+    let slice = &day.vols[day.window_start..day.window_start + window_len];
+    let _ = out.send(DataMsg::Status(format!(
+        "loading {site} {} scans {}–{}…",
+        date.format("%b %-d"),
+        day.window_start + 1,
+        day.window_start + window_len
+    )));
+    for r in slice.iter().rev() {
+        match source.fetch_archive(r) {
+            Ok(volume) => {
+                let _ = out.send(DataMsg::Volume(volume));
+            }
+            Err(e) => {
+                log::warn!("archive fetch {} failed: {e:#}", r.file_name());
+                let _ = out.send(DataMsg::Error(format!("{}: {e:#}", r.file_name())));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+}
+
+/// Immediately fetch + emit the newest completed scan of `site` for *today*
+/// from the archive bucket, so the UI shows radar within seconds of startup
+/// or a site switch. The live poller only produces a frame every ~4-5 min (a
+/// full NEXRAD scan takes that long), which felt like "not downloading".
+fn instant_refresh(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
+    let today = chrono::Utc::now()
+        .with_timezone(crate::timefmt::central())
+        .date_naive();
+    match list_central_day(source, site, today) {
+        Ok(vols) => {
+            if let Some(r) = vols.first() {
+                match source.fetch_archive(r) {
+                    Ok(v) => {
+                        let _ = out.send(DataMsg::Volume(v));
+                        let _ = out.send(DataMsg::Status(format!(
+                            "live · {}",
+                            crate::timefmt::fmt_central(&r.volume_start)
+                        )));
+                    }
+                    Err(e) => log::warn!("instant refresh fetch failed: {e:#}"),
+                }
+            } else {
+                log::warn!("instant refresh: no scans today for {site}");
+            }
+        }
+        Err(e) => log::warn!("instant refresh listing failed: {e:#}"),
+    }
+}
+
+/// Load the newest ~1 hour of scans (`LAST_HOUR_SCANS`, ~13 at NEXRAD's
+/// ~4.5-min cadence) into the ring, oldest→newest, for immediate looping.
+/// Clears the ring first so playback covers exactly the recent hour.
+fn load_last_hour(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
+    const LAST_HOUR_SCANS: usize = 13;
+    let today = chrono::Utc::now()
+        .with_timezone(crate::timefmt::central())
+        .date_naive();
+    let mut vols = list_central_day(source, site, today).unwrap_or_default();
+    // Early morning Central: today has few scans, so top up from yesterday's
+    // newest so "last hour" always fills.
+    if vols.len() < LAST_HOUR_SCANS {
+        if let Some(yday) = today.pred_opt() {
+            let y = list_central_day(source, site, yday).unwrap_or_default();
+            for r in y {
+                if vols.len() >= LAST_HOUR_SCANS {
+                    break;
+                }
+                vols.push(r);
+            }
+        }
+    }
+    vols.truncate(LAST_HOUR_SCANS);
+    if vols.is_empty() {
+        let _ = out.send(DataMsg::Status(format!("no recent scans for {site}")));
+        return;
+    }
+    let _ = out.send(DataMsg::ClearFrames);
+    let _ = out.send(DataMsg::Status(format!(
+        "loading last hour ({})…",
+        vols.len()
+    )));
+    // vols is newest-first; reverse for forward playback.
+    for r in vols.iter().rev() {
+        match source.fetch_archive(r) {
+            Ok(volume) => {
+                let _ = out.send(DataMsg::Volume(volume));
+            }
+            Err(e) => {
+                log::warn!("last-hour fetch {} failed: {e:#}", r.file_name());
+                let _ = out.send(DataMsg::Error(format!("{}: {e:#}", r.file_name())));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+    log::info!("last-hour loop loaded for {site}");
+}
+
 /// Restart the real-time poller for `site`.
 fn start_live(
     source: &S3Source,
     site: &str,
-    live: &mut Option<Receiver<radar_core::Volume>>,
+    live: &mut Option<(Receiver<radar_core::Volume>, radar_data::RealtimePoller)>,
     out: &Sender<DataMsg>,
 ) {
+    // Replacing the Option drops the previous RealtimePoller handle, which
+    // cancels that poller thread — otherwise every site switch would leak a
+    // poller that keeps hitting S3 (that leak is what got us rate-limited).
+    *live = None;
     match source.start_realtime(site) {
-        Ok(rx) => {
-            *live = Some(rx);
+        Ok(pair) => {
+            *live = Some(pair);
             let _ = out.send(DataMsg::Status(format!("live {site}: polling…")));
         }
         Err(e) => {
-            *live = None;
             let _ = out.send(DataMsg::Error(format!("live {site}: {e:#}")));
         }
     }
 }
 
 /// Forward any volumes the live poller has produced. Non-blocking.
-fn drain_live(live: &mut Option<Receiver<radar_core::Volume>>, out: &Sender<DataMsg>) {
-    let Some(rx) = live else { return };
+fn drain_live(
+    live: &mut Option<(Receiver<radar_core::Volume>, radar_data::RealtimePoller)>,
+    out: &Sender<DataMsg>,
+) {
+    let Some((rx, _poller)) = live else { return };
     loop {
         match rx.try_recv() {
             Ok(volume) => {
@@ -118,41 +380,3 @@ fn drain_live(live: &mut Option<Receiver<radar_core::Volume>>, out: &Sender<Data
     }
 }
 
-/// List + fetch a day's archive volumes, emitting each decoded volume.
-/// Runs on this background thread; the UI just sees DataMsg::Volume.
-fn load_archive(source: &S3Source, site: &str, date: NaiveDate, out: &Sender<DataMsg>) {
-    let vols = match source.list_archive(site, date) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = out.send(DataMsg::Error(format!("archive {date}: {e:#}")));
-            return;
-        }
-    };
-    let total = vols.len().min(ARCHIVE_MAX_VOLUMES);
-    if total == 0 {
-        let _ = out.send(DataMsg::Status(format!("no volumes for {site} on {date}")));
-        return;
-    }
-    let _ = out.send(DataMsg::Status(format!("{total} volumes for {date}, fetching…")));
-    // Oldest first so the UI ring buffer plays forward in time.
-    for r in vols.into_iter().take(ARCHIVE_MAX_VOLUMES).rev() {
-        match source.fetch_archive(&r) {
-            Ok(volume) => {
-                let scan = volume.meta.volume_start;
-                let _ = out.send(DataMsg::Volume(volume));
-                let _ = out.send(DataMsg::Status(format!(
-                    "archive {} {}/{}",
-                    crate::timefmt::fmt_central(&scan),
-                    site,
-                    date.format("%m-%d")
-                )));
-            }
-            Err(e) => {
-                log::warn!("archive fetch {} failed: {e:#}", r.file_name());
-                let _ = out.send(DataMsg::Error(format!("{}: {e:#}", r.file_name())));
-            }
-        }
-        // Politeness gap between archive downloads.
-        std::thread::sleep(Duration::from_millis(120));
-    }
-}

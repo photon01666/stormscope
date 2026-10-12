@@ -9,8 +9,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// How many decoded volumes we keep resident for looping. Radars produce a
-/// volume every ~4-6 min, so 12 frames ~= the last hour.
-pub const RING_CAPACITY: usize = 12;
+/// volume every ~4-6 min, so 24 frames ~= the last ~2 hours.
+/// How many decoded volumes we keep resident for looping. 24 scans ≈ 2 hours
+/// of wall-clock radar time. The user's machine has 62 GB RAM and a decoded
+/// volume is ~150 MB, so this lands around 3-4 GB — comfortable.
+pub const RING_CAPACITY: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -34,6 +37,8 @@ pub struct Frame {
 
 pub struct AppState {
     pub mode: Mode,
+    /// Selected archive day (Central-date; the ◀/▶ controls in Archive mode).
+    pub archive_date: chrono::NaiveDate,
     pub loop_state: LoopState,
     pub fps: f32,
 
@@ -61,6 +66,11 @@ pub struct AppState {
 
     // Status surfaced in the status bar (filled by the coordinator).
     pub status_text: String,
+    /// Archive window position (from `DataMsg::ArchiveInfo`): `total` scans in
+    /// the day, `[archive_start, archive_start+archive_len)` loaded.
+    pub archive_total: usize,
+    pub archive_start: usize,
+    pub archive_len: usize,
 
     /// Playhead advance accumulator for LoopState::Playing.
     _acc: f32,
@@ -68,9 +78,13 @@ pub struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        let site = radar_core::sites::site("KTLX").expect("KTLX in catalog");
+        let site = radar_core::sites::site(radar_core::DEFAULT_SITE)
+            .unwrap_or_else(|| radar_core::sites::SITES.first().expect("site catalog"));
         Self {
             mode: Mode::Live,
+            archive_date: chrono::Utc::now()
+                .with_timezone(crate::timefmt::central())
+                .date_naive(),
             loop_state: LoopState::Paused,
             fps: 8.0,
             site_id: site.id.to_string(),
@@ -90,6 +104,9 @@ impl Default for AppState {
             alerts: Vec::new(),
             show_alerts: true,
             status_text: "starting…".to_string(),
+            archive_total: 0,
+            archive_start: 0,
+            archive_len: 0,
             _acc: 0.0,
         }
     }
@@ -149,7 +166,7 @@ impl AppState {
             return;
         }
         self._acc += dt.as_secs_f32();
-        let frame_time = 1.0 / self.fps.max(1.0);
+        let frame_time = 1.0 / self.fps.max(0.1);
         while self._acc >= frame_time {
             self._acc -= frame_time;
             if self.playhead + 1 < self.ring.len() {

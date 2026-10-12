@@ -32,6 +32,28 @@ pub const REALTIME_BUCKET: &str = "unidata-nexrad-level2-chunks";
 
 /// Poll interval for the live chunk bucket. Chunks land every ~4-12 s.
 const REALTIME_POLL: Duration = Duration::from_secs(5);
+
+/// Handle to a running realtime poller. Dropping it (or calling
+/// [`RealtimePoller::stop`]) cancels the poller thread at its next loop
+/// iteration — deterministic teardown on site switches, instead of waiting
+/// for the old poller to notice a dropped receiver minutes later (which
+/// piled up poller threads and got us rate-limited by S3).
+#[must_use = "dropping the handle cancels the poller"]
+pub struct RealtimePoller {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RealtimePoller {
+    pub fn stop(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Drop for RealtimePoller {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
 /// Give up on a volume if no new chunk shows up for this long (site down /
 /// gap in coverage); advance to the next volume index.
 const REALTIME_STALL_TIMEOUT: Duration = Duration::from_secs(180);
@@ -128,16 +150,45 @@ impl S3Source {
         if site.len() != 4 {
             return Err(anyhow!("site id must be 4 characters, got {site:?}"));
         }
-        let identifiers = self
-            .block_on_timeout(LIST_TIMEOUT, nexrad_data::aws::archive::list_files(&site, &date))
-            .with_context(|| format!("listing {ARCHIVE_BUCKET} for {site} on {date}"))?
-            .with_context(|| format!("listing {ARCHIVE_BUCKET} for {site} on {date}"))?;
+        // S3 listings are rate-limited under load; a couple of quick retries
+        // beat failing the whole archive request.
+        let identifiers = {
+            let mut last_err = None;
+            let mut out = None;
+            for attempt in 0..3 {
+                match self
+                    .block_on_timeout(LIST_TIMEOUT, nexrad_data::aws::archive::list_files(&site, &date))
+                {
+                    Ok(Ok(ids)) => {
+                        out = Some(ids);
+                        break;
+                    }
+                    Ok(Err(e)) => last_err = Some(anyhow!("S3 list error: {e}")),
+                    Err(e) => last_err = Some(anyhow!("S3 list failed: {e:#}")),
+                }
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                }
+            }
+            out.with_context(|| {
+                format!(
+                    "listing {ARCHIVE_BUCKET} for {site} on {date}: {}",
+                    last_err.map(|e| format!("{e:#}")).unwrap_or_default()
+                )
+            })?
+        };
 
         let mut refs: Vec<ArchiveVolumeRef> = identifiers
             .into_iter()
             .filter_map(|id| {
                 let name = id.name().to_string();
                 if name.is_empty() {
+                    return None;
+                }
+                // `..._V06_MDM` keys are MesoData Manager sidecar products,
+                // NOT Archive II volumes — decoding them fails with
+                // "truncated record". Only plain `_V06` volumes are usable.
+                if name.ends_with("_MDM") || !name.contains("_V06") {
                     return None;
                 }
                 // The identifier carries the volume start time when the file
@@ -201,23 +252,25 @@ impl S3Source {
     /// channel is bounded (a few volumes) so a slow consumer applies
     /// backpressure instead of unbounded buffering; the background thread
     /// exits when the receiver is dropped.
-    pub fn start_realtime(&self, site: &str) -> Result<Receiver<radar_core::Volume>> {
+    pub fn start_realtime(&self, site: &str) -> Result<(Receiver<radar_core::Volume>, RealtimePoller)> {
         let site = site.trim().to_ascii_uppercase();
         if site.len() != 4 {
             return Err(anyhow!("site id must be 4 characters, got {site:?}"));
         }
         let (tx, rx) = std::sync::mpsc::sync_channel(REALTIME_CHANNEL_DEPTH);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         // A dedicated runtime per poller thread keeps `nexrad-data`'s async
         // calls off the UI thread entirely.
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("building tokio runtime for realtime poller")?;
+        let cancel_in_thread = std::sync::Arc::clone(&cancel);
         std::thread::Builder::new()
             .name(format!("nexrad-live-{site}"))
-            .spawn(move || realtime_poll_loop(&rt, &site, tx))
+            .spawn(move || realtime_poll_loop(&rt, &site, tx, &cancel_in_thread))
             .context("spawning realtime poller thread")?;
-        Ok(rx)
+        Ok((rx, RealtimePoller { cancel }))
     }
 }
 
@@ -245,8 +298,11 @@ fn realtime_poll_loop(
     rt: &tokio::runtime::Runtime,
     site: &str,
     tx: std::sync::mpsc::SyncSender<radar_core::Volume>,
+    cancel: &std::sync::atomic::AtomicBool,
 ) {
     use nexrad_data::aws::realtime::{download_chunk, get_latest_volume, list_chunks_in_volume};
+    use std::sync::atomic::Ordering;
+    let cancelled = || cancel.load(Ordering::Relaxed);
 
     // Tracks continuous hard network/empty-site failures for the give-up bound.
     fn failing_too_long(failing_since: &mut Option<Instant>) -> bool {
@@ -257,6 +313,10 @@ fn realtime_poll_loop(
 
     // Phase 1: binary-search the newest volume with data.
     let mut volume = loop {
+        if cancelled() {
+            log::debug!("realtime {site}: cancelled");
+            return;
+        }
         match block_on_timed(rt, LIST_TIMEOUT, get_latest_volume(site)) {
             None => {
                 log::warn!("realtime {site}: get_latest_volume stalled >{}s", LIST_TIMEOUT.as_secs());
@@ -294,6 +354,10 @@ fn realtime_poll_loop(
 
     // Phase 2: follow the chunk stream.
     loop {
+        if cancelled() {
+            log::debug!("realtime {site}: cancelled");
+            return;
+        }
         let mut assembled: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
         let mut epoch: Option<NaiveDateTime> = None;
         let mut start_seq: Option<usize> = None;
@@ -301,6 +365,10 @@ fn realtime_poll_loop(
         let mut last_progress = Instant::now();
 
         loop {
+            if cancelled() {
+                log::debug!("realtime {site}: cancelled");
+                return;
+            }
             let chunks = match block_on_timed(rt, LIST_TIMEOUT, list_chunks_in_volume(site, volume, 200))
             {
                 None => {

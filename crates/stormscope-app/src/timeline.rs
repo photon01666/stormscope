@@ -20,8 +20,17 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         }
 
         ui.separator();
-        ui.label("FPS");
-        ui.add(egui::Slider::new(&mut app.state.fps, 2.0..=15.0).fixed_decimals(0));
+        ui.label("Loop speed");
+        ui.add(
+            egui::Slider::new(&mut app.state.fps, 0.25..=30.0)
+                .logarithmic(true)
+                .fixed_decimals(2),
+        );
+        ui.label(
+            egui::RichText::new(crate::timeline::frame_time_label(app.state.fps))
+                .weak()
+                .small(),
+        );
 
         ui.separator();
         if let Some(f) = app.state.current() {

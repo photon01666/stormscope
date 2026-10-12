@@ -12,12 +12,24 @@ pub enum DataMsg {
     Alerts(Vec<radar_core::warnings::Warning>),
     Status(String),
     Error(String),
+    /// Drop every ring frame (mode switch / archive window change).
+    ClearFrames,
+    /// Archive window position: `total` scans in the day, `[start, start+len)`
+    /// currently loaded (indices into newest-first order).
+    ArchiveInfo { total: usize, start: usize, len: usize },
 }
 
 /// Commands UI -> background data threads.
 pub enum DataCmd {
     SetSite(String),
-    LoadArchiveDate(chrono::NaiveDate),
+    LoadArchiveDate(String, chrono::NaiveDate),
+    /// Load the newest ~1 hour of scans into the ring for immediate looping.
+    LoadLastHour(String),
+    /// Page the loaded archive day earlier (-1) or later (+1).
+    ArchiveWindowShift(i32),
+    /// Leave archive mode: clear the ring and refresh with the newest
+    /// available scan immediately.
+    EnterLive,
     RefreshAlerts,
     Shutdown,
 }
@@ -37,13 +49,25 @@ pub struct StormApp {
     /// Cached radar overlay texture for the current (frame, moment, tilt,
     /// view, opacity) combination. Re-rasterized only when the signature
     /// changes — never every frame.
-    pub radar_tex: Option<(egui::TextureHandle, u64)>,
+    pub radar_tex: Option<RadarTex>,
     /// Last time the radar overlay was rasterized — throttles re-rasters
     /// during drags so panning stays smooth (the full-viewport splat is the
     /// app's most expensive operation).
     pub radar_last_raster: std::time::Instant,
     /// Signature awaiting a re-raster once the drag throttle expires.
     pub radar_pending: Option<u64>,
+}
+
+/// One cached radar overlay raster plus the view it was produced for, so a
+/// drag can keep it georeferenced by translation instead of rubber-banding.
+pub struct RadarTex {
+    pub handle: egui::TextureHandle,
+    pub sig: u64,
+    /// Viewport origin (Mercator px) at raster time.
+    pub ox: f64,
+    pub oy: f64,
+    /// Zoom at raster time (translation is only valid at equal zoom).
+    pub zoom: f64,
 }
 
 /// Mutable shared state the coordinator thread writes and the UI reads.
@@ -131,6 +155,17 @@ impl StormApp {
                 DataMsg::Error(e) => {
                     log::warn!("data: {e}");
                     self.state.status_text = format!("error: {e}");
+                }
+                DataMsg::ClearFrames => {
+                    self.state.ring.clear();
+                    self.state.playhead = 0;
+                    self.radar_tex = None;
+                    self.radar_pending = None;
+                }
+                DataMsg::ArchiveInfo { total, start, len } => {
+                    self.state.archive_total = total;
+                    self.state.archive_start = start;
+                    self.state.archive_len = len;
                 }
             }
         }

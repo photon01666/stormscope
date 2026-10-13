@@ -266,9 +266,10 @@ impl S3Source {
             .build()
             .context("building tokio runtime for realtime poller")?;
         let cancel_in_thread = std::sync::Arc::clone(&cancel);
+        let cache = self.cache.clone();
         std::thread::Builder::new()
             .name(format!("nexrad-live-{site}"))
-            .spawn(move || realtime_poll_loop(&rt, &site, tx, &cancel_in_thread))
+            .spawn(move || realtime_poll_loop(&rt, &site, cache, tx, &cancel_in_thread))
             .context("spawning realtime poller thread")?;
         Ok((rx, RealtimePoller { cancel }))
     }
@@ -297,6 +298,7 @@ fn block_on_timed<F: std::future::Future>(
 fn realtime_poll_loop(
     rt: &tokio::runtime::Runtime,
     site: &str,
+    cache: DiskCache,
     tx: std::sync::mpsc::SyncSender<radar_core::Volume>,
     cancel: &std::sync::atomic::AtomicBool,
 ) {
@@ -491,6 +493,11 @@ fn realtime_poll_loop(
                     for data in assembled.values() {
                         bytes.extend_from_slice(data);
                     }
+                    // Persist the assembled volume under the same cache key the
+                    // archive path uses, so every scan the live feed delivers is
+                    // saved too — and the freshness/catch-up fetches of this
+                    // same scan become cache hits instead of re-downloads.
+                    persist_volume(&cache, site, epoch, &bytes);
                     // Guard the decode: a panic in the decoder must not kill
                     // the poller thread silently.
                     let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -533,6 +540,62 @@ fn realtime_poll_loop(
         }
 
         volume = volume.next();
+    }
+}
+
+/// Store a freshly assembled live volume in the disk cache under the same
+/// `l2/<site>/<name>.gz` key the archive path uses (`<SITE>YYYYMMDD_HHMMSS_V06`,
+/// derived from the volume's start time `epoch`), so live- and archive-received
+/// scans share one cache and the catch-up fetches don't re-download them.
+///
+/// The bytes are normalized to the exact representation the archive path
+/// stores — a *single* gzip member wrapping the raw Archive II stream — because
+/// the live concatenation may arrive raw (`AR2V…`) or as a possibly
+/// multi-member gzip stream, and the archive decoder reads only one member.
+/// Anything that isn't Archive II is left alone rather than poisoning the key.
+/// Best-effort: failures are logged and the live pipeline continues.
+fn persist_volume(cache: &DiskCache, site: &str, epoch: Option<chrono::NaiveDateTime>, bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    let Some(prefix) = epoch else {
+        log::debug!("realtime {site}: no volume epoch; skipping cache write");
+        return;
+    };
+    let raw: std::borrow::Cow<[u8]> = if bytes.starts_with(b"AR2V") {
+        std::borrow::Cow::Borrowed(bytes)
+    } else if is_gzip(bytes) {
+        let mut out = Vec::new();
+        match flate2::read::MultiGzDecoder::new(bytes).read_to_end(&mut out) {
+            Ok(_) => std::borrow::Cow::Owned(out),
+            Err(e) => {
+                log::warn!("realtime {site}: gunzip live volume for cache failed: {e}");
+                return;
+            }
+        }
+    } else {
+        log::debug!("realtime {site}: volume not in Archive II form; not caching");
+        return;
+    };
+    if !raw.starts_with(b"AR2V") {
+        log::debug!("realtime {site}: live volume missing AR2V header; not caching");
+        return;
+    }
+    let gz = match gzip(&raw) {
+        Ok(g) => g,
+        Err(e) => {
+            log::warn!("realtime {site}: gzip volume for cache failed: {e:#}");
+            return;
+        }
+    };
+    let name = format!("{site}{}_V06", prefix.format("%Y%m%d_%H%M%S"));
+    let rel = format!("l2/{site}/{name}.gz");
+    match cache.write(&rel, &gz) {
+        Ok(_) => {
+            log::debug!("realtime {site}: cached volume {name} ({} bytes gz)", gz.len());
+            let _ = cache.sweep(); // opportunistic size cap
+        }
+        Err(e) => log::warn!("realtime {site}: caching volume {name} failed: {e:#}"),
     }
 }
 
@@ -608,5 +671,38 @@ mod tests {
         };
         assert_eq!(r.file_name(), "KTLX20261011_000356_V06");
         assert_eq!(r.cache_rel(), "l2/KTLX/KTLX20261011_000356_V06.gz");
+    }
+
+    #[test]
+    fn persist_volume_normalizes_to_single_gzip_member() {
+        let root = std::env::temp_dir().join(format!("stormscope-persist-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = DiskCache::new(root.clone(), 1 << 20);
+        let prefix = NaiveDate::from_ymd_opt(2026, 10, 13)
+            .unwrap()
+            .and_hms_opt(13, 15, 0)
+            .unwrap();
+        // Not a real volume — persist_volume only inspects the "AR2V" header.
+        let raw = b"AR2V0001synthetic-volume-body".repeat(20);
+
+        // Raw Archive II bytes are stored as a single gzip member.
+        persist_volume(&cache, "KTWX", Some(prefix), &raw);
+        let gz = cache.read("l2/KTWX/KTWX20261013_131500_V06.gz").unwrap().unwrap();
+        assert!(is_gzip(&gz));
+        assert_eq!(gunzip(&gz).unwrap(), raw);
+
+        // Multi-member gzip input is normalized to one member too (the archive
+        // decoder reads only the first member, so this is the correctness bit).
+        let mut multi = gzip(&raw[..11]).unwrap();
+        multi.extend_from_slice(&gzip(&raw[11..]).unwrap());
+        persist_volume(&cache, "KTLX", Some(prefix), &multi);
+        let gz2 = cache.read("l2/KTLX/KTLX20261013_131500_V06.gz").unwrap().unwrap();
+        assert_eq!(gunzip(&gz2).unwrap(), raw);
+
+        // Non-Archive II bytes are never cached.
+        persist_volume(&cache, "KOAX", Some(prefix), b"not-a-volume");
+        assert!(cache.read("l2/KOAX/KOAX20261013_131500_V06.gz").unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

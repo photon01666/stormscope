@@ -19,6 +19,8 @@ pub enum DataMsg {
     /// Archive window position: `total` scans in the day, `[start, start+len)`
     /// currently loaded (indices into newest-first order).
     ArchiveInfo { total: usize, start: usize, len: usize },
+    /// Total bytes currently held in the on-disk cache (radar + tiles).
+    CacheInfo { bytes: u64 },
 }
 
 /// Commands UI -> background data threads.
@@ -35,6 +37,8 @@ pub enum DataCmd {
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
     LoadOutlook(u8),
+    /// Delete every downloaded radar volume and cached map tile from disk.
+    ClearCache,
     Shutdown,
 }
 
@@ -183,6 +187,7 @@ impl StormApp {
                     self.state.archive_start = start;
                     self.state.archive_len = len;
                 }
+                DataMsg::CacheInfo { bytes } => self.state.cache_bytes = Some(bytes),
             }
         }
     }

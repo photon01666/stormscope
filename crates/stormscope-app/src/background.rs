@@ -34,6 +34,22 @@ fn already_elapsed(d: Duration) -> std::time::Instant {
         .unwrap_or_else(std::time::Instant::now)
 }
 
+/// Human-readable byte size (B/KiB/MiB/GiB) for status text.
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
+
 /// Inclusive-exclusive UTC instant window of a Central calendar day.
 fn central_day_window(date: NaiveDate) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
     use chrono::TimeZone;
@@ -88,6 +104,10 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     };
     let alerts = AlertSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
+    // Report the current on-disk cache size so the Settings menu can show it.
+    let _ = out.send(DataMsg::CacheInfo {
+        bytes: source.cache().total_bytes().unwrap_or(0),
+    });
     // Which SPC outlook day the UI is asking for + when we last refreshed it
     // (outlooks update only a few times per day).
     let mut outlook_day: u8 = 1;
@@ -194,6 +214,27 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                 DataCmd::LoadOutlook(day) => {
                     outlook_day = day;
                     refresh_outlook(&outlooks, day, &out);
+                }
+                DataCmd::ClearCache => {
+                    let _ = out.send(DataMsg::Status("clearing cache…".into()));
+                    // Deletes radar volumes + the shared tile cache (same root).
+                    // The in-memory ring/frames are untouched, so the map keeps
+                    // rendering; new fetches just re-download what they need.
+                    let freed = match source.cache().clear() {
+                        Ok(n) => n,
+                        Err(e) => {
+                            let _ = out.send(DataMsg::Error(format!("clear cache: {e}")));
+                            0
+                        }
+                    };
+                    log::info!("cache cleared: {} freed", human_bytes(freed));
+                    let _ = out.send(DataMsg::Status(format!(
+                        "cache cleared ({})",
+                        human_bytes(freed)
+                    )));
+                    let _ = out.send(DataMsg::CacheInfo {
+                        bytes: source.cache().total_bytes().unwrap_or(0),
+                    });
                 }
                 DataCmd::Shutdown => break,
             },

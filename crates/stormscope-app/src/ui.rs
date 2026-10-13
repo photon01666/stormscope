@@ -52,7 +52,12 @@ fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
 }
 
 fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
-    ui.heading("Controls");
+    ui.horizontal(|ui| {
+        ui.heading("Controls");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            settings_menu(ui, app);
+        });
+    });
     ui.add_space(6.0);
 
     // Mode toggle.
@@ -373,5 +378,49 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.pending_marker_label.clear();
         }
         app.state.persist_markers();
+    }
+}
+
+/// App-level "Settings" popup: currently cache size + a clear-all button.
+fn settings_menu(ui: &mut egui::Ui, app: &mut StormApp) {
+    ui.menu_button("Settings", |ui| {
+        ui.set_min_width(240.0);
+        ui.label(egui::RichText::new("Disk cache").strong());
+        let size = app
+            .state
+            .cache_bytes
+            .map(human_bytes)
+            .unwrap_or_else(|| "…".into());
+        ui.label(format!("Radar + map tiles: {size}"));
+        ui.label(
+            egui::RichText::new("cap 10 GB — oldest evicted first")
+                .weak()
+                .small(),
+        );
+        ui.add_space(4.0);
+        if ui
+            .button("Clear all cache")
+            .on_hover_text("Delete every downloaded radar volume and cached map tile")
+            .clicked()
+        {
+            let _ = app.tx.send(crate::app::DataCmd::ClearCache);
+            ui.close();
+        }
+    });
+}
+
+/// Human-readable byte size (B/KiB/MiB/GiB) for the Settings menu.
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
     }
 }

@@ -99,6 +99,9 @@ pub struct AppState {
     pub archive_total: usize,
     pub archive_start: usize,
     pub archive_len: usize,
+    /// On-disk cache size in bytes (from `DataMsg::CacheInfo`) — shown in the
+    /// Settings menu. `None` until the coordinator has reported it.
+    pub cache_bytes: Option<u64>,
 
     // User-placed map markers.
     pub markers: Vec<MapMarker>,
@@ -156,6 +159,7 @@ impl Default for AppState {
             archive_total: 0,
             archive_start: 0,
             archive_len: 0,
+            cache_bytes: None,
             markers: load_markers(),
             pending_marker: None,
             pending_marker_label: String::new(),

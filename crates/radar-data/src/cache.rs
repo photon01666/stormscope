@@ -5,9 +5,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Default size cap: ~2 GiB.
-pub const DEFAULT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Default size cap: 10 GiB (radar volumes plus the shared tile cache).
+pub const DEFAULT_MAX_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
+#[derive(Clone)]
 pub struct DiskCache {
     root: PathBuf,
     max_bytes: u64,
@@ -105,6 +106,54 @@ impl DiskCache {
             .sum())
     }
 
+    /// Remove every cached file under the root (radar volumes + the shared
+    /// tile cache) and prune the now-empty subdirectories, leaving the root
+    /// itself in place. Returns the number of bytes freed. Best-effort:
+    /// files that vanish mid-walk (raced with a concurrent write) are ignored.
+    pub fn clear(&self) -> std::io::Result<u64> {
+        let files = self.files_recursive()?;
+        let mut freed: u64 = 0;
+        for (_, size, path) in &files {
+            match std::fs::remove_file(path) {
+                Ok(()) => freed += *size,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        // Deepest-first so parents become empty before we try to remove them
+        // (`remove_dir` only succeeds on an empty directory).
+        let mut dirs = self.dirs_recursive()?;
+        dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+        for d in dirs {
+            let _ = std::fs::remove_dir(&d);
+        }
+        Ok(freed)
+    }
+
+    /// All subdirectories under the root (excluding the root itself),
+    /// unordered.
+    fn dirs_recursive(&self) -> std::io::Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        if !self.root.exists() {
+            return Ok(out);
+        }
+        let mut stack = vec![self.root.clone()];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue, // raced with a removal; skip
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    stack.push(path.clone());
+                    out.push(path);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Remove oldest files (by mtime) until the cache is under `max_bytes`.
     /// Call occasionally; also called after writes when useful.
     pub fn sweep(&self) -> std::io::Result<()> {
@@ -195,6 +244,27 @@ mod tests {
         let p = cache.write("l2/KTLX/x.gz", b"hello").unwrap();
         assert!(p.starts_with(&root));
         assert_eq!(cache.read("l2/KTLX/x.gz").unwrap().unwrap(), b"hello");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn clear_removes_everything_and_reports_freed() {
+        let root = scratch("clear");
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = DiskCache::new(root.clone(), 1 << 20);
+        cache.write("l2/KTLX/a.gz", &[1u8; 100]).unwrap();
+        cache.write("l2/KTWX/b.gz", &[2u8; 50]).unwrap();
+        cache.write("tiles/8/1/2.tile", &[3u8; 25]).unwrap();
+        assert_eq!(cache.total_bytes().unwrap(), 175);
+
+        let freed = cache.clear().unwrap();
+        assert_eq!(freed, 175);
+        assert_eq!(cache.total_bytes().unwrap(), 0);
+        assert!(cache.read("l2/KTLX/a.gz").unwrap().is_none());
+        // Subdirectories are pruned, but the root stays usable for new writes.
+        assert!(!root.join("l2").exists());
+        cache.write("l2/KTLX/c.gz", b"x").unwrap();
+        assert!(cache.read("l2/KTLX/c.gz").unwrap().is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 

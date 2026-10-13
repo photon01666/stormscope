@@ -246,6 +246,54 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.checkbox(&mut app.state.show_alerts, "Show warnings");
     ui.checkbox(&mut app.state.show_tracks, "Show storm tracks");
 
+    // --- SPC convective outlook overlay ------------------------------------
+    ui.add_space(6.0);
+    let toggled = ui.checkbox(&mut app.state.show_outlook, "Show SPC outlook").changed();
+    if toggled && app.state.show_outlook {
+        // Fetch the selected day fresh when the layer is switched on.
+        let _ = app.tx.send(crate::app::DataCmd::LoadOutlook(app.state.outlook_day));
+    }
+    if app.state.show_outlook {
+        ui.horizontal(|ui| {
+            for d in 1u8..=3 {
+                if ui
+                    .selectable_label(app.state.outlook_day == d, format!("Day {d}"))
+                    .clicked()
+                {
+                    app.state.outlook_day = d;
+                    let _ = app.tx.send(crate::app::DataCmd::LoadOutlook(d));
+                }
+            }
+        });
+        match &app.state.outlook {
+            Some(o) if o.day == app.state.outlook_day => {
+                let issued = o
+                    .issue
+                    .map(|t| crate::timefmt::fmt_central(&t))
+                    .unwrap_or_else(|| "?".into());
+                ui.label(
+                    egui::RichText::new(format!("{} — issued {issued}", o.forecaster))
+                        .weak()
+                        .small(),
+                );
+            }
+            _ => {
+                ui.label(
+                    egui::RichText::new(format!("loading day {}…", app.state.outlook_day))
+                        .weak()
+                        .small(),
+                );
+            }
+        }
+        ui.label("Outlook fill");
+        ui.add(egui::Slider::new(&mut app.state.outlook_opacity, 0.0..=1.0));
+        ui.label(
+            egui::RichText::new("risk fills sit under the radar; outlines on top")
+                .weak()
+                .small(),
+        );
+    }
+
     // --- User-placed map markers ------------------------------------------
     ui.add_space(8.0);
     ui.label("Markers");

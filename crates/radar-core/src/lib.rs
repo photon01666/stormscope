@@ -5,6 +5,7 @@
 //! application shell (`stormscope-app`). Keep it dependency-light and
 //! semantically stable; extend additively.
 
+pub mod outlooks;
 pub mod sites;
 pub mod vcp;
 pub mod warnings;

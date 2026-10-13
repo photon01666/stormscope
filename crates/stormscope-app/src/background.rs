@@ -8,12 +8,31 @@
 
 use crate::app::{DataCmd, DataMsg};
 use chrono::{NaiveDate, Utc};
-use radar_data::{AlertSource, DiskCache, S3Source};
+use radar_data::{AlertSource, DiskCache, OutlookSource, S3Source};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
+/// User-Agent for every NOAA/SPC host we talk to (they require a descriptive
+/// UA; include an app name + a way to reach an operator).
+const USER_AGENT: &str = "stormscope/0.1 (Linux NEXRAD radar viewer)";
+
 /// How far back an archive request reaches when listing a day's volumes.
 const ARCHIVE_MAX_VOLUMES: usize = 24;
+
+/// How often the SPC outlook is re-fetched. SPC issues outlooks only a few
+/// times per day, so 10 minutes is plenty and costs ~6 requests/hour.
+const OUTLOOK_REFRESH: Duration = Duration::from_secs(600);
+/// NWS alerts re-fetch cadence (api.weather.gov suggests <=1 req/s; we use
+/// one every 5 minutes).
+const ALERTS_REFRESH: Duration = Duration::from_secs(300);
+
+/// An `Instant` that has *already* elapsed `d` ago. The monotonic clock can't
+/// go before boot, so fall back to `now()` (fires the tick immediately anyway).
+fn already_elapsed(d: Duration) -> std::time::Instant {
+    std::time::Instant::now()
+        .checked_sub(d)
+        .unwrap_or_else(std::time::Instant::now)
+}
 
 /// Inclusive-exclusive UTC instant window of a Central calendar day.
 fn central_day_window(date: NaiveDate) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
@@ -67,7 +86,15 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             return;
         }
     };
-    let alerts = AlertSource::new("stormscope/0.1 (Linux NEXRAD radar viewer)").ok();
+    let alerts = AlertSource::new(USER_AGENT).ok();
+    let outlooks = OutlookSource::new(USER_AGENT).ok();
+    // Which SPC outlook day the UI is asking for + when we last refreshed it
+    // (outlooks update only a few times per day).
+    let mut outlook_day: u8 = 1;
+    // Start both timers pre-expired so the first loop iteration fetches
+    // alerts + outlook immediately — startup never blocks on the network.
+    let mut last_outlook = already_elapsed(OUTLOOK_REFRESH);
+    let mut last_alerts = already_elapsed(ALERTS_REFRESH);
 
     // Live poller for the currently selected site. Replaced on SetSite; the
     // old one exits when its receiver is dropped.
@@ -88,6 +115,8 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     start_live(&source, radar_core::DEFAULT_SITE, &mut live, &out);
     // First frame in seconds, not minutes: the poller warms up in parallel.
     last_delivered = instant_refresh(&source, radar_core::DEFAULT_SITE, &out);
+    // Alerts + SPC outlook are fetched by the first loop iteration (timers
+    // start pre-expired), so startup never blocks on the network.
 
     // Dev harness: STORMSCOPE_BOOTSTRAP_ARCHIVE=YYYY-MM-DD[=SITE] pre-loads
     // an archive day at startup so the archive path can be exercised (and
@@ -123,6 +152,9 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     if let Some(ts) = instant_refresh(&source, &site, &out) {
                         last_delivered = Some(ts);
                     }
+                    // Alerts are point-filtered, so they move with the site
+                    // (previously evaluated around a hardcoded Oklahoma point).
+                    refresh_alerts(&alerts, &site, &out);
                 }
                 DataCmd::LoadArchiveDate(site, date) => {
                     let _ = out.send(DataMsg::Status(format!("loading {site} archive {date}…")));
@@ -157,19 +189,11 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     }
                 }
                 DataCmd::RefreshAlerts => {
-                    if let Some(a) = &alerts {
-                        match a.active_near(35.3331, -97.2778, 400.0) {
-                            Ok(w) => {
-                                let n = w.len();
-                                let _ = out.send(DataMsg::Alerts(w));
-                                let _ = out.send(DataMsg::Status(format!("{n} active alerts")));
-                            }
-                            Err(e) => {
-                                log::warn!("alerts fetch failed: {e:#}");
-                                let _ = out.send(DataMsg::Error(format!("alerts: {e:#}")));
-                            }
-                        }
-                    }
+                    refresh_alerts(&alerts, &current_site, &out);
+                }
+                DataCmd::LoadOutlook(day) => {
+                    outlook_day = day;
+                    refresh_outlook(&outlooks, day, &out);
                 }
                 DataCmd::Shutdown => break,
             },
@@ -191,6 +215,17 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             if let Some(ts) = archive_catchup(&source, &current_site, last_delivered, &out) {
                 last_delivered = Some(ts);
             }
+        }
+
+        // Timed refreshes (not user-driven): keep alerts + the SPC outlook
+        // current without hammering anything.
+        if last_alerts.elapsed() >= ALERTS_REFRESH {
+            last_alerts = std::time::Instant::now();
+            refresh_alerts(&alerts, &current_site, &out);
+        }
+        if last_outlook.elapsed() >= OUTLOOK_REFRESH {
+            last_outlook = std::time::Instant::now();
+            refresh_outlook(&outlooks, outlook_day, &out);
         }
     }
 }
@@ -469,5 +504,46 @@ fn drain_live(
         }
     }
     newest
+}
+
+/// Re-fetch active NWS alerts around the current site and emit them. Zones
+/// are looked up from the site catalog instead of a hardcoded point (the old
+/// default evaluated alerts around Norman, OK no matter where the user was).
+fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg>) {
+    let Some(a) = alerts else { return };
+    let (lat, lon) = radar_core::sites::site(site)
+        .map(|s| (s.latitude, s.longitude))
+        .unwrap_or((35.3331, -97.2778));
+    match a.active_near(lat, lon, 400.0) {
+        Ok(w) => {
+            let n = w.len();
+            let _ = out.send(DataMsg::Alerts(w));
+            let _ = out.send(DataMsg::Status(format!("{n} active alerts")));
+        }
+        Err(e) => {
+            log::warn!("alerts fetch failed: {e:#}");
+            let _ = out.send(DataMsg::Error(format!("alerts: {e:#}")));
+        }
+    }
+}
+
+/// Re-fetch the SPC categorical outlook for `day` and emit it. CONUS-wide by
+/// nature, so it doesn't need the site; one GET every 10 min.
+fn refresh_outlook(outlooks: &Option<OutlookSource>, day: u8, out: &Sender<DataMsg>) {
+    let Some(src) = outlooks else { return };
+    match src.fetch_day(day) {
+        Ok(o) => {
+            let issued = o
+                .issue
+                .map(|t| crate::timefmt::fmt_central(&t))
+                .unwrap_or_else(|| "?".into());
+            log::info!("outlook day {day}: {} areas, issued {issued}", o.features.len());
+            let _ = out.send(DataMsg::Outlook(o));
+        }
+        Err(e) => {
+            log::warn!("outlook day {day} fetch failed: {e:#}");
+            let _ = out.send(DataMsg::Error(format!("outlook day {day}: {e:#}")));
+        }
+    }
 }
 

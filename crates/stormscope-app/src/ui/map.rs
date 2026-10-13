@@ -141,6 +141,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     draw_range_rings(&painter, origin, &view, app);
     draw_sites(&painter, origin, &view, app);
 
+    // --- Layer 2.5: SPC outlook *fills* ------------------------------------
+    // Under the radar so echoes stay crisp; the outline pass (Layer 3.5)
+    // re-draws the risk boundaries over the echoes.
+    draw_outlooks(&painter, origin, &view, app, true);
+
     // --- Layer 3: radar sweep overlay --------------------------------------
     // Rasterize the current frame's sweep for the selected moment+tilt and
     // paint it as a texture covering the viewport. The texture is cached and
@@ -249,6 +254,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         }
     }
 
+    // --- Layer 3.5: SPC outlook *outlines* over the radar -----------------
+    // Only the risk boundaries, so they stay legible across rain echoes.
+    draw_outlooks(&painter, origin, &view, app, false);
+
     // --- Layer 4: warning polygons ----------------------------------------
     draw_warnings(&painter, origin, &view, app);
 
@@ -262,7 +271,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     draw_markers(&painter, origin, &view, app);
 
     // --- Attribution (required by OSM/Wikimedia tile usage policies) ------
-    draw_attribution(&painter, tile_resp.rect);
+    let show_spc = app.state.show_outlook && app.state.outlook.is_some();
+    draw_attribution(&painter, tile_resp.rect, show_spc);
 
     // --- Scan-mode badge (precip vs clear-air) at top-center ---------------
     draw_mode_badge(ui, &painter, tile_resp.rect, app);
@@ -386,6 +396,116 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
             },
         );
     }
+}
+
+/// SPC convective-outlook overlay (Day 1/2/3 categorical risk areas).
+///
+/// `fills == true` paints translucent fills (called *under* the radar so
+/// echoes stay crisp); `fills == false` paints only the boundary outlines
+/// (called *over* the radar so the risk areas stay legible across rain).
+/// Colors come straight from SPC's GeoJSON, so the overlay matches their maps.
+fn draw_outlooks(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+    fills: bool,
+) {
+    if !app.state.show_outlook {
+        return;
+    }
+    let Some(o) = &app.state.outlook else { return };
+    if o.day != app.state.outlook_day {
+        return; // a newer day is on its way; don't draw a stale one
+    }
+    let fill_alpha = (app.state.outlook_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    for f in o.sorted_features() {
+        let stroke = egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]);
+        for poly in &f.polygons {
+            let rings: Vec<Vec<egui::Pos2>> = poly
+                .iter()
+                .map(|ring| project_ring(ring, view, origin))
+                .collect();
+            if fills {
+                let fill = egui::Color32::from_rgba_unmultiplied(
+                    f.fill[0],
+                    f.fill[1],
+                    f.fill[2],
+                    fill_alpha,
+                );
+                if let Some(mesh) = triangulate(&rings, fill) {
+                    painter.add(egui::Shape::mesh(mesh));
+                }
+            } else {
+                for pts in &rings {
+                    if pts.len() >= 3 {
+                        painter.add(egui::Shape::closed_line(
+                            pts.clone(),
+                            egui::Stroke::new(1.6, stroke),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Project one lon/lat ring into a screen-space ring of `Pos2`s.
+fn project_ring(ring: &[(f64, f64)], view: &MapView, origin: egui::Pos2) -> Vec<egui::Pos2> {
+    ring.iter()
+        .map(|&(lon, lat)| {
+            let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+            egui::pos2(origin.x + vx as f32, origin.y + vy as f32)
+        })
+        .collect()
+}
+
+/// Triangulate a set of rings (`[exterior, hole, ...]`) into an egui `Mesh`
+/// using earcut. Outlook polygons are strongly concave, unlike most warning
+/// polygons, so a fan fill (egui's `convex_polygon`) would spill outside the
+/// shapes — earcut gives exact concave + holed fills.
+fn triangulate(rings: &[Vec<egui::Pos2>], color: egui::Color32) -> Option<egui::Mesh> {
+    if rings.is_empty() || rings[0].len() < 3 {
+        return None;
+    }
+    let mut verts: Vec<f64> = Vec::new();
+    let mut holes: Vec<usize> = Vec::new();
+    let mut all: Vec<egui::Pos2> = Vec::new();
+    for (i, ring) in rings.iter().enumerate() {
+        // GeoJSON rings repeat the first vertex at the end; earcut wants each
+        // ring open (a duplicated point makes a zero-area edge).
+        let mut pts: &[egui::Pos2] = ring.as_slice();
+        if pts.len() >= 2 && pts[0] == pts[pts.len() - 1] {
+            pts = &pts[..pts.len() - 1];
+        }
+        if pts.len() < 3 {
+            continue;
+        }
+        if i > 0 {
+            holes.push(all.len());
+        }
+        for p in pts {
+            verts.push(p.x as f64);
+            verts.push(p.y as f64);
+            all.push(*p);
+        }
+    }
+    if all.len() < 3 {
+        return None;
+    }
+    let indices = earcutr::earcut(&verts, &holes, 2).ok()?;
+    if indices.is_empty() {
+        return None;
+    }
+    let mut mesh = egui::Mesh::default();
+    for p in &all {
+        mesh.colored_vertex(*p, color);
+    }
+    for tri in indices.chunks_exact(3) {
+        mesh.add_triangle(tri[0] as u32, tri[1] as u32, tri[2] as u32);
+    }
+    Some(mesh)
 }
 
 /// NWS warning polygons, colored by event type.
@@ -723,8 +843,12 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
     }
 }
 
-fn draw_attribution(painter: &egui::Painter, rect: egui::Rect) {
-    let text = "© OpenStreetMap contributors";
+fn draw_attribution(painter: &egui::Painter, rect: egui::Rect, spc: bool) {
+    let text = if spc {
+        "© OpenStreetMap contributors · SPC/NWS outlook"
+    } else {
+        "© OpenStreetMap contributors"
+    };
     let font = egui::FontId::proportional(10.0);
     let pos = egui::pos2(rect.right() - 6.0, rect.bottom() - 4.0);
     painter.text(
@@ -786,5 +910,47 @@ mod tests {
         zoom_view(&mut dst, cur, 9.5, anchor);
         assert!((dst.center_lat - cur.center_lat).abs() < 1e-6);
         assert!((dst.center_lon - cur.center_lon).abs() < 1e-6);
+    }
+
+    /// A concave polygon must come back fully triangulated (a fan fill would
+    /// leak outside it — that's the whole reason we use earcut).
+    #[test]
+    fn triangulate_fills_concave_polygon() {
+        let ring = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(10.0, 0.0),
+            egui::pos2(10.0, 10.0),
+            egui::pos2(5.0, 5.0),
+            egui::pos2(0.0, 10.0),
+        ];
+        let mesh = triangulate(&[ring], egui::Color32::RED).expect("mesh");
+        assert_eq!(mesh.vertices.len(), 5);
+        assert!(mesh.indices.len() >= 3, "must produce at least one triangle");
+        assert_eq!(mesh.indices.len() % 3, 0);
+    }
+
+    /// Exterior + hole ring must both be included and result in a valid
+    /// triangulation (>=2 triangles for a square with a square hole).
+    #[test]
+    fn triangulate_handles_holes() {
+        let outer = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(10.0, 0.0),
+            egui::pos2(10.0, 10.0),
+            egui::pos2(0.0, 10.0),
+            egui::pos2(0.0, 0.0), // GeoJSON-style closed ring
+        ];
+        let hole = vec![
+            egui::pos2(3.0, 3.0),
+            egui::pos2(7.0, 3.0),
+            egui::pos2(7.0, 7.0),
+            egui::pos2(3.0, 7.0),
+            egui::pos2(3.0, 3.0),
+        ];
+        let mesh = triangulate(&[outer, hole], egui::Color32::BLUE).expect("mesh");
+        // 4 + 4 points, all referenced.
+        assert_eq!(mesh.vertices.len(), 8);
+        assert!(mesh.indices.len() >= 6, "square hole needs >=2 triangles");
+        assert_eq!(mesh.indices.len() % 3, 0);
     }
 }

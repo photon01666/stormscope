@@ -85,6 +85,13 @@ pub struct AppState {
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
+    // SPC convective outlook overlay (Day 1/2/3 categorical risk areas).
+    pub outlook: Option<radar_core::outlooks::Outlook>,
+    pub show_outlook: bool,
+    pub outlook_day: u8,
+    /// Fill opacity of the outlook polygons (0..=1).
+    pub outlook_opacity: f32,
+
     // Status surfaced in the status bar (filled by the coordinator).
     pub status_text: String,
     /// Archive window position (from `DataMsg::ArchiveInfo`): `total` scans in
@@ -123,8 +130,10 @@ impl Default for AppState {
             site_id: site.id.to_string(),
             moment: Moment::Reflectivity,
             tilt_deg: 0.5,
-            opacity: 0.85,
-            min_dbz: 5.0,
+            opacity: 0.50,
+            // Suppresses the clear-air clutter/haze that reads as a green
+            // blob: only meaningful echoes light up by default.
+            min_dbz: 20.0,
             view: MapView {
                 center_lat: site.latitude,
                 center_lon: site.longitude,
@@ -137,6 +146,12 @@ impl Default for AppState {
             alerts: Vec::new(),
             show_alerts: true,
             show_tracks: true,
+            outlook: None,
+            // On by default with the outline-only look (fill 0.0): the risk
+            // boundaries show over the radar without tinting the echoes.
+            show_outlook: true,
+            outlook_day: 1,
+            outlook_opacity: 0.0,
             status_text: "starting…".to_string(),
             archive_total: 0,
             archive_start: 0,

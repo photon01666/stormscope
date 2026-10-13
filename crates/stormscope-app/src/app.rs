@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 pub enum DataMsg {
     Volume(Arc<radar_core::Volume>),
     Alerts(Vec<radar_core::warnings::Warning>),
+    /// A day's categorical SPC convective outlook (Day 1/2/3).
+    Outlook(radar_core::outlooks::Outlook),
     Status(String),
     Error(String),
     /// Drop every ring frame (mode switch / archive window change).
@@ -31,6 +33,8 @@ pub enum DataCmd {
     /// available scan immediately.
     EnterLive,
     RefreshAlerts,
+    /// Fetch the SPC categorical outlook for a day (1..=3).
+    LoadOutlook(u8),
     Shutdown,
 }
 
@@ -155,6 +159,14 @@ impl StormApp {
             match msg {
                 DataMsg::Volume(v) => self.state.push_volume(v),
                 DataMsg::Alerts(a) => self.state.alerts = a,
+                DataMsg::Outlook(o) => {
+                    let label = o
+                        .issue
+                        .map(|t| crate::timefmt::fmt_central(&t))
+                        .unwrap_or_else(|| "?".into());
+                    log::debug!("outlook day {} loaded (issued {label})", o.day);
+                    self.state.outlook = Some(o);
+                }
                 DataMsg::Status(s) => self.state.status_text = s,
                 DataMsg::Error(e) => {
                     log::warn!("data: {e}");

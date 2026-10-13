@@ -20,6 +20,7 @@ chrono.workspace = true
 chrono-tz.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+earcutr.workspace = true
 # Force the wgpu renderer (Vulkan on Linux) and native Wayland windows.
 # eframe's `default` includes both glow and wgpu; we drop glow so the app is
 # Vulkan-only, and keep wayland+x11 for native Hyprland/Wayland support.

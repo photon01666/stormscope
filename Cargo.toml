@@ -28,6 +28,9 @@ serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
 wgpu = "30"
+# Mapbox/earcut polygon triangulation — needed to FILL the concave SPC
+# outlook polygons (egui's convex_polygon can't).
+earcutr = "0.5"
 
 [profile.dev]
 # Fast-ish builds while iterating on a big workspace

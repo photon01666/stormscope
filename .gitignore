@@ -9,3 +9,11 @@
 # Editor / OS cruft
 *.swp
 .DS_Store
+
+# Personal app state — map pins, preferred site, UI prefs. These are the
+# user's own config (normally written to ~/.config/stormscope, outside the
+# repo), but keep them out of commits even if one lands in the work tree.
+markers.json
+prefs.json
+site.json
+*.persist

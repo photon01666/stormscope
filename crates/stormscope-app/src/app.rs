@@ -19,8 +19,10 @@ pub enum DataMsg {
     /// Archive window position: `total` scans in the day, `[start, start+len)`
     /// currently loaded (indices into newest-first order).
     ArchiveInfo { total: usize, start: usize, len: usize },
-    /// Total bytes currently held in the on-disk cache (radar + tiles).
-    CacheInfo { bytes: u64 },
+    /// On-disk cache sizes in bytes, per section: `radar` is every downloaded
+    /// volume (`l2/`), `tiles` the basemap cache (`tiles/`). The coordinator
+    /// re-sends this about once a second so Settings stays live.
+    CacheInfo { radar: u64, tiles: u64 },
 }
 
 /// Commands UI -> background data threads.
@@ -37,9 +39,18 @@ pub enum DataCmd {
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
     LoadOutlook(u8),
-    /// Delete every downloaded radar volume and cached map tile from disk.
-    ClearCache,
+    /// Delete every downloaded radar volume from disk (`l2/`).
+    ClearRadar,
+    /// Delete every cached basemap tile from disk (`tiles/`).
+    ClearTiles,
     Shutdown,
+}
+
+/// Which cache section a pending "clear" is asking to delete.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClearTarget {
+    Radar,
+    Tiles,
 }
 
 pub struct StormApp {
@@ -67,6 +78,9 @@ pub struct StormApp {
     /// Derived storm tracks for the (prev, cur) frame pair at the current
     /// tilt: cached by signature, recomputed only when the frames change.
     pub tracks_cache: Option<(u64, Vec<radar_render::StormTrack>)>,
+    /// Cache section awaiting the user's "yes" in the clear-cache dialog.
+    /// Set by the Settings menu, cleared when the dialog is dismissed.
+    pub confirm_clear: Option<ClearTarget>,
 }
 
 /// One cached radar overlay raster plus the view it was produced for, so a
@@ -125,6 +139,7 @@ impl StormApp {
             radar_last_raster: std::time::Instant::now(),
             radar_pending: None,
             tracks_cache: None,
+            confirm_clear: None,
         }
     }
 
@@ -187,7 +202,10 @@ impl StormApp {
                     self.state.archive_start = start;
                     self.state.archive_len = len;
                 }
-                DataMsg::CacheInfo { bytes } => self.state.cache_bytes = Some(bytes),
+                DataMsg::CacheInfo { radar, tiles } => {
+                    self.state.cache_radar_bytes = Some(radar);
+                    self.state.cache_tile_bytes = Some(tiles);
+                }
             }
         }
     }

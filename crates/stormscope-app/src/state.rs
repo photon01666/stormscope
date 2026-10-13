@@ -99,9 +99,11 @@ pub struct AppState {
     pub archive_total: usize,
     pub archive_start: usize,
     pub archive_len: usize,
-    /// On-disk cache size in bytes (from `DataMsg::CacheInfo`) — shown in the
-    /// Settings menu. `None` until the coordinator has reported it.
-    pub cache_bytes: Option<u64>,
+    /// On-disk cache sizes in bytes (from `DataMsg::CacheInfo`, refreshed
+    /// about once a second by the coordinator) — shown in the Settings menu.
+    /// `None` until first reported.
+    pub cache_radar_bytes: Option<u64>,
+    pub cache_tile_bytes: Option<u64>,
 
     // User-placed map markers.
     pub markers: Vec<MapMarker>,
@@ -159,7 +161,8 @@ impl Default for AppState {
             archive_total: 0,
             archive_start: 0,
             archive_len: 0,
-            cache_bytes: None,
+            cache_radar_bytes: None,
+            cache_tile_bytes: None,
             markers: load_markers(),
             pending_marker: None,
             pending_marker_label: String::new(),
@@ -230,20 +233,36 @@ impl AppState {
         radar_core::vcp::ScanMode::detect(vcp, median)
     }
 
-    /// Push a newly decoded volume onto the ring, keeping it ordered oldest
-    /// -> newest and evicting the oldest when full. In Live mode the playhead
-    /// jumps to the newest frame; otherwise it stays put.
+    /// Push a newly decoded volume into the ring, keeping it ordered oldest
+    /// -> newest and evicting the oldest when full.
+    ///
+    /// Volumes are inserted at their time position rather than blindly
+    /// appended: delivery order isn't guaranteed (a backfill of scans we
+    /// already have on disk races the live poller), so a late or stale scan
+    /// must neither be silently dropped nor clobber the playhead. In Live
+    /// mode the playhead follows the newest frame; otherwise it stays on the
+    /// frame being viewed.
     pub fn push_volume(&mut self, volume: Arc<Volume>) {
-        let start = volume.meta.volume_start;
-        // Ignore out-of-order / duplicate volumes.
-        if let Some(last) = self.ring.back() {
-            if start <= last.volume_start {
-                return;
-            }
+        // Frames are georeferenced to the selected station — another
+        // station's sweeps would draw in the wrong place. "UNKNOWN" is
+        // tolerated because a headerless stream can omit the site id.
+        if volume.meta.site_id != self.site_id && volume.meta.site_id != "UNKNOWN" {
+            return;
         }
-        self.ring.push_back(Frame { volume_start: start, volume });
+        let start = volume.meta.volume_start;
+        if self.ring.iter().any(|f| f.volume_start == start) {
+            return; // duplicate
+        }
+        let pos = self.ring.partition_point(|f| f.volume_start < start);
+        if self.mode != Mode::Live && !self.ring.is_empty() && pos <= self.playhead {
+            // Older scans landing before the current frame must not move the
+            // view off it.
+            self.playhead += 1;
+        }
+        self.ring.insert(pos, Frame { volume_start: start, volume });
         while self.ring.len() > RING_CAPACITY {
             self.ring.pop_front();
+            self.playhead = self.playhead.saturating_sub(1);
         }
         if self.mode == Mode::Live {
             self.playhead = self.ring.len().saturating_sub(1);
@@ -287,5 +306,85 @@ impl AppState {
                 self.playhead = 0; // loop around
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radar_core::VolumeMeta;
+
+    fn at(minute: u32) -> DateTime<Utc> {
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 13)
+            .unwrap()
+            .and_hms_opt(12, minute, 0)
+            .unwrap()
+            .and_utc()
+    }
+
+    fn vol(site: &str, start: DateTime<Utc>) -> Arc<Volume> {
+        Arc::new(Volume {
+            meta: VolumeMeta {
+                site_id: site.to_string(),
+                volume_start: start,
+                vcp: None,
+                sequence_number: None,
+                sweep_count: 0,
+                moments: vec![],
+            },
+            sweeps: Vec::new(),
+        })
+    }
+
+    fn state() -> AppState {
+        let mut s = AppState::default();
+        s.site_id = "KTWX".into();
+        s
+    }
+
+    fn order(s: &AppState) -> Vec<DateTime<Utc>> {
+        s.ring.iter().map(|f| f.volume_start).collect()
+    }
+
+    /// Out-of-order arrivals must still land in time order: a backfill of
+    /// cached scans races the live poller, and dropping a late frame would
+    /// lose data the app already paid to decode.
+    #[test]
+    fn push_volume_inserts_by_time_not_arrival_order() {
+        let mut s = state();
+        s.push_volume(vol("KTWX", at(50)));
+        s.push_volume(vol("KTWX", at(10))); // stale / late arrival
+        assert_eq!(order(&s), vec![at(10), at(50)]);
+        // Live mode still shows the newest frame.
+        assert_eq!(s.playhead, 1);
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(50)));
+    }
+
+    #[test]
+    fn push_volume_ignores_duplicates_and_other_sites() {
+        let mut s = state();
+        s.push_volume(vol("KTWX", at(10)));
+        s.push_volume(vol("KTWX", at(10))); // duplicate
+        s.push_volume(vol("KTLX", at(20))); // georeferenced elsewhere
+        assert_eq!(s.ring.len(), 1, "dup + foreign site dropped");
+        // A stream that can't tell us the site must not be thrown away.
+        s.push_volume(vol("UNKNOWN", at(30)));
+        assert_eq!(s.ring.len(), 2);
+        assert_eq!(s.newest_start(), Some(at(30)));
+    }
+
+    /// Scrubbing back in Archive mode must not be yanked forward when an older
+    /// scan backfills in ahead of the playhead.
+    #[test]
+    fn archive_mode_keeps_the_selected_frame_when_backfilling() {
+        let mut s = state();
+        s.mode = Mode::Archive;
+        s.push_volume(vol("KTWX", at(50)));
+        s.push_volume(vol("KTWX", at(40)));
+        s.push_volume(vol("KTWX", at(30)));
+        s.playhead = 0; // user scrubs to the oldest frame (minute 30)
+        s.push_volume(vol("KTWX", at(10))); // older scan backfills in
+        assert_eq!(s.ring.len(), 4);
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(30)));
     }
 }

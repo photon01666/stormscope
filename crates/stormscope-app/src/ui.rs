@@ -29,6 +29,11 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     egui::CentralPanel::default().show(ui, |ui| {
         crate::ui::map::map(ui, app);
     });
+
+    // "Really clear …?" confirmation, drawn over everything. Rendered after
+    // the panels so it isn't clipped by them; the Settings menu closes
+    // itself before opening this.
+    confirm_clear_dialog(ui.ctx(), app);
 }
 
 fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
@@ -381,32 +386,139 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     }
 }
 
-/// App-level "Settings" popup: currently cache size + a clear-all button.
+/// App-level "Settings" popup: live per-section cache usage and one clear
+/// button per section (each gated behind [`confirm_clear_dialog`]).
 fn settings_menu(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.menu_button("Settings", |ui| {
-        ui.set_min_width(240.0);
+        ui.set_min_width(260.0);
         ui.label(egui::RichText::new("Disk cache").strong());
-        let size = app
-            .state
-            .cache_bytes
-            .map(human_bytes)
-            .unwrap_or_else(|| "…".into());
-        ui.label(format!("Radar + map tiles: {size}"));
+        ui.add_space(4.0);
+        cache_row(
+            ui,
+            "Radar data",
+            "Downloaded radar volumes",
+            app.state.cache_radar_bytes,
+            crate::app::ClearTarget::Radar,
+            app,
+        );
+        ui.separator();
+        cache_row(
+            ui,
+            "Map data",
+            "Cached basemap tiles",
+            app.state.cache_tile_bytes,
+            crate::app::ClearTarget::Tiles,
+            app,
+        );
+        ui.add_space(4.0);
         ui.label(
-            egui::RichText::new("cap 10 GB — oldest evicted first")
+            egui::RichText::new("cap 10 GB across both — oldest evicted first")
                 .weak()
                 .small(),
         );
-        ui.add_space(4.0);
-        if ui
-            .button("Clear all cache")
-            .on_hover_text("Delete every downloaded radar volume and cached map tile")
-            .clicked()
-        {
-            let _ = app.tx.send(crate::app::DataCmd::ClearCache);
-            ui.close();
-        }
     });
+}
+
+/// One cache section: label, live size, and its "Clear …" button.
+fn cache_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    hint: &str,
+    bytes: Option<u64>,
+    target: crate::app::ClearTarget,
+    app: &mut StormApp,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.label(egui::RichText::new(hint).weak().small());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                egui::RichText::new(bytes.map(human_bytes).unwrap_or_else(|| "…".into()))
+                    .monospace(),
+            );
+        });
+    });
+    let (verb, hover) = match target {
+        crate::app::ClearTarget::Radar => (
+            "Clear radar data",
+            "Delete every downloaded radar volume from disk",
+        ),
+        crate::app::ClearTarget::Tiles => (
+            "Clear map data",
+            "Delete every cached basemap tile from disk and memory",
+        ),
+    };
+    if ui.button(verb).on_hover_text(hover).clicked() {
+        app.confirm_clear = Some(target);
+        ui.close(); // dismiss the menu so the dialog stands alone
+    }
+}
+
+/// Modal "are you sure?" for the Settings clear buttons. Shows only while
+/// `app.confirm_clear` is set; the accepted branch sends the matching
+/// command (deletion runs off-thread in the coordinator) and, for map data,
+/// also drops the UI's in-memory tile textures.
+fn confirm_clear_dialog(ctx: &egui::Context, app: &mut StormApp) {
+    let Some(target) = app.confirm_clear else {
+        return;
+    };
+    let (title, body, verb, cmd) = match target {
+        crate::app::ClearTarget::Radar => (
+            "Clear radar data?",
+            "Delete every downloaded radar volume from disk.\n\n\
+             Scans already on screen stay until you reload or switch \
+             station; future scans re-download on demand.",
+            "Clear radar data",
+            crate::app::DataCmd::ClearRadar,
+        ),
+        crate::app::ClearTarget::Tiles => (
+            "Clear map data?",
+            "Delete every cached basemap tile from disk and from memory.\n\n\
+             The map re-downloads tiles as you pan and zoom.",
+            "Clear map data",
+            crate::app::DataCmd::ClearTiles,
+        ),
+    };
+
+    let mut accepted = false;
+    let mut dismissed = false;
+    let res = egui::containers::Modal::new(egui::Id::new("stormscope.confirm-clear"))
+        .show(ctx, |ui| {
+            ui.set_min_width(360.0);
+            ui.heading(title);
+            ui.add_space(8.0);
+            ui.label(body);
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    dismissed = true;
+                }
+                if ui
+                    .add(
+                        egui::Button::new(verb)
+                            .fill(egui::Color32::from_rgb(150, 52, 52)),
+                    )
+                    .clicked()
+                {
+                    accepted = true;
+                }
+            });
+        });
+    if res.should_close() {
+        // Backdrop click or Esc.
+        dismissed = true;
+    }
+
+    if accepted {
+        let _ = app.tx.send(cmd);
+        if matches!(target, crate::app::ClearTarget::Tiles) {
+            app.tiles.clear_in_memory();
+        }
+        dismissed = true;
+    }
+    if dismissed {
+        app.confirm_clear = None;
+    }
 }
 
 /// Human-readable byte size (B/KiB/MiB/GiB) for the Settings menu.

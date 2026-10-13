@@ -9,6 +9,7 @@
 use crate::app::{DataCmd, DataMsg};
 use chrono::{NaiveDate, Utc};
 use radar_data::{AlertSource, DiskCache, OutlookSource, S3Source};
+use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
@@ -104,9 +105,12 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     };
     let alerts = AlertSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
-    // Report the current on-disk cache size so the Settings menu can show it.
+    // Report the current on-disk cache sizes so Settings has a number from
+    // the first frame; the loop below keeps re-sending as they change.
+    let mut cached_sizes = cache_sizes(&source);
     let _ = out.send(DataMsg::CacheInfo {
-        bytes: source.cache().total_bytes().unwrap_or(0),
+        radar: cached_sizes.0,
+        tiles: cached_sizes.1,
     });
     // Which SPC outlook day the UI is asking for + when we last refreshed it
     // (outlooks update only a few times per day).
@@ -115,6 +119,10 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     // alerts + outlook immediately — startup never blocks on the network.
     let mut last_outlook = already_elapsed(OUTLOOK_REFRESH);
     let mut last_alerts = already_elapsed(ALERTS_REFRESH);
+    // Cache sizes for the Settings menu: recomputed every couple of seconds
+    // (a full directory walk is far too expensive to run per 250 ms tick).
+    let mut last_cache_report = already_elapsed(CACHE_INFO_REFRESH);
+    const CACHE_INFO_REFRESH: Duration = Duration::from_secs(2);
 
     // Live poller for the currently selected site. Replaced on SetSite; the
     // old one exits when its receiver is dropped.
@@ -126,15 +134,19 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     // Freshness tracking + archive catch-up watchdog: the app should show
     // whichever upstream (live chunks vs archive bucket) is AHEAD, not
     // whichever it happens to be listening to.
-    let mut last_delivered: Option<chrono::DateTime<Utc>> = None;
     let mut watchdog_enabled = true; // off while browsing archive/last-hour
     let mut last_watchdog = std::time::Instant::now();
     const ARCHIVE_CATCHUP_INTERVAL: Duration = Duration::from_secs(60);
 
     let _ = out.send(DataMsg::Status("starting live feed…".into()));
     start_live(&source, radar_core::DEFAULT_SITE, &mut live, &out);
-    // First frame in seconds, not minutes: the poller warms up in parallel.
-    last_delivered = instant_refresh(&source, radar_core::DEFAULT_SITE, &out);
+    // Restore the recent scans already on disk (instant) and top up with the
+    // newest, while the poller warms up in parallel. The watchdog below
+    // compares against whatever this delivers first.
+    let (mut last_delivered, queued) = prime_site(&source, radar_core::DEFAULT_SITE, &out);
+    // Volumes waiting to replay into the ring; drained a few per loop tick so
+    // commands stay responsive during the refill.
+    let mut backfill: VecDeque<radar_data::ArchiveVolumeRef> = queued;
     // Alerts + SPC outlook are fetched by the first loop iteration (timers
     // start pre-expired), so startup never blocks on the network.
 
@@ -148,6 +160,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
         if let Some(date) = date {
             let _ = out.send(DataMsg::Status(format!("bootstrap: loading {site} {date}…")));
             watchdog_enabled = false; // browsing a day, not live
+            backfill.clear(); // the archive day replaces the queued refill
             archive = open_archive_day(&source, &site, date, &mut current_site, &out);
         }
     }
@@ -167,9 +180,14 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     let _ = out.send(DataMsg::ClearFrames);
                     current_site = site.clone();
                     start_live(&source, &site, &mut live, &out);
-                    // Radar for the new site within seconds; the poller's
-                    // first complete scan would otherwise take ~4-5 min.
-                    if let Some(ts) = instant_refresh(&source, &site, &out) {
+                    // Refill from what we already have on disk so the bottom
+                    // timeline can play back this station's data instead of
+                    // showing a single frame; `prime_site` also refreshes the
+                    // newest scan if the bucket has moved on.
+                    backfill.clear();
+                    let (now, queued) = prime_site(&source, &site, &out);
+                    backfill = queued;
+                    if let Some(ts) = now {
                         last_delivered = Some(ts);
                     }
                     // Alerts are point-filtered, so they move with the site
@@ -179,16 +197,19 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                 DataCmd::LoadArchiveDate(site, date) => {
                     let _ = out.send(DataMsg::Status(format!("loading {site} archive {date}…")));
                     watchdog_enabled = false; // browsing a day, not live
+                    backfill.clear(); // the day replaces whatever was queued
                     archive = open_archive_day(&source, &site, date, &mut current_site, &out);
                 }
                 DataCmd::LoadLastHour(site) => {
                     current_site = site.clone();
                     archive = None;
                     watchdog_enabled = false; // browsing a fixed window
+                    backfill.clear();
                     let _ = out.send(DataMsg::ArchiveInfo { total: 0, start: 0, len: 0 });
                     load_last_hour(&source, &site, &out);
                 }
                 DataCmd::ArchiveWindowShift(delta) => {
+                    backfill.clear();
                     if let Some(day) = archive.as_mut() {
                         shift_archive_window(&source, day, delta, &out);
                     }
@@ -204,7 +225,12 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     if live.is_none() {
                         start_live(&source, &current_site, &mut live, &out);
                     }
-                    if let Some(ts) = instant_refresh(&source, &current_site, &out) {
+                    // Refill from the disk cache + the newest scan, so the
+                    // timeline is playable again rather than one frame wide.
+                    backfill.clear();
+                    let (now, queued) = prime_site(&source, &current_site, &out);
+                    backfill = queued;
+                    if let Some(ts) = now {
                         last_delivered = Some(ts);
                     }
                 }
@@ -215,31 +241,78 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     outlook_day = day;
                     refresh_outlook(&outlooks, day, &out);
                 }
-                DataCmd::ClearCache => {
-                    let _ = out.send(DataMsg::Status("clearing cache…".into()));
-                    // Deletes radar volumes + the shared tile cache (same root).
-                    // The in-memory ring/frames are untouched, so the map keeps
-                    // rendering; new fetches just re-download what they need.
-                    let freed = match source.cache().clear() {
+                DataCmd::ClearRadar => {
+                    let _ = out.send(DataMsg::Status("clearing radar data…".into()));
+                    // Only `l2/` — the basemap tiles and the in-memory ring of
+                    // decoded frames are untouched, so the map keeps rendering;
+                    // future scans re-download what they need.
+                    let freed = match source.cache().clear_section("l2") {
                         Ok(n) => n,
                         Err(e) => {
-                            let _ = out.send(DataMsg::Error(format!("clear cache: {e}")));
+                            let _ = out.send(DataMsg::Error(format!("clear radar data: {e}")));
                             0
                         }
                     };
-                    log::info!("cache cleared: {} freed", human_bytes(freed));
+                    log::info!("radar cache cleared: {} freed", human_bytes(freed));
                     let _ = out.send(DataMsg::Status(format!(
-                        "cache cleared ({})",
+                        "radar data cleared ({})",
                         human_bytes(freed)
                     )));
+                    cached_sizes = cache_sizes(&source);
                     let _ = out.send(DataMsg::CacheInfo {
-                        bytes: source.cache().total_bytes().unwrap_or(0),
+                        radar: cached_sizes.0,
+                        tiles: cached_sizes.1,
+                    });
+                }
+                DataCmd::ClearTiles => {
+                    let _ = out.send(DataMsg::Status("clearing map tiles…".into()));
+                    // Only `tiles/`. The UI drops its decoded-texture LRU at
+                    // the same moment, so tiles aren't served from memory
+                    // after the files are gone.
+                    let freed = match source.cache().clear_section("tiles") {
+                        Ok(n) => n,
+                        Err(e) => {
+                            let _ = out.send(DataMsg::Error(format!("clear map tiles: {e}")));
+                            0
+                        }
+                    };
+                    log::info!("tile cache cleared: {} freed", human_bytes(freed));
+                    let _ = out.send(DataMsg::Status(format!(
+                        "map tiles cleared ({})",
+                        human_bytes(freed)
+                    )));
+                    cached_sizes = cache_sizes(&source);
+                    let _ = out.send(DataMsg::CacheInfo {
+                        radar: cached_sizes.0,
+                        tiles: cached_sizes.1,
                     });
                 }
                 DataCmd::Shutdown => break,
             },
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        // Replay the queued refill one slice at a time. Decoding costs ~1 s
+        // per volume, so draining it inside the command handler would stall
+        // the next command — and the next site switch — for tens of seconds.
+        if !backfill.is_empty() {
+            const BACKFILL_SLICE: Duration = Duration::from_millis(150);
+            let deadline = std::time::Instant::now() + BACKFILL_SLICE;
+            while let Some(r) = backfill.pop_front() {
+                let _ = emit_volume(&source, &r, &out);
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+            if backfill.is_empty() {
+                if let Some(ts) = last_delivered {
+                    let _ = out.send(DataMsg::Status(format!(
+                        "live · {}",
+                        crate::timefmt::fmt_central(&ts)
+                    )));
+                }
+            }
         }
 
         // Always drain whatever the live poller has produced this tick, so
@@ -268,7 +341,29 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             last_outlook = std::time::Instant::now();
             refresh_outlook(&outlooks, outlook_day, &out);
         }
+        // Keep the Settings cache readout live. Only send on an actual
+        // change — a directory walk every 2s that says the same thing would
+        // just churn the message channel.
+        if last_cache_report.elapsed() >= CACHE_INFO_REFRESH {
+            last_cache_report = std::time::Instant::now();
+            let sizes = cache_sizes(&source);
+            if sizes != cached_sizes {
+                cached_sizes = sizes;
+                let _ = out.send(DataMsg::CacheInfo { radar: sizes.0, tiles: sizes.1 });
+            }
+        }
     }
+}
+
+/// On-disk usage per cache section: `(radar volumes, basemap tiles)`.
+/// Counts only files, so a failed walk reads as 0 rather than stalling
+/// the readout.
+fn cache_sizes(source: &S3Source) -> (u64, u64) {
+    let cache = source.cache();
+    (
+        cache.section_bytes("l2").unwrap_or(0),
+        cache.section_bytes("tiles").unwrap_or(0),
+    )
 }
 
 /// List a Central day, remember it for window paging, and stream the newest
@@ -296,6 +391,10 @@ fn open_archive_day(
     let window_len = ARCHIVE_MAX_VOLUMES.min(total);
     // vols is newest-first; the newest window is the head.
     let mut day = ArchiveDay { vols, window_start: 0 };
+    // The day *replaces* whatever was on the ring — without this the live
+    // frame still sitting there made every older archive scan look
+    // out-of-order and get dropped.
+    let _ = out.send(DataMsg::ClearFrames);
     stream_window(source, site, date, &day, window_len, out);
     let _ = out.send(DataMsg::ArchiveInfo { total, start: 0, len: window_len });
     Some(day)
@@ -362,42 +461,120 @@ fn stream_window(
     }
 }
 
-/// Immediately fetch + emit the newest completed scan of `site` for *today*
-/// from the archive bucket. Returns the delivered scan time (for freshness
-/// tracking). The live poller only produces a frame every ~4-7 min (a full
-/// NEXRAD scan takes that long), which felt like "not downloading".
-fn instant_refresh(
+/// Is this volume already in the on-disk cache? Purely a filesystem stat —
+/// no S3 request, which is what makes switching back to a station we have
+/// already seen cost nothing.
+fn is_cached(source: &S3Source, r: &radar_data::ArchiveVolumeRef) -> bool {
+    source
+        .cache()
+        .path_for(&r.cache_rel())
+        .map(|p| p.is_file())
+        .unwrap_or(false)
+}
+
+/// Fetch + emit one archive volume; returns its scan time (or `None`, having
+/// reported the failure).
+fn emit_volume(
     source: &S3Source,
-    site: &str,
+    r: &radar_data::ArchiveVolumeRef,
     out: &Sender<DataMsg>,
 ) -> Option<chrono::DateTime<Utc>> {
-    let today = chrono::Utc::now()
-        .with_timezone(crate::timefmt::central())
-        .date_naive();
-    match list_central_day(source, site, today) {
-        Ok(vols) => {
-            let r = vols.first()?;
-            match source.fetch_archive(r) {
-                Ok(v) => {
-                    log::info!("live refresh: scan {}", crate::timefmt::fmt_central(&r.volume_start));
-                    let _ = out.send(DataMsg::Volume(v));
-                    let _ = out.send(DataMsg::Status(format!(
-                        "live · {}",
-                        crate::timefmt::fmt_central(&r.volume_start)
-                    )));
-                    Some(r.volume_start)
-                }
-                Err(e) => {
-                    log::warn!("instant refresh fetch failed: {e:#}");
-                    None
-                }
-            }
+    match source.fetch_archive(r) {
+        Ok(v) => {
+            let _ = out.send(DataMsg::Volume(v));
+            Some(r.volume_start)
         }
         Err(e) => {
-            log::warn!("instant refresh listing failed: {e:#}");
+            log::warn!("fetch {} failed: {e:#}", r.file_name());
+            let _ = out.send(DataMsg::Error(format!("{}: {e:#}", r.file_name())));
             None
         }
     }
+}
+
+/// Plan the ring refill for a freshly selected station (or a return to live),
+/// from a single archive listing.
+///
+/// Switching sites clears the ring — the frames are georeferenced to the old
+/// station — but the *volumes* behind them are still in the disk cache. This
+/// puts them back instead of leaving the bottom timeline with one frame:
+///
+///  1. the newest scan in the bucket is emitted right away, fetched only when
+///     we don't already have it, so the map is current while the rest fills in;
+///  2. every recent scan already on disk is queued for replay with **no**
+///     downloads, so the timeline can play back the data we already have.
+///
+/// The queue is drained a few volumes per loop tick by the caller: decoding
+/// costs ~1 s each, so replaying it inline would stall the next site switch.
+///
+/// Returns `(scan time delivered now, volumes still queued)`.
+fn prime_site(
+    source: &S3Source,
+    site: &str,
+    out: &Sender<DataMsg>,
+) -> (
+    Option<chrono::DateTime<Utc>>,
+    VecDeque<radar_data::ArchiveVolumeRef>,
+) {
+    const PRIME_SCANS: usize = crate::state::RING_CAPACITY;
+    let today = chrono::Utc::now()
+        .with_timezone(crate::timefmt::central())
+        .date_naive();
+    // Newest-first for today, topped up from yesterday while the Central day
+    // has barely started (same fill rule as "load last hour").
+    let mut vols = list_central_day(source, site, today).unwrap_or_default();
+    if vols.len() < PRIME_SCANS {
+        if let Some(yday) = today.pred_opt() {
+            for r in list_central_day(source, site, yday).unwrap_or_default() {
+                if vols.len() >= PRIME_SCANS {
+                    break;
+                }
+                vols.push(r);
+            }
+        }
+    }
+    vols.truncate(PRIME_SCANS);
+    if vols.is_empty() {
+        log::warn!("prime {site}: no scans listed");
+        return (None, VecDeque::new());
+    }
+
+    // What we already have, newest-first (the listing's own order).
+    let cached: Vec<&radar_data::ArchiveVolumeRef> =
+        vols.iter().filter(|r| is_cached(source, r)).collect();
+    let newest = vols[0].volume_start;
+    let newest_is_cached = cached.first().map(|r| r.volume_start) == Some(newest);
+
+    // Drop whatever is on the ring before pushing, or a frame from the
+    // previous station lingers under the new one.
+    let _ = out.send(DataMsg::ClearFrames);
+
+    let mut delivered = None;
+    if !newest_is_cached {
+        // The first frame the user sees after a switch: get it moving before
+        // the backfill starts.
+        delivered = emit_volume(source, &vols[0], out);
+        if delivered.is_some() {
+            log::info!("live refresh: scan {}", crate::timefmt::fmt_central(&newest));
+        }
+    }
+
+    let queue: VecDeque<radar_data::ArchiveVolumeRef> = cached.into_iter().cloned().collect();
+    if !queue.is_empty() {
+        log::info!(
+            "prime {site}: {} scans already on disk, newest {}",
+            queue.len(),
+            crate::timefmt::fmt_central(&newest)
+        );
+        let _ = out.send(DataMsg::Status(format!(
+            "restoring {} cached scans…",
+            queue.len()
+        )));
+    }
+    // When the newest is already cached it heads the queue, so report it as
+    // delivered for freshness tracking even though it hasn't replayed yet.
+    let newest_cached = queue.front().map(|r| r.volume_start);
+    (delivered.or(newest_cached), queue)
 }
 
 /// One polite catch-up check: if the archive bucket has a scan *newer* than

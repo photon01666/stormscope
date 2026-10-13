@@ -537,6 +537,19 @@ impl TileLayer {
         self.failed.clear();
     }
 
+    /// Drop every decoded tile from memory (textures, in-flight bookkeeping,
+    /// failure cooldowns) but leave the disk cache alone — used when the user
+    /// clears map data, so nothing keeps painting from memory after the
+    /// on-disk files are deleted. The next `paint` re-requests everything it
+    /// needs.
+    pub fn clear_in_memory(&mut self) {
+        self.textures.clear();
+        self.pending.clear();
+        self.queue.clear();
+        self.failed.clear();
+        log::debug!("tile layer: in-memory tile cache cleared");
+    }
+
     /// Record a tile as failed, stamping the time so `pump` can retry it
     /// after [`FAILED_RETRY`] rather than leaving a permanent blank.
     fn mark_failed(&mut self, key: TileKey) {

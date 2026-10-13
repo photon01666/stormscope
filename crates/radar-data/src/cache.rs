@@ -100,18 +100,45 @@ impl DiskCache {
     /// Total size in bytes of all files under the root.
     pub fn total_bytes(&self) -> std::io::Result<u64> {
         Ok(self
-            .files_recursive()?
+            .files_under(&self.root)?
             .into_iter()
             .map(|(_, size, _)| size)
             .sum())
     }
 
-    /// Remove every cached file under the root (radar volumes + the shared
-    /// tile cache) and prune the now-empty subdirectories, leaving the root
-    /// itself in place. Returns the number of bytes freed. Best-effort:
-    /// files that vanish mid-walk (raced with a concurrent write) are ignored.
+    /// Total size in bytes of everything under `<root>/<section>` — e.g. `l2`
+    /// for radar volumes, `tiles` for the basemap. Zero if the section doesn't
+    /// exist yet.
+    pub fn section_bytes(&self, section: &str) -> std::io::Result<u64> {
+        Ok(self
+            .files_under(&self.root.join(section))?
+            .into_iter()
+            .map(|(_, size, _)| size)
+            .sum())
+    }
+
+    /// Remove every cached file under `<root>/<section>` (radar volumes or the
+    /// tile cache) and prune the emptied directories, including the section
+    /// directory itself. Returns the number of bytes freed. Best-effort: files
+    /// that vanish mid-walk (raced with a concurrent write) are ignored.
+    pub fn clear_section(&self, section: &str) -> std::io::Result<u64> {
+        let dir = self.root.join(section);
+        let freed = self.clear_under(&dir)?;
+        // Drop the (now empty) section dir too, so `l2/`/`tiles/` don't linger.
+        let _ = std::fs::remove_dir(&dir);
+        Ok(freed)
+    }
+
+    /// Remove every cached file under the root (all sections). Returns the
+    /// number of bytes freed.
     pub fn clear(&self) -> std::io::Result<u64> {
-        let files = self.files_recursive()?;
+        self.clear_under(&self.root)
+    }
+
+    /// Delete files under `dir` (recursively) and prune the emptied
+    /// subdirectories below it. `dir` itself is left in place.
+    fn clear_under(&self, dir: &Path) -> std::io::Result<u64> {
+        let files = self.files_under(dir)?;
         let mut freed: u64 = 0;
         for (_, size, path) in &files {
             match std::fs::remove_file(path) {
@@ -122,7 +149,7 @@ impl DiskCache {
         }
         // Deepest-first so parents become empty before we try to remove them
         // (`remove_dir` only succeeds on an empty directory).
-        let mut dirs = self.dirs_recursive()?;
+        let mut dirs = self.dirs_under(dir)?;
         dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
         for d in dirs {
             let _ = std::fs::remove_dir(&d);
@@ -130,14 +157,13 @@ impl DiskCache {
         Ok(freed)
     }
 
-    /// All subdirectories under the root (excluding the root itself),
-    /// unordered.
-    fn dirs_recursive(&self) -> std::io::Result<Vec<PathBuf>> {
+    /// All subdirectories under `dir` (excluding `dir` itself), unordered.
+    fn dirs_under(&self, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         let mut out = Vec::new();
-        if !self.root.exists() {
+        if !dir.exists() {
             return Ok(out);
         }
-        let mut stack = vec![self.root.clone()];
+        let mut stack = vec![dir.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let entries = match std::fs::read_dir(&dir) {
                 Ok(e) => e,
@@ -157,7 +183,7 @@ impl DiskCache {
     /// Remove oldest files (by mtime) until the cache is under `max_bytes`.
     /// Call occasionally; also called after writes when useful.
     pub fn sweep(&self) -> std::io::Result<()> {
-        let mut files = self.files_recursive()?; // (mtime, size, path)
+        let mut files = self.files_under(&self.root)?; // (mtime, size, path)
         if files.is_empty() {
             return Ok(());
         }
@@ -188,13 +214,13 @@ impl DiskCache {
         Ok(())
     }
 
-    /// All files under the root as (mtime, size, path), oldest-first unordered.
-    fn files_recursive(&self) -> std::io::Result<Vec<(SystemTime, u64, PathBuf)>> {
+    /// All files under `dir` as (mtime, size, path), oldest-first unordered.
+    fn files_under(&self, dir: &Path) -> std::io::Result<Vec<(SystemTime, u64, PathBuf)>> {
         let mut out = Vec::new();
-        if !self.root.exists() {
+        if !dir.exists() {
             return Ok(out);
         }
-        let mut stack = vec![self.root.clone()];
+        let mut stack = vec![dir.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let entries = match std::fs::read_dir(&dir) {
                 Ok(e) => e,
@@ -265,6 +291,33 @@ mod tests {
         assert!(!root.join("l2").exists());
         cache.write("l2/KTLX/c.gz", b"x").unwrap();
         assert!(cache.read("l2/KTLX/c.gz").unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn section_bytes_and_clear_section_are_independent() {
+        let root = scratch("section");
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = DiskCache::new(root.clone(), 1 << 20);
+        cache.write("l2/KTLX/a.gz", &[1u8; 100]).unwrap();
+        cache.write("l2/KTWX/b.gz", &[2u8; 50]).unwrap();
+        cache.write("tiles/8/1/2.tile", &[3u8; 25]).unwrap();
+        assert_eq!(cache.section_bytes("l2").unwrap(), 150);
+        assert_eq!(cache.section_bytes("tiles").unwrap(), 25);
+        assert_eq!(cache.section_bytes("missing").unwrap(), 0);
+        assert_eq!(cache.total_bytes().unwrap(), 175);
+
+        // Clearing radar data must not touch the map tiles (and vice versa).
+        let freed = cache.clear_section("l2").unwrap();
+        assert_eq!(freed, 150);
+        assert_eq!(cache.section_bytes("l2").unwrap(), 0);
+        assert_eq!(cache.section_bytes("tiles").unwrap(), 25, "tiles untouched");
+        assert!(!root.join("l2").exists(), "section dir pruned");
+        assert!(root.join("tiles").exists());
+
+        let freed = cache.clear_section("tiles").unwrap();
+        assert_eq!(freed, 25);
+        assert_eq!(cache.total_bytes().unwrap(), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 

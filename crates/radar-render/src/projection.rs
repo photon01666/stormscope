@@ -172,17 +172,67 @@ pub fn gate_latlon(
     (lat, lon)
 }
 
+/// Great-circle surface distance between two lon/lat points, meters (mean
+/// sphere). Powers the map measure tool's miles readout.
+pub fn surface_distance_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
+    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
+    let dp = (lat2 - lat1).to_radians();
+    let dl = (lon2 - lon1).to_radians();
+    let a = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
+    2.0 * EARTH_RADIUS_M * a.sqrt().asin()
+}
+
+/// Initial great-circle bearing from point 1 to point 2, degrees clockwise
+/// from north in [0, 360). Shown in the expanded measure bubble.
+pub fn initial_bearing_deg(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
+    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
+    let dl = (lon2 - lon1).to_radians();
+    let y = dl.sin() * p2.cos();
+    let x = p1.cos() * p2.sin() - p1.sin() * p2.cos() * dl.cos();
+    y.atan2(x).to_degrees().rem_euclid(360.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Great-circle distance between two lon/lats on the mean-radius sphere.
+    /// (Test-local copy; the public [`super::surface_distance_m`] is the
+    /// canonical one — keep them in agreement via the test below.)
     fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
         let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
         let dp = (lat2 - lat1).to_radians();
         let dl = (lon2 - lon1).to_radians();
         let a = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
         2.0 * EARTH_RADIUS_M * a.sqrt().atan2((1.0 - a).sqrt())
+    }
+
+    #[test]
+    fn surface_distance_matches_haversine() {
+        for &(lon1, lat1, lon2, lat2) in &[
+            (-97.2778, 35.3331, -97.2778, 36.3331), // 1 deg latitude
+            (-97.2778, 35.3331, -96.2778, 35.3331), // 1 deg longitude
+            (-97.2778, 35.3331, -94.0, 39.0),       // diagonal
+            (-97.2778, 35.3331, -97.2778, 35.3331), // zero
+        ] {
+            let got = surface_distance_m(lon1, lat1, lon2, lat2);
+            let want = haversine_m(lat1, lon1, lat2, lon2);
+            assert!(
+                (got - want).abs() < 1e-6,
+                "({lon1},{lat1})->({lon2},{lat2}): {got} vs {want}"
+            );
+        }
+        // Sanity: 1 degree of latitude ≈ 111.2 km.
+        let d = surface_distance_m(0.0, 0.0, 0.0, 1.0);
+        assert!((d - 111_195.0).abs() < 1.0, "got {d}");
+    }
+
+    #[test]
+    fn bearings_point_at_cardinals() {
+        assert!((initial_bearing_deg(0.0, 0.0, 0.0, 1.0) - 0.0).abs() < 1e-9);
+        assert!((initial_bearing_deg(0.0, 0.0, 1.0, 0.0) - 90.0).abs() < 1e-9);
+        assert!((initial_bearing_deg(0.0, 0.0, 0.0, -1.0) - 180.0).abs() < 1e-9);
+        assert!((initial_bearing_deg(0.0, 0.0, -1.0, 0.0) - 270.0).abs() < 1e-9);
     }
 
     #[test]

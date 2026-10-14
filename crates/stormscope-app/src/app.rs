@@ -67,20 +67,63 @@ pub struct StormApp {
     pub tiles: radar_render::TileLayer,
     /// Cached radar overlay texture for the current (frame, moment, tilt,
     /// view, opacity) combination. Re-rasterized only when the signature
-    /// changes — never every frame.
+    /// changes — never every frame. Reused across re-rasters via
+    /// `TextureHandle::set` (one GPU texture, not one per frame).
     pub radar_tex: Option<RadarTex>,
+    /// Cached per-gate screen geometry for the current sweep layout + zoom.
+    /// Gate geolocation is ~half the raster cost and depends only on the
+    /// layout, site, and zoom — so pans, moment switches, Min dBZ tweaks and
+    /// playback frames (same VCP) all reuse it.
+    pub radar_geom: Option<radar_render::GateGeometry>,
+    /// Persistent RGBA scratch buffer for the radar overlay (avoids an ~8 MB
+    /// alloc per re-raster).
+    pub radar_buf: Vec<u8>,
     /// Last time the radar overlay was rasterized — throttles re-rasters
     /// during drags so panning stays smooth (the full-viewport splat is the
     /// app's most expensive operation).
     pub radar_last_raster: std::time::Instant,
     /// Signature awaiting a re-raster once the drag throttle expires.
     pub radar_pending: Option<u64>,
+    /// Last time the *view* changed (pan/zoom/resize) — a rapid repeat
+    /// (wheel-zoom emits a burst of zoom steps) is treated as motion too, so
+    /// gestures rasterize at half resolution and the full-res pass happens
+    /// once when they stop. Keyed to view changes only: the raster scale is
+    /// itself part of the raster signature, and updating this on every
+    /// signature change would flap the scale forever.
+    pub radar_view_change_at: std::time::Instant,
+    /// View signature (zoom/center/size) the timestamp above refers to.
+    pub radar_last_view_sig: u64,
     /// Derived storm tracks for the (prev, cur) frame pair at the current
     /// tilt: cached by signature, recomputed only when the frames change.
     pub tracks_cache: Option<(u64, Vec<radar_render::StormTrack>)>,
+    /// Previous smoothed track set: fresh velocities blend 50/50 with these
+    /// (matched by proximity), so cell motion — and marker ETAs — settle
+    /// instead of jumping scan to scan.
+    pub prev_tracks: Vec<radar_render::StormTrack>,
+    /// Per-marker arrival estimates, aligned with `state.markers` by index
+    /// (`None` = no cell incoming). Recomputed whenever tracks refresh.
+    pub marker_etas: Vec<Option<MarkerEta>>,
     /// Cache section awaiting the user's "yes" in the clear-cache dialog.
     /// Set by the Settings menu, cleared when the dialog is dismissed.
     pub confirm_clear: Option<ClearTarget>,
+    /// Auto-hide target for the controls sidebar (true = should be visible).
+    /// Driven each frame from pointer position + `sidebar_pinned`; the slide
+    /// animation itself is handled by egui's animation manager.
+    pub sidebar_open: bool,
+    /// High-res auto-scale currently applied to the sidebar (1.0 = none).
+    /// Recomputed each frame from the monitor's physical height in
+    /// `sidebar_overlay`; shown as a footer note while active.
+    pub sidebar_scale: f32,
+}
+
+/// One marker's storm-arrival estimate: the earliest incoming cell.
+pub struct MarkerEta {
+    /// Minutes until the cell's closest approach.
+    pub minutes: f64,
+    /// Cell ground speed, mph (US convention, like the track labels).
+    pub speed_mph: f64,
+    /// Cell heading as a 16-wind compass point ("NE").
+    pub compass: &'static str,
 }
 
 /// One cached radar overlay raster plus the view it was produced for, so a
@@ -136,10 +179,18 @@ impl StormApp {
             render_state: cc.wgpu_render_state.clone(),
             tiles,
             radar_tex: None,
+            radar_geom: None,
+            radar_buf: Vec::new(),
             radar_last_raster: std::time::Instant::now(),
             radar_pending: None,
+            radar_view_change_at: std::time::Instant::now(),
+            radar_last_view_sig: 0,
             tracks_cache: None,
+            prev_tracks: Vec::new(),
+            marker_etas: Vec::new(),
             confirm_clear: None,
+            sidebar_open: false,
+            sidebar_scale: 1.0,
         }
     }
 
@@ -150,6 +201,9 @@ impl StormApp {
             return;
         }
         self.state.site_id = id.to_string();
+        // Tracks from the old site must not smooth into the new site's.
+        self.prev_tracks.clear();
+        self.marker_etas.clear();
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
     }
 
@@ -196,6 +250,10 @@ impl StormApp {
                     self.state.playhead = 0;
                     self.radar_tex = None;
                     self.radar_pending = None;
+                    // Tracks are georeferenced to the old site/mode; don't
+                    // let the smoothing blend across the switch.
+                    self.prev_tracks.clear();
+                    self.marker_etas.clear();
                 }
                 DataMsg::ArchiveInfo { total, start, len } => {
                     self.state.archive_total = total;
@@ -211,6 +269,13 @@ impl StormApp {
     }
 
     fn handle_input(&mut self, ctx: &egui::Context) {
+        // Typing in a text field (e.g. the marker-name popup) must not drive
+        // the map: Space would toggle play/pause and ArrowLeft/Right would
+        // step frames, so the radar appears to "bounce" and can land on a
+        // frame without the current tilt/moment (radar vanishes).
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             self.state.loop_state = match self.state.loop_state {
                 LoopState::Playing => LoopState::Paused,
@@ -222,6 +287,10 @@ impl StormApp {
         }
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
             self.state.step_back();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.state.measure_mode {
+            self.state.measure_mode = false;
+            self.state.measure_drag = None;
         }
     }
 }

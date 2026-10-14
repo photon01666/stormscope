@@ -54,9 +54,10 @@ fn human_bytes(n: u64) -> String {
 /// Inclusive-exclusive UTC instant window of a Central calendar day.
 fn central_day_window(date: NaiveDate) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
     use chrono::TimeZone;
-    let start = Utc
-        .from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
-        .with_timezone(crate::timefmt::central())
+    let start = crate::timefmt::central()
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+        .earliest()
+        .expect("central midnight")
         .with_timezone(&Utc);
     (start, start + chrono::Duration::days(1))
 }
@@ -762,6 +763,45 @@ fn refresh_outlook(outlooks: &Option<OutlookSource>, day: u8, out: &Sender<DataM
             log::warn!("outlook day {day} fetch failed: {e:#}");
             let _ = out.send(DataMsg::Error(format!("outlook day {day}: {e:#}")));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: a Central calendar day starts at midnight CENTRAL, not at
+    /// midnight UTC. `Utc.from_utc_datetime(date.and_hms(0,0,0))` is the
+    /// tempting-but-wrong construction — it lands on 6 PM of the *previous*
+    /// day in Chicago and made the listing query the previous UTC day, so the
+    /// newest scans (after ~7 PM Central, which live under the *next* UTC
+    /// date prefix) were invisible and the app sat ~2 h stale.
+    #[test]
+    fn central_day_window_covers_the_central_day() {
+        use chrono::TimeZone;
+
+        // CDT (UTC-5): a Central day spans 05:00Z..05:00Z.
+        let date = NaiveDate::from_ymd_opt(2026, 10, 13).unwrap();
+        let (start, end) = central_day_window(date);
+        assert_eq!(start, Utc.from_utc_datetime(&date.and_hms_opt(5, 0, 0).unwrap()));
+        assert_eq!(
+            end,
+            Utc.from_utc_datetime(&date.succ_opt().unwrap().and_hms_opt(5, 0, 0).unwrap())
+        );
+        // The two UTC prefixes the window can touch: the date itself and the
+        // next day. The old bug returned the *previous* day here.
+        let last_instant = end - chrono::Duration::seconds(1);
+        assert_eq!(start.date_naive(), date);
+        assert_eq!(last_instant.date_naive(), date.succ_opt().unwrap());
+
+        // CST (UTC-6): winter days span 06:00Z..06:00Z.
+        let winter = NaiveDate::from_ymd_opt(2026, 12, 10).unwrap();
+        let (wstart, wend) = central_day_window(winter);
+        assert_eq!(wstart, Utc.from_utc_datetime(&winter.and_hms_opt(6, 0, 0).unwrap()));
+        assert_eq!(
+            wend,
+            Utc.from_utc_datetime(&winter.succ_opt().unwrap().and_hms_opt(6, 0, 0).unwrap())
+        );
     }
 }
 

@@ -1,6 +1,7 @@
 //! stormscope — app shell (W4, owned by lead).
 //!
-//! Layout: left control panel (site, product, tilt, opacity, loop controls),
+//! Layout: auto-hiding controls sidebar (site, product, tilt, opacity, loop
+//! controls) sliding in over the central map on left-edge hover,
 //! central map canvas (basemap tiles + radar overlay + warning polygons),
 //! bottom timeline scrubber, top status bar.
 //!

@@ -48,6 +48,20 @@ pub enum LoopState {
     Paused,
 }
 
+/// One end of the measure-tool line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasureEnd {
+    A,
+    B,
+}
+
+/// Whatever a measure-mode drag is currently moving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasureDrag {
+    End(MeasureEnd),
+    Label,
+}
+
 /// One frame in the animation ring.
 pub struct Frame {
     pub volume_start: DateTime<Utc>,
@@ -116,6 +130,27 @@ pub struct AppState {
     /// When true the next map click drops a new marker (the "＋ Place"
     /// toggle; Shift+click works regardless).
     pub add_marker_mode: bool,
+    /// Keep the controls sidebar open instead of auto-hiding it.
+    /// Unpinned (default) the sidebar slides away and reappears when the
+    /// pointer touches the left edge.
+    pub sidebar_pinned: bool,
+
+    // Measure tool (RadarScope-style distance line + blue bubble).
+    /// When true, map drags draw a measurement instead of panning.
+    pub measure_mode: bool,
+    /// Endpoints as (lon, lat). `b` fills in on the first drag/click.
+    pub measure_a: Option<(f64, f64)>,
+    pub measure_b: Option<(f64, f64)>,
+    /// What a drag in flight is moving (endpoint or the bubble itself).
+    pub measure_drag: Option<MeasureDrag>,
+    /// Bubble offset in screen px from the A–B midpoint (`None` = default
+    /// perch above the line). Set by dragging the bubble.
+    pub measure_label_offset: Option<(f32, f32)>,
+    /// Bubble tapped open: shows km + bearing under the miles readout.
+    pub measure_expanded: bool,
+    /// Last frame's bubble rect (screen coords) for hit-testing drags and
+    /// expand taps. Rewritten every frame the bubble draws.
+    pub measure_bubble_rect: Option<egui::Rect>,
 
     /// Playhead advance accumulator for LoopState::Playing.
     _acc: f32,
@@ -138,7 +173,7 @@ impl Default for AppState {
             opacity: 0.50,
             // Suppresses the clear-air clutter/haze that reads as a green
             // blob: only meaningful echoes light up by default.
-            min_dbz: 20.0,
+            min_dbz: 30.0,
             view: MapView {
                 center_lat: site.latitude,
                 center_lon: site.longitude,
@@ -167,6 +202,14 @@ impl Default for AppState {
             pending_marker: None,
             pending_marker_label: String::new(),
             add_marker_mode: false,
+            sidebar_pinned: false,
+            measure_mode: false,
+            measure_a: None,
+            measure_b: None,
+            measure_drag: None,
+            measure_label_offset: None,
+            measure_expanded: false,
+            measure_bubble_rect: None,
             _acc: 0.0,
         }
     }

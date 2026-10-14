@@ -28,6 +28,12 @@ const MIN_CELLS: usize = 4;
 const MAX_KM_PER_MIN: f64 = 3.0;
 /// Do not emit tracks slower than this (avoids jitter on parked cells).
 const MIN_SPEED_KMH: f64 = 10.0;
+/// A cell counts as "reaching" a point when its closest approach passes
+/// within this distance (~a storm core's width).
+pub const ETA_RADIUS_KM: f64 = 12.0;
+/// No ETA beyond this horizon — steering currents change, and the number
+/// stops meaning anything.
+pub const ETA_MAX_MIN: f64 = 120.0;
 
 /// One tracked storm cell: centroid plus motion.
 #[derive(Debug, Clone, PartialEq)]
@@ -244,6 +250,50 @@ pub fn extrapolate(t: &StormTrack, minutes: f64) -> (f64, f64) {
     )
 }
 
+/// What a tracked cell will do about a fixed point: minutes until closest
+/// approach plus the miss distance there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellEta {
+    /// Minutes until closest approach (always >= 0).
+    pub minutes: f64,
+    /// Miss distance at closest approach, km (<= [`ETA_RADIUS_KM`]).
+    pub miss_km: f64,
+    /// Cell ground speed, km/h.
+    pub speed_kmh: f64,
+}
+
+/// Time until a tracked cell reaches `(lon, lat)` — `None` when it never
+/// will: parked, moving away, missing by more than [`ETA_RADIUS_KM`], or
+/// farther out than [`ETA_MAX_MIN`].
+///
+/// Closest-approach on the local tangent plane: with relative position `r`
+/// (cell − point, km) and velocity `v` (km/min), `t* = −(r·v)/(v·v)`.
+/// Same km frame as the tracker's grid, so the numbers agree with it.
+pub fn eta_to_point(t: &StormTrack, lon: f64, lat: f64) -> Option<CellEta> {
+    let speed = t.vel_e.hypot(t.vel_n); // km/min
+    if speed * 60.0 < MIN_SPEED_KMH {
+        return None; // parked (compute_tracks filters these too)
+    }
+    let kx = 111.320 * lat.to_radians().cos();
+    let ky = 110.574;
+    let rx = (t.lon - lon) * kx;
+    let ry = (t.lat - lat) * ky;
+    let vv = t.vel_e * t.vel_e + t.vel_n * t.vel_n;
+    let tmin = -(rx * t.vel_e + ry * t.vel_n) / vv;
+    if tmin < 0.0 || tmin > ETA_MAX_MIN {
+        return None;
+    }
+    let miss = (rx + t.vel_e * tmin).hypot(ry + t.vel_n * tmin);
+    if miss > ETA_RADIUS_KM {
+        return None;
+    }
+    Some(CellEta {
+        minutes: tmin,
+        miss_km: miss,
+        speed_kmh: speed * 60.0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +390,45 @@ mod tests {
         let prev = vol_with_core(50, 0);
         let cur = vol_with_core(50, 5);
         assert!(compute_tracks(&prev, &cur, 0.5, RADAR_LAT, RADAR_LON).is_empty());
+    }
+
+    fn head_on_track() -> StormTrack {
+        // 60 km/h due east, 60 km west of the target.
+        StormTrack {
+            lat: 35.0,
+            lon: -97.0 - 60.0 / (111.320 * 35.0f64.to_radians().cos()),
+            vel_e: 1.0, // km/min
+            vel_n: 0.0,
+            speed_kmh: 60.0,
+            bearing_deg: 90.0,
+            max_dbz: 55.0,
+        }
+    }
+
+    #[test]
+    fn eta_counts_down_a_head_on_cell() {
+        let t = head_on_track();
+        let e = eta_to_point(&t, -97.0, 35.0).expect("head-on cell must have an ETA");
+        assert!((e.minutes - 60.0).abs() < 0.5, "got {} min", e.minutes);
+        assert!(e.miss_km < 0.5, "got {} km miss", e.miss_km);
+        assert!((e.speed_kmh - 60.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eta_rejects_misses_and_departures() {
+        let t = head_on_track();
+        // 30 km north of the path: outside the arrival radius.
+        assert!(eta_to_point(&t, -97.0, 35.0 + 30.0 / 110.574).is_none());
+        // Behind the cell (it already passed): no ETA.
+        assert!(eta_to_point(&t, -97.0 - 2.0, 35.0).is_none());
+        // Parked cell: no ETA.
+        let mut parked = t.clone();
+        parked.vel_e = 0.0;
+        parked.speed_kmh = 0.0;
+        assert!(eta_to_point(&parked, -97.0, 35.0).is_none());
+        // Farther than the horizon at this speed (60 km/h -> 120 km in 2 h).
+        let mut far = t.clone();
+        far.lon -= 3.0;
+        assert!(eta_to_point(&far, -97.0, 35.0).is_none());
     }
 }

@@ -25,3 +25,8 @@ nexrad-data = { version = "=1.0.0-rc.7", default-features = false, features = ["
 # nexrad-data's aws API is async (reqwest); we drive it from dedicated
 # current-thread runtimes inside blocking wrappers (no tokio macros needed).
 tokio = { version = "1", features = ["rt", "time", "net"] }
+
+[dev-dependencies]
+# examples/data_path_probe.rs uses a multi-thread tokio runtime + Central time.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net"] }
+chrono-tz.workspace = true

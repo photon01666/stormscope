@@ -25,8 +25,13 @@ pub mod tracks;
 
 pub use colormap::{ColorTable, Stop};
 pub use projection::{
-    gate_latlon, lonlat_to_merc_px, meters_per_pixel, merc_px_to_lonlat, MercProjector, MapView,
+    gate_latlon, initial_bearing_deg, lonlat_to_merc_px, meters_per_pixel, merc_px_to_lonlat,
+    surface_distance_m, MercProjector, MapView,
 };
-pub use raster::{rasterize_sweep, rasterize_sweep_into, RadarImage};
+pub use raster::{
+    rasterize_sweep, rasterize_sweep_from_geometry_pm, rasterize_sweep_into,
+    rasterize_sweep_premultiplied, rasterize_sweep_premultiplied_into, scaled_view, GateGeometry,
+    RadarImage, RowMap,
+};
 pub use tiles::{tile_range, tile_scale, tile_view_rect, TileKey, TileLayer, TileRange};
-pub use tracks::{compute_tracks, extrapolate, StormTrack};
+pub use tracks::{compute_tracks, extrapolate, eta_to_point, CellEta, StormTrack};

@@ -253,6 +253,10 @@ pub(super) fn request_forecast_if_stale(app: &mut StormApp) {
             app.state.observation = None;
         }
     }
+    log::debug!(
+        "forecast refresh: {lat:.4}, {lon:.4} (loaded age {:?}s)",
+        age.map(|a| a as i64)
+    );
     app.state.forecast_requested = Some((lat, lon));
     app.state.forecast_site = match picked {
         Some(_) => "pinned".to_string(),

@@ -231,7 +231,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
         .open(open)
         .default_size(size)
         .max_height(max_h)
-        .min_width(420.0 * scale)
+        .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .resizable(true)
@@ -299,7 +299,10 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
             );
 
             egui::ScrollArea::vertical()
-                .max_height((ui.available_height() - 20.0 * scale).max(120.0))
+                .max_height((ui.available_height() - 24.0 * scale).max(120.0))
+                .scroll_bar_visibility(
+                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                )
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     for w in rows.iter().take(MAX_ROWS) {
@@ -394,7 +397,7 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
         .open(&mut open)
         .default_size(size)
         .max_height(max_h)
-        .min_width(420.0 * scale)
+        .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .resizable(true)

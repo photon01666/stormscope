@@ -923,10 +923,9 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
         .open(&mut open)
         .default_size(size)
         .max_height(max_h)
-        .min_width(460.0 * scale)
+        .min_size(egui::vec2(460.0 * scale, 220.0 * scale))
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
-        .constrain_to(ctx.content_rect())
         .resizable(true)
         .show(ctx, |ui| {
             // The risk level that was clicked, as a summary card.
@@ -990,12 +989,30 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::same(8))
                         .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
+                            // The SPC product is pre-formatted for a fixed
+                            // column width, so it is *not* re-wrapped: a
+                            // wrapped galley of the whole discussion would be
+                            // re-laid-out on every resize frame (visible
+                            // jitter while dragging the window edge) and the
+                            // widest lines would shift as the window changes.
+                            // Both scrollbars are always reserved so growing
+                            // or shrinking the window cannot make a bar
+                            // appear and disappear, which oscillates the
+                            // layout.
+                            egui::ScrollArea::both()
                                 .max_height(text_height)
                                 .auto_shrink([false, false])
+                                .scroll_bar_visibility(
+                                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                                )
                                 .show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new(text).monospace().size(12.0 * scale),
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(text)
+                                                .monospace()
+                                                .size(12.0 * scale),
+                                        )
+                                        .wrap_mode(egui::TextWrapMode::Extend),
                                     );
                                 });
                         });

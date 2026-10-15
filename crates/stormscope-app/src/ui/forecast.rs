@@ -34,7 +34,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
         .open(&mut open)
         .default_size(size)
         .max_height(max_h)
-        .min_width(420.0 * scale)
+        .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .resizable(true)

@@ -42,6 +42,13 @@ log; entries start at the first public release.
   browser's **Details** button, and clicking a warning polygon on the map,
   open a popup with the full text, severity/urgency, affected areas and
   expiry.
+- Popups resize smoothly: the SPC discussion is no longer re-wrapped while
+  the window edge is dragged (the text product is pre-formatted, so it is
+  laid out once and scrolls in both directions), scrollbars are always
+  reserved so growing/shrinking cannot make a bar appear and disappear, the
+  windows carry a minimum size so they cannot be dragged into an overflow
+  state, and the SPC window no longer uses an explicit constrain rect (which
+  could make it jump when the clamp engaged mid-resize).
 - Popups (alerts, NOAA details, forecast, SPC discussion) open at a size
   scaled for the monitor and clamped to the display, so a long discussion or
   alert list cannot push a window off the bottom edge — and they stay freely

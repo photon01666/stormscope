@@ -24,7 +24,17 @@ log; entries start at the first public release.
   browser's **Details** button, and clicking a warning polygon on the map,
   open a popup with the full text, severity/urgency, affected areas and
   expiry.
-- The alerts window follows the monitor's scale factor, like the sidebar.
+- The alerts window follows the monitor's scale factor, like the sidebar,
+  and the browser/detail windows open centered on screen.
+- Jumping to an alert far from the selected station (from the All-US tab) also
+  loads the station that covers it: radar frames and the near-site alert set
+  are per station, so before this the map showed neither the warning polygon
+  nor radar after the jump. The switch only happens when another station is
+  nearer *and* actually covers the alert (offshore or out-of-network alerts
+  just pan); the zoom is raised to a station-scale view if the map was far
+  out, so the warning is visible once the data lands.
+- The per-row **Details** button works (the row's click region used to sit
+  above it in egui's hit order and swallow its clicks).
 
 ## v1.0.10 — 2026-10-15
 

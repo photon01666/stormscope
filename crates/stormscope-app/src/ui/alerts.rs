@@ -108,6 +108,35 @@ pub(super) fn pulse_color(w: &Warning) -> egui::Color32 {
     }
 }
 
+/// Station to switch to when the user jumps to an alert, if any.
+///
+/// An alert beyond the current station's radius has no radar and no polygon
+/// on the map (frames and the near-site alert set are per station), so
+/// "take me there" means "load the station that actually covers it". `None`
+/// when the current station is already the right one — including the case of
+/// an alert beyond every station's radius, where switching would gain
+/// nothing.
+pub(super) fn station_for_alert<'a>(
+    alert: &Warning,
+    current_site: &str,
+    radius_km: f64,
+) -> Option<&'static radar_core::sites::RadarSite> {
+    let (lat, lon) = alert.centroid()?;
+    let current = radar_core::sites::site(current_site)?;
+    let dist_current =
+        radar_core::sites::haversine_km(lat, lon, current.latitude, current.longitude);
+    if dist_current <= radius_km {
+        return None; // already covered by the selected station
+    }
+    // Only switch to a station that would actually cover the alert: one
+    // beyond every station's radius (offshore, or outside the network) has no
+    // radar to show, so a reload of "the nearest site" would gain nothing.
+    let nearest = radar_core::sites::nearest(lat, lon)?;
+    let dist_nearest =
+        radar_core::sites::haversine_km(lat, lon, nearest.latitude, nearest.longitude);
+    (nearest.id != current.id && dist_nearest <= radius_km).then_some(nearest)
+}
+
 /// The most significant watch-or-greater alert near (lat, lon), if any — what
 /// the top-of-map badge flashes for.
 pub(super) fn significant_near<'a>(
@@ -188,10 +217,13 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let mut hover: Option<String> = None;
     let mut clicked: Option<String> = None;
     let mut detail: Option<String> = None;
+    let mut switch_to: Option<String> = None;
     egui::Window::new("Alerts")
         .open(open)
         .default_size([600.0 * scale, 480.0 * scale])
         .min_width(420.0 * scale)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
         .resizable(true)
         .show(ctx, |ui| {
             super::apply_text_scale(ui, scale);
@@ -269,6 +301,17 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                         if is_clicked {
                             clicked = Some(w.id.clone());
                             center_on = w.centroid();
+                            // Far from the current station: "take me there"
+                            // only works if the station that covers it is
+                            // loaded (radar frames and the near-site alert
+                            // set are per station).
+                            if let Some(site) = station_for_alert(
+                                w,
+                                site_id,
+                                STATION_ALERT_RADIUS_KM,
+                            ) {
+                                switch_to = Some(site.id.to_string());
+                            }
                         }
                         if wants_details {
                             detail = Some(w.id.clone());
@@ -291,6 +334,15 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     }
     if let Some(id) = detail {
         app.state.alert_detail = Some(id);
+    }
+    if let Some(site_id) = switch_to {
+        // Loading a station takes a few seconds (its frames do not exist
+        // yet); zoom in if the view is too far out for a warning-sized area,
+        // so the alert is actually visible once the data lands.
+        if app.state.view.zoom < 8.5 {
+            app.state.view.zoom = 8.5;
+        }
+        app.select_site(&site_id);
     }
 }
 
@@ -321,6 +373,8 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
         .open(&mut open)
         .default_size([600.0 * scale, 460.0 * scale])
         .min_width(420.0 * scale)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
         .resizable(true)
         .show(ctx, |ui| {
             super::apply_text_scale(ui, scale);
@@ -398,6 +452,14 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
     }
 }
 
+/// The clickable parts of an alert row: everything except the rectangle of
+/// the Details button (left strip and area underneath it).
+pub(super) fn row_regions(row: egui::Rect, button: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let left = egui::Rect::from_min_max(row.min, egui::pos2(button.min.x - 2.0, row.max.y));
+    let below = egui::Rect::from_min_max(egui::pos2(row.min.x, button.max.y + 1.0), row.max);
+    (left, below)
+}
+
 /// One clickable alert row. Returns `(hovered, clicked, details)` — the
 /// caller mirrors hover into the map glow, jumps the map on click, and opens
 /// the NOAA detail popup for `details`.
@@ -411,9 +473,18 @@ fn alert_row(
 ) -> (bool, bool, bool) {
     let mut details = false;
     let row_id = egui::Id::new(("stormscope.alert.row", &w.id));
-    // Hover state comes from last frame's response, so the highlight can be
+    let row_left_id = row_id.with("left");
+    let row_below_id = row_id.with("below");
+    // Hover state comes from last frame's responses, so the highlight can be
     // painted *behind* this frame's content.
-    let hovered = ui.ctx().read_response(row_id).is_some_and(|r| r.hovered());
+    let hovered = ui
+        .ctx()
+        .read_response(row_left_id)
+        .is_some_and(|r| r.hovered())
+        || ui
+            .ctx()
+            .read_response(row_below_id)
+            .is_some_and(|r| r.hovered());
     let fill = if hovered {
         ui.visuals().widgets.hovered.bg_fill
     } else {
@@ -421,6 +492,7 @@ fn alert_row(
     };
 
     let has_polygon = w.polygon.is_some();
+    let mut details_rect: Option<egui::Rect> = None;
     let inner = egui::Frame::NONE
         .fill(fill)
         .corner_radius(4.0)
@@ -440,13 +512,13 @@ fn alert_row(
                         .weak()
                         .small(),
                     );
-                    if ui
+                    let btn = ui
                         .small_button("Details")
-                        .on_hover_text("Show the full NOAA text for this alert")
-                        .clicked()
-                    {
+                        .on_hover_text("Show the full NOAA text for this alert");
+                    if btn.clicked() {
                         details = true;
                     }
+                    details_rect = Some(btn.rect);
                 });
             });
             ui.horizontal_wrapped(|ui| {
@@ -484,12 +556,24 @@ fn alert_row(
         });
     ui.add_space(2.0);
 
-    let response = ui.interact(inner.response.rect, row_id, egui::Sense::click());
-    let hovered = response.hovered();
-    let raw_clicked = response.clicked();
-    if has_polygon {
-        // Consumes the response; the flags above are already read.
-        let _ = response.on_hover_text("Click to center the map on this alert");
+    // Clickable row area: everything except the Details button. Registering
+    // the whole frame instead would sit above the button in egui's hit order
+    // and swallow its clicks (the button "did nothing").
+    let row = inner.response.rect;
+    let btn = details_rect.unwrap_or(egui::Rect::NOTHING);
+    let (left, below) = row_regions(row, btn);
+    let mut hovered = false;
+    let mut raw_clicked = false;
+    for (region, id) in [(left, row_left_id), (below, row_below_id)] {
+        if region.width() <= 0.0 || region.height() <= 0.0 {
+            continue;
+        }
+        let r = ui.interact(region, id, egui::Sense::click());
+        hovered |= r.hovered();
+        raw_clicked |= r.clicked();
+        if has_polygon {
+            let _ = r.on_hover_text("Click to center the map on this alert");
+        }
     }
     // A click on the Details button must not also count as a row click.
     (hovered, raw_clicked && !details, details)
@@ -555,6 +639,67 @@ mod tests {
         assert!(matches_filter(&w, "oun"));
         assert!(matches_filter(&w, "somewhere"));
         assert!(!matches_filter(&w, "flood"));
+    }
+
+    /// Jumping to an alert from another station's area must load the station
+    /// that covers it, or the map shows neither the alert nor radar data.
+    #[test]
+    fn jumping_to_a_far_alert_picks_the_covering_station() {
+        // A Denver alert is ~700 km from KTWX (outside its radius); the
+        // station that watches it is the Front Range one.
+        let denver = (39.7, -104.99);
+        let d = warn("d", "Severe Thunderstorm Warning", denver.0, denver.1, true);
+        let site = station_for_alert(&d, "KTWX", STATION_ALERT_RADIUS_KM)
+            .expect("far alert must switch stations");
+        assert_ne!(site.id, "KTWX");
+        assert_eq!(
+            site.id,
+            radar_core::sites::nearest(denver.0, denver.1).unwrap().id,
+            "switch to the nearest site"
+        );
+        // That station covers the alert (otherwise the switch is pointless).
+        assert!(
+            radar_core::sites::haversine_km(denver.0, denver.1, site.latitude, site.longitude)
+                <= STATION_ALERT_RADIUS_KM
+        );
+
+        // Kansas City is ~130 km from Topeka: same coverage, no switch.
+        let kc = warn("kc", "Severe Thunderstorm Warning", 39.1, -94.58, true);
+        assert!(station_for_alert(&kc, "KTWX", STATION_ALERT_RADIUS_KM).is_none());
+
+        // An alert already covered by the selected station: no switch. (Near
+        // Topeka itself — Oklahoma City, at ~400 km, is right at the edge.)
+        let local = warn("local", "Tornado Warning", 39.2, -96.0, true);
+        assert!(station_for_alert(&local, "KTWX", STATION_ALERT_RADIUS_KM).is_none());
+
+        // Far outside the network (mid-Pacific): no station covers it, so a
+        // reload would gain nothing — pan only.
+        let ocean = warn("ocean", "Marine Warning", 20.0, -150.0, true);
+        assert!(station_for_alert(&ocean, "KTWX", STATION_ALERT_RADIUS_KM).is_none());
+
+        // Zone alerts cannot be located at all.
+        let zone = warn("zone", "Heat Advisory", 39.1, -94.58, false);
+        assert!(station_for_alert(&zone, "KTWX", STATION_ALERT_RADIUS_KM).is_none());
+    }
+
+    /// The row's clickable regions must cover the row except the Details
+    /// button (that is what makes the button's own clicks land).
+    #[test]
+    fn row_regions_exclude_the_details_button() {
+        let row = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(400.0, 60.0));
+        let btn = egui::Rect::from_min_size(egui::pos2(340.0, 24.0), egui::vec2(64.0, 20.0));
+        let (left, below) = row_regions(row, btn);
+        assert!(
+            !left.intersects(btn),
+            "left strip must not cover the button"
+        );
+        assert!(
+            !below.intersects(btn),
+            "below strip must not cover the button"
+        );
+        // A click on the far side of the row still hits a region.
+        assert!(left.contains(egui::pos2(200.0, 40.0)));
+        assert!(below.contains(egui::pos2(360.0, 70.0)));
     }
 
     /// Map-click hit testing: a click inside a polygon finds its alert, the

@@ -43,8 +43,9 @@ To grab one: open stormscope, hover the left edge so the sidebar shows, then
   polygons, plus an alerts browser: every active alert nationwide on one tab,
   just the selected station's area on the other, with a search filter.
   Hovering a list row glows the matching polygon (and labels it on the map);
-  clicking jumps to it; click a polygon (or the row's Details button) for the
-  full NOAA description and safety instruction.
+  clicking jumps to it — loading the station that covers it when the alert is
+  outside the selected one's range; click a polygon (or the row's Details
+  button) for the full NOAA description and safety instruction.
 - Storm tracks: cell-motion arrows, dashed 30-minute nowcasts, mph labels.
 - Per-marker arrival ETAs ("storm reaches this pin in ~14 min") derived from
   smoothed cell motion; velocity estimates blend scan-to-scan so they

@@ -42,6 +42,11 @@ log; entries start at the first public release.
   browser's **Details** button, and clicking a warning polygon on the map,
   open a popup with the full text, severity/urgency, affected areas and
   expiry.
+- Popups are positioned by their top-left corner instead of an egui
+  *pivot*: with a center pivot, every size change also shifts the stored
+  position by half the delta, which fights the resize drag (a downward drag
+  could snap the window back). They still open centered, and dragging them
+  works like any normal window.
 - Popups resize smoothly: the SPC discussion is no longer re-wrapped while
   the window edge is dragged (the text product is pre-formatted, so it is
   laid out once and scrolls in both directions), scrollbars are always

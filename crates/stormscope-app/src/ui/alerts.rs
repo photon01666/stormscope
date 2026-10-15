@@ -232,8 +232,10 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
         .default_size(size)
         .max_height(max_h)
         .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
-        .pivot(egui::Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
+        // Centered *by its top-left corner*, not by a pivot: egui's pivot
+        // is for anchored areas, and with a center pivot every size change
+        // also shifts the stored position — which fights the resize drag.
+        .default_pos(super::centered_popup_pos(ctx, size))
         .resizable(true)
         .show(ctx, |ui| {
             super::apply_text_scale(ui, scale);
@@ -398,8 +400,10 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
         .default_size(size)
         .max_height(max_h)
         .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
-        .pivot(egui::Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
+        // Centered *by its top-left corner*, not by a pivot: egui's pivot
+        // is for anchored areas, and with a center pivot every size change
+        // also shifts the stored position — which fights the resize drag.
+        .default_pos(super::centered_popup_pos(ctx, size))
         .resizable(true)
         .show(ctx, |ui| {
             super::apply_text_scale(ui, scale);

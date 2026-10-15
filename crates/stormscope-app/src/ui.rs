@@ -886,6 +886,12 @@ fn confirm_clear_dialog(ctx: &egui::Context, app: &mut StormApp) {
 /// Scaled popup size, clamped so a popup always fits on screen with room to
 /// spare: without the clamp a content-driven window can grow taller than the
 /// display, which is how the outlook popup ended up hanging off the bottom.
+/// Where a popup of `size` should be placed when it first opens: centered on
+/// the screen, positioned by its top-left corner.
+pub(super) fn centered_popup_pos(ctx: &egui::Context, size: egui::Vec2) -> egui::Pos2 {
+    ctx.content_rect().center() - size * 0.5
+}
+
 pub(super) fn popup_max_height(ctx: &egui::Context, scale: f32) -> f32 {
     (ctx.content_rect().height() - 90.0 * scale).max(240.0)
 }
@@ -924,8 +930,10 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
         .default_size(size)
         .max_height(max_h)
         .min_size(egui::vec2(460.0 * scale, 220.0 * scale))
-        .pivot(egui::Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
+        // Centered *by its top-left corner*, not by a pivot: egui's pivot
+        // is for anchored areas, and with a center pivot every size change
+        // also shifts the stored position — which fights the resize drag.
+        .default_pos(centered_popup_pos(ctx, size))
         .resizable(true)
         .show(ctx, |ui| {
             // The risk level that was clicked, as a summary card.

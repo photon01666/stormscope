@@ -391,7 +391,7 @@ fn open_archive_day(
     let total = vols.len();
     let window_len = ARCHIVE_MAX_VOLUMES.min(total);
     // vols is newest-first; the newest window is the head.
-    let mut day = ArchiveDay { vols, window_start: 0 };
+    let day = ArchiveDay { vols, window_start: 0 };
     // The day *replaces* whatever was on the ring — without this the live
     // frame still sitting there made every older archive scan look
     // out-of-order and get dropped.

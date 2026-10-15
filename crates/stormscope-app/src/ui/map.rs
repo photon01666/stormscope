@@ -152,7 +152,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // `TileLayer::paint` uses `ui.cursor().min` as the viewport origin, so
     // give it a child Ui pinned to the map rect. The rect it returns is the
     // viewport rect every later layer must share.
-    let mut tile_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    let tile_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     let tile_resp = app.tiles.paint(&tile_ui, &app.state.view);
     let origin = tile_resp.rect.min;
 
@@ -1012,8 +1012,6 @@ fn draw_tracks(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app:
         return;
     }
     let (w, h) = (view.width() as f64, view.height() as f64);
-    let m_per_px = radar_render::meters_per_pixel(view.center_lat, view.zoom).max(1e-6);
-    let ppk = 1000.0 / m_per_px; // pixels per kilometer
     let white = egui::Color32::from_white_alpha(235);
     let dim = egui::Color32::from_white_alpha(130);
 

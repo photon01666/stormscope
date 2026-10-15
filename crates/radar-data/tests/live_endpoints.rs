@@ -33,10 +33,17 @@ fn scratch_source() -> S3Source {
 fn list_archive_ktlx_today_returns_volumes_newest_first() {
     // Guard: junk AWS_* env must not affect anonymous access (nexrad-data
     // runs no credential chain / signer at all).
-    std::env::set_var("AWS_ACCESS_KEY_ID", "deliberately-invalid");
-    std::env::set_var("AWS_SECRET_ACCESS_KEY", "deliberately-invalid");
-    std::env::set_var("AWS_PROFILE", "deliberately-invalid");
-    std::env::set_var("AWS_REGION", "us-east-1");
+    //
+    // SAFETY (edition 2024 makes `set_var` unsafe): the test sets these
+    // before creating any source or thread, and `cargo test` runs each test
+    // function on its own thread — nothing else reads the environment
+    // concurrently at this point.
+    unsafe {
+        std::env::set_var("AWS_ACCESS_KEY_ID", "deliberately-invalid");
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", "deliberately-invalid");
+        std::env::set_var("AWS_PROFILE", "deliberately-invalid");
+        std::env::set_var("AWS_REGION", "us-east-1");
+    }
 
     let src = scratch_source();
     let today = Utc::now().date_naive();

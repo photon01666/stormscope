@@ -174,7 +174,7 @@ impl StormApp {
             tilts: vec![0.5, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.1, 6.4, 8.0, 10.0, 12.0, 19.5],
         }));
 
-        let mut state = AppState::default();
+        let state = AppState::default();
         if let Some(fonts) = Self::configure_fonts(&cc.egui_ctx) {
             cc.egui_ctx.set_fonts(fonts);
         }

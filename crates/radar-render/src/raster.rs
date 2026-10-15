@@ -1091,7 +1091,6 @@ mod tests {
         };
         let a = mk(a_az);
         let b = mk(b_az);
-        let view = view();
         let geom = GateGeometry::build(&a, 35.0, -97.0);
         match geom.reuse_for(&b, 35.0, -97.0) {
             Some(RowMap::Remapped(m)) => {

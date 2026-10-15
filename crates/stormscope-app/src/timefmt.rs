@@ -12,8 +12,3 @@ pub fn central() -> &'static chrono_tz::Tz {
 pub fn fmt_central(dt: &DateTime<Utc>) -> String {
     dt.with_timezone(central()).format("%-I:%M:%S %p %Z").to_string()
 }
-
-/// "2:35 PM CDT" — shorter form for the timeline ticks.
-pub fn fmt_central_short(dt: &DateTime<Utc>) -> String {
-    dt.with_timezone(central()).format("%-I:%M %p %Z").to_string()
-}

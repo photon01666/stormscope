@@ -360,7 +360,7 @@ fn decode_tile(bytes: &[u8]) -> Option<egui::ColorImage> {
         // Gain toward the source hue: scale the original channel by how far
         // the target luminance moved, so tints (blue water, green land) survive.
         let scale = if l > 0.001 { out_l / l } else { out_l };
-        let mut ch = |c: u8| -> u8 {
+        let ch = |c: u8| -> u8 {
             let v = (c as f32 * scale).round();
             v.clamp(0.0, 255.0) as u8
         };
@@ -368,7 +368,7 @@ fn decode_tile(bytes: &[u8]) -> Option<egui::ColorImage> {
         // Desaturate 55% toward the scaled luminance: RadarScope's basemap is
         // essentially monochrome gray-on-black.
         let gray = (0.2126 * sr as f32 + 0.7152 * sg as f32 + 0.0722 * sb as f32).round();
-        let mut mix = |c: u8| -> u8 {
+        let mix = |c: u8| -> u8 {
             let v = c as f32 + (gray - c as f32) * 0.55;
             v.round().clamp(0.0, 255.0) as u8
         };
@@ -913,7 +913,6 @@ mod tests {
         assert!((px - expected_px).abs() < 5.0, "px={px} expected≈{expected_px}");
     }
 
-    #[test]
     /// Ancestor UV math: a child tile must map to exactly its quadrant of the
     /// parent, and non-ancestors must be rejected.
     #[test]
@@ -942,6 +941,7 @@ mod tests {
         assert!(ancestor_uv(&z9(101, 199), &z9(50, 99)).is_none());
     }
 
+    #[test]
     fn tile_zoom_and_scale() {
         let mut v = view();
         assert_eq!(tile_zoom(&v), 9);

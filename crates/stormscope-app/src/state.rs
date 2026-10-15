@@ -205,6 +205,13 @@ pub struct AppState {
     pub outlook_day: u8,
     /// Fill opacity of the outlook polygons (0..=1).
     pub outlook_opacity: f32,
+    /// Open state of the SPC discussion popup, which risk area was clicked
+    /// (its `DN`), and the fetched discussion text per day.
+    pub outlook_detail_open: bool,
+    pub outlook_detail_dn: Option<u16>,
+    pub outlook_discussion: Option<(u8, String)>,
+    /// Day whose discussion is already requested (dedupes sends).
+    pub outlook_discussion_requested: Option<u8>,
 
     // Status surfaced in the status bar (filled by the coordinator).
     pub status_text: String,
@@ -313,6 +320,10 @@ impl Default for AppState {
             show_outlook: true,
             outlook_day: 1,
             outlook_opacity: 0.0,
+            outlook_detail_open: false,
+            outlook_detail_dn: None,
+            outlook_discussion: None,
+            outlook_discussion_requested: None,
             status_text: "starting…".to_string(),
             archive_total: 0,
             archive_start: 0,

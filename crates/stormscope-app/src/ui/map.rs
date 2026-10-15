@@ -130,6 +130,23 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             app.state.alert_detail = Some(w.id.clone());
                             app.state.alerts_focus = Some(w.id.clone());
                             app.state.alerts_focus_at = ui.input(|i| i.time);
+                        } else if app.state.show_outlook {
+                            // Clicking an SPC outline opens that day's
+                            // forecaster discussion.
+                            let hit = app.state.outlook.as_ref().and_then(|o| {
+                                outlook_border_at(o, &view, lon, lat, 8.0).map(|f| f.dn)
+                            });
+                            if let Some(dn) = hit {
+                                app.state.outlook_detail_open = true;
+                                app.state.outlook_detail_dn = Some(dn);
+                                let day = app.state.outlook_day;
+                                if app.state.outlook_discussion_requested != Some(day) {
+                                    app.state.outlook_discussion_requested = Some(day);
+                                    let _ = app
+                                        .tx
+                                        .send(crate::app::DataCmd::LoadOutlookDiscussion(day));
+                                }
+                            }
                         }
                     }
                 }
@@ -466,10 +483,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Top-center badge row: scan mode, scan age, alerts ---------------
     draw_top_badges(ui, &painter, tile_resp.rect, app);
 
-    // Brief "what is this" tooltips after resting for a second: warnings
-    // first, then the SPC risk area underneath.
+    // Brief "what is this" tooltip after resting on a warning for a second.
+    // (SPC risk areas deliberately have none: their outlines cover most of
+    // the map, so a tooltip there just gets in the way — click the border for
+    // the full discussion instead.)
     warning_hover_tooltip(ui, &response, app);
-    outlook_hover_tooltip(ui, &response, app);
 
     // --- Min dBZ quick-adjust bar at bottom-center --------------------------
     draw_min_dbz_bar(ui.ctx(), tile_resp.rect, app);
@@ -1617,43 +1635,64 @@ pub(super) fn outlook_at<'a>(
         .max_by_key(|f| f.risk_level().unwrap_or(0))
 }
 
-/// Tooltip for the SPC risk area under the pointer: what the category means,
-/// in the NWS's wording, after the same one-second dwell the warnings use.
-fn outlook_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormApp) {
-    let Some(dn) = app.state.outlook_hover else {
-        return;
-    };
-    if ui.input(|i| i.time) - app.state.outlook_hover_at < 1.0 {
-        return;
+/// Border of the SPC risk area under the pointer: a click within
+/// `tolerance_px` of an outline opens that day's discussion. Risk areas nest,
+/// so the most severe one within tolerance wins (ties go to the closer edge).
+pub(super) fn outlook_border_at<'a>(
+    o: &'a radar_core::outlooks::Outlook,
+    view: &MapView,
+    lon: f64,
+    lat: f64,
+    tolerance_px: f64,
+) -> Option<&'a radar_core::outlooks::OutlookFeature> {
+    let (px, py) = view.lonlat_to_view_px(lon, lat);
+    let mut best: Option<(&radar_core::outlooks::OutlookFeature, f64)> = None;
+    for f in &o.features {
+        if f.risk_level().is_none() && f.dn != 2 {
+            continue;
+        }
+        let mut nearest = f64::INFINITY;
+        for poly in &f.polygons {
+            for ring in poly {
+                if ring.len() < 2 {
+                    continue;
+                }
+                // Walk every edge including the closing one: the last vertex
+                // to the first is a real edge of the outline and clicking it
+                // must work like any other.
+                for i in 0..ring.len() {
+                    let a = ring[i];
+                    let b = ring[(i + 1) % ring.len()];
+                    let (ax, ay) = view.lonlat_to_view_px(a.0, a.1);
+                    let (bx, by) = view.lonlat_to_view_px(b.0, b.1);
+                    nearest = nearest.min(point_segment_distance(px, py, ax, ay, bx, by));
+                }
+            }
+        }
+        if nearest > tolerance_px {
+            continue;
+        }
+        let level = f.risk_level().unwrap_or(0);
+        let better = match best {
+            Some((bf, bd)) => (level, -nearest) > (bf.risk_level().unwrap_or(0), -bd),
+            None => true,
+        };
+        if better {
+            best = Some((f, nearest));
+        }
     }
-    let Some(o) = app.state.outlook.as_ref() else {
-        return;
-    };
-    let Some(f) = o.features.iter().find(|f| f.dn == dn) else {
-        return;
-    };
-    let color = egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]);
-    egui::containers::Tooltip::for_widget(response)
-        .at_pointer()
-        .show(|ui| {
-            super::apply_text_scale(ui, app.sidebar_scale.max(1.0));
-            ui.horizontal(|ui| {
-                ui.colored_label(color, "●");
-                ui.strong(f.headline());
-            });
-            ui.label(egui::RichText::new(f.description()).small());
-            let mut meta = vec![format!("SPC Day {} categorical outlook", o.day)];
-            if !o.forecaster.is_empty() {
-                meta.push(o.forecaster.clone());
-            }
-            if let Some(expire) = o.expire {
-                meta.push(format!(
-                    "valid until {}",
-                    crate::timefmt::fmt_central(&expire)
-                ));
-            }
-            ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
-        });
+    best.map(|(f, _)| f)
+}
+
+/// Distance from a point to a line segment, in the same (pixel) units.
+pub(super) fn point_segment_distance(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+    let (dx, dy) = (bx - ax, by - ay);
+    let len2 = dx * dx + dy * dy;
+    if len2 <= f64::EPSILON {
+        return (px - ax).hypot(py - ay);
+    }
+    let t = (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0);
+    (px - (ax + t * dx)).hypot(py - (ay + t * dy))
 }
 
 /// RadarScope-style measurement: A–B line, endpoint pins, and the draggable
@@ -1971,6 +2010,69 @@ mod tests {
         assert_eq!(hit.label, "TSTM");
         // Outside every area.
         assert!(outlook_at(&o, -90.0, 40.0).is_none());
+    }
+
+    /// Clicking an SPC outline: near an edge hits (most severe band wins),
+    /// deep inside or well outside does not — the border is the target.
+    #[test]
+    fn outlook_border_click_hits_the_outline_only() {
+        use radar_core::outlooks::{Outlook, OutlookFeature};
+        let outer = vec![vec![vec![
+            (-98.0, 34.0),
+            (-96.0, 34.0),
+            (-96.0, 36.0),
+            (-98.0, 36.0),
+        ]]];
+        let inner = vec![vec![vec![
+            (-97.4, 34.6),
+            (-96.6, 34.6),
+            (-96.6, 35.4),
+            (-97.4, 35.4),
+        ]]];
+        let feature = |label: &str, dn: u16, polygons: Vec<Vec<Vec<(f64, f64)>>>| OutlookFeature {
+            dn,
+            label: label.to_string(),
+            name: format!("{label} Risk"),
+            stroke: [255, 255, 255],
+            fill: [0, 0, 0],
+            polygons,
+        };
+        let o = Outlook {
+            day: 1,
+            issue: None,
+            valid: None,
+            expire: None,
+            forecaster: "SPC".into(),
+            features: vec![feature("SLGT", 4, outer), feature("ENH", 5, inner)],
+        };
+        let view = MapView {
+            center_lat: 35.0,
+            center_lon: -97.0,
+            zoom: 8.0,
+            width_px: 800.0,
+            height_px: 600.0,
+        };
+        // On the ENH edge (the inner box's west side at -97.4).
+        let hit = outlook_border_at(&o, &view, -97.4, 35.0, 8.0).expect("border hit");
+        assert_eq!(hit.label, "ENH");
+        // On the outer edge, away from the inner band.
+        let hit = outlook_border_at(&o, &view, -98.0, 35.0, 8.0).expect("outer border");
+        assert_eq!(hit.label, "SLGT");
+        // Inside the ENH box, far from every edge: no hit.
+        assert!(outlook_border_at(&o, &view, -97.0, 35.0, 8.0).is_none());
+        // Far outside: no hit.
+        assert!(outlook_border_at(&o, &view, -90.0, 40.0, 8.0).is_none());
+    }
+
+    /// Segment distance is the primitive the border test is built on.
+    #[test]
+    fn point_segment_distance_is_clamped_to_the_segment() {
+        // Perpendicular distance to a horizontal segment.
+        assert!((point_segment_distance(5.0, 3.0, 0.0, 0.0, 10.0, 0.0) - 3.0).abs() < 1e-9);
+        // Beyond the end: distance to the endpoint, not the infinite line.
+        assert!((point_segment_distance(13.0, 4.0, 0.0, 0.0, 10.0, 0.0) - 5.0).abs() < 1e-9);
+        // Degenerate segment.
+        assert!((point_segment_distance(3.0, 4.0, 0.0, 0.0, 0.0, 0.0) - 5.0).abs() < 1e-9);
     }
 
     /// The geo point under the anchor must stay under the anchor after

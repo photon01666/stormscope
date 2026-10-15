@@ -250,6 +250,18 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                 DataCmd::RefreshAlerts => {
                     refresh_alerts(&alerts, &current_site, &out);
                 }
+                DataCmd::LoadOutlookDiscussion(day) => {
+                    match outlooks.as_ref().map(|o| o.discussion(day)) {
+                        Some(Ok(text)) => {
+                            let _ = out.send(DataMsg::OutlookDiscussion(day, text));
+                        }
+                        Some(Err(e)) => {
+                            log::warn!("outlook discussion day {day} failed: {e:#}");
+                            let _ = out.send(DataMsg::Error(format!("outlook text: {e:#}")));
+                        }
+                        None => {}
+                    }
+                }
                 DataCmd::LoadOutlook(day) => {
                     outlook_day = day;
                     refresh_outlook(&outlooks, day, &out);

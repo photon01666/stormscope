@@ -51,6 +51,46 @@ impl OutlookSource {
         let fc: serde_json::Value = resp.json().context("parsing SPC outlook GeoJSON")?;
         parse_outlook(day, &fc)
     }
+
+    /// The forecaster's full discussion for `day` (1..=3): the plain-text
+    /// outlook product SPC publishes alongside the GeoJSON, with its WMO
+    /// header trimmed so it starts at the outlook title.
+    pub fn discussion(&self, day: u8) -> Result<String> {
+        if !(1..=3).contains(&day) {
+            bail!("outlook day must be 1..=3 (got {day})");
+        }
+        let url = format!("{BASE}/day{day}otlk.txt");
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .with_context(|| format!("GET {url}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("SPC outlook discussion day {day} returned HTTP {status}");
+        }
+        Ok(strip_wmo_header(&resp.text()?))
+    }
+}
+
+/// Drop the WMO routing block (`ZCZC …` / `ACUS01 KWNS …` / `SPC AC …`) that
+/// precedes the outlook title, so the popup opens on the human-readable text.
+pub(crate) fn strip_wmo_header(text: &str) -> String {
+    let mut out = String::new();
+    let mut seen_title = false;
+    for line in text.lines() {
+        if !seen_title {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("Day ") && trimmed.contains("Convective Outlook") {
+                seen_title = true;
+            } else {
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if seen_title { out } else { text.to_string() }
 }
 
 /// Parse an SPC categorical FeatureCollection into an [`Outlook`]. Separated
@@ -187,6 +227,22 @@ fn iso(s: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The discussion popup should open on the outlook title, not the WMO
+    /// routing block; unrecognized input passes through untouched.
+    #[test]
+    fn discussion_strips_the_wmo_header() {
+        let raw = "ZCZC SPCSWODY1 ALL\nACUS01 KWNS 151957\nSPC AC 151957\n\n\
+                   Day 1 Convective Outlook  \nNWS Storm Prediction Center Norman OK\n\
+                   Valid 152000Z - 161200Z\n\n...SUMMARY...\nIsolated severe storms possible.\n";
+        let body = strip_wmo_header(raw);
+        assert!(body.starts_with("Day 1 Convective Outlook"), "got {body:?}");
+        assert!(body.contains("...SUMMARY..."));
+        assert!(!body.contains("ZCZC"));
+        // No recognizable title: return the input unchanged.
+        let odd = "ZCZC x\nsomething else\n";
+        assert_eq!(strip_wmo_header(odd), odd);
+    }
 
     #[test]
     fn parses_categorical_features_in_severity_order() {

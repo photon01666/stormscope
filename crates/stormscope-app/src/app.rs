@@ -19,6 +19,8 @@ pub enum DataMsg {
     Observation(radar_core::forecast::Observation),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
+    /// Forecaster discussion text for one outlook day.
+    OutlookDiscussion(u8, String),
     Status(String),
     Error(String),
     /// Drop every ring frame (mode switch / archive window change).
@@ -53,6 +55,8 @@ pub enum DataCmd {
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
     LoadOutlook(u8),
+    /// Fetch the forecaster discussion text for a day (1..=3).
+    LoadOutlookDiscussion(u8),
     /// Fetch the NWS gridpoint forecast for a coordinate.
     LoadForecast(f64, f64),
     /// Delete every downloaded radar volume from disk (`l2/`).
@@ -289,6 +293,10 @@ impl StormApp {
                         f.periods.len()
                     );
                     self.state.forecast = Some(f);
+                }
+                DataMsg::OutlookDiscussion(day, text) => {
+                    log::debug!("outlook day {day} discussion: {} bytes", text.len());
+                    self.state.outlook_discussion = Some((day, text));
                 }
                 DataMsg::Outlook(o) => {
                     let label = o

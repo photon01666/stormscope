@@ -39,8 +39,8 @@ To grab one: open stormscope, hover the left edge so the sidebar shows, then
 
 **Overlays**
 - SPC Day 1–3 categorical outlooks (fills under the radar, outlines on top)
-  with the NWS definition of each risk level — legend in the sidebar, and a
-  hover tooltip on any risk polygon.
+  with the NWS definition of each risk level — legend in the sidebar, and
+  click any risk outline for the full SPC forecaster discussion.
 - NWS warnings (tornado / severe thunderstorm / flash flood) drawn as colored
   polygons, plus an alerts browser: every active alert nationwide on one tab,
   just the selected station's area on the other, with a search filter.

@@ -55,6 +55,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // NWS forecast window (station by default, or a point picked on the map).
     forecast::forecast_window(ui.ctx(), app);
 
+    // SPC discussion popup (clicking an outlook outline).
+    outlook_detail_window(ui.ctx(), app);
+
     // "Really clear …?" confirmation, drawn over everything. Rendered after
     // the panels so it isn't clipped by them; the Settings menu closes
     // itself before opening this.
@@ -877,6 +880,103 @@ fn confirm_clear_dialog(ctx: &egui::Context, app: &mut StormApp) {
     }
     if dismissed {
         app.confirm_clear = None;
+    }
+}
+
+/// SPC forecaster discussion popup, opened by clicking an outlook outline on
+/// the map (or its category in the legend): the clicked risk level's meaning
+/// plus the full text of that day's outlook.
+fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
+    if !app.state.outlook_detail_open {
+        return;
+    }
+    let day = app.state.outlook_day;
+    // The popup follows the selected day: fetch its text if we do not have it.
+    if app.state.outlook_discussion.as_ref().map(|(d, _)| *d) != Some(day)
+        && app.state.outlook_discussion_requested != Some(day)
+    {
+        app.state.outlook_discussion_requested = Some(day);
+        let _ = app.tx.send(crate::app::DataCmd::LoadOutlookDiscussion(day));
+    }
+
+    let scale = app.sidebar_scale.max(1.0);
+    let mut open = true;
+    egui::Window::new(format!("SPC Day {day} outlook"))
+        .id(egui::Id::new("stormscope.outlook.detail"))
+        .open(&mut open)
+        .default_size([620.0 * scale, 520.0 * scale])
+        .min_width(460.0 * scale)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
+        .resizable(true)
+        .show(ctx, |ui| {
+            // The risk level that was clicked, in the NWS wording.
+            if let (Some(dn), Some(o)) = (app.state.outlook_detail_dn, app.state.outlook.as_ref()) {
+                if let Some(f) = o.features.iter().find(|f| f.dn == dn) {
+                    ui.horizontal_wrapped(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(12.0 * scale, 12.0 * scale),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().rect_filled(
+                            rect,
+                            2.0,
+                            egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
+                        );
+                        ui.heading(f.headline());
+                    });
+                    ui.label(egui::RichText::new(f.description()));
+                }
+                let mut meta = vec![format!("SPC Day {day} Convective Outlook")];
+                if !o.forecaster.is_empty() {
+                    meta.push(o.forecaster.clone());
+                }
+                if let Some(issue) = o.issue {
+                    meta.push(format!("issued {}", crate::timefmt::fmt_central(&issue)));
+                }
+                if let Some(expire) = o.expire {
+                    meta.push(format!(
+                        "valid until {}",
+                        crate::timefmt::fmt_central(&expire)
+                    ));
+                }
+                ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+            }
+            ui.separator();
+
+            match app.state.outlook_discussion.as_ref() {
+                Some((d, text)) if *d == day => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(text).monospace().size(12.0 * scale));
+                        });
+                }
+                _ => {
+                    ui.label(egui::RichText::new("Loading the forecaster discussion…").weak());
+                }
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Reload text")
+                    .on_hover_text("Refetch the discussion from spc.noaa.gov")
+                    .clicked()
+                {
+                    app.state.outlook_discussion = None;
+                    app.state.outlook_discussion_requested = Some(day);
+                    let _ = app.tx.send(crate::app::DataCmd::LoadOutlookDiscussion(day));
+                }
+                ui.label(
+                    egui::RichText::new("source: spc.noaa.gov (public domain)")
+                        .weak()
+                        .small(),
+                );
+            });
+        });
+
+    if !open {
+        app.state.outlook_detail_open = false;
     }
 }
 

@@ -21,6 +21,9 @@ chrono-tz.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 earcutr.workspace = true
+# Allocator tuning (see main.rs): return freed decode buffers to the OS so a
+# stormscope left open for a day doesn't grow into a memory-pressure problem.
+libc = "0.2"
 # Force the wgpu renderer (Vulkan on Linux) and native Wayland windows.
 # eframe's `default` includes both glow and wgpu; we drop glow so the app is
 # Vulkan-only, and keep wayland+x11 for native Hyprland/Wayland support.

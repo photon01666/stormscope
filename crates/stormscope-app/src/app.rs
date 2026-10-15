@@ -103,9 +103,18 @@ pub struct StormApp {
     /// Per-marker arrival estimates, aligned with `state.markers` by index
     /// (`None` = no cell incoming). Recomputed whenever tracks refresh.
     pub marker_etas: Vec<Option<MarkerEta>>,
+    /// Last frame's rect of the floating Min-dBZ bar over the map (screen
+    /// coords). The map's wheel-zoom skips while the pointer is inside it, so
+    /// a scroll there adjusts the filter instead of zooming the map.
+    pub min_dbz_bar_rect: Option<egui::Rect>,
     /// Cache section awaiting the user's "yes" in the clear-cache dialog.
     /// Set by the Settings menu, cleared when the dialog is dismissed.
     pub confirm_clear: Option<ClearTarget>,
+    /// Throttle for the debug-level GPU texture accounting log (memory
+    /// pressure in this app shows up as resident textures/GPU memory).
+    pub tex_stats_at: std::time::Instant,
+    /// Throttle for the periodic `malloc_trim` (see `main.rs` tuning).
+    pub last_trim: std::time::Instant,
     /// Auto-hide target for the controls sidebar (true = should be visible).
     /// Driven each frame from pointer position + `sidebar_pinned`; the slide
     /// animation itself is handled by egui's animation manager.
@@ -188,7 +197,10 @@ impl StormApp {
             tracks_cache: None,
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
+            min_dbz_bar_rect: None,
             confirm_clear: None,
+            tex_stats_at: std::time::Instant::now(),
+            last_trim: std::time::Instant::now(),
             sidebar_open: false,
             sidebar_scale: 1.0,
         }
@@ -247,6 +259,7 @@ impl StormApp {
                 }
                 DataMsg::ClearFrames => {
                     self.state.ring.clear();
+                    self.state.ring_bytes = 0;
                     self.state.playhead = 0;
                     self.radar_tex = None;
                     self.radar_pending = None;
@@ -317,6 +330,61 @@ impl eframe::App for StormApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
         self.handle_input(ui.ctx());
+
+        // Texture accounting (debug): the app's GPU-side footprint, and the
+        // names of the biggest residents so a leak is attributable. On a
+        // shared-memory GPU this is what competes with system RAM.
+        if log::log_enabled!(log::Level::Debug)
+            && self.tex_stats_at.elapsed() >= std::time::Duration::from_secs(10)
+        {
+            self.tex_stats_at = std::time::Instant::now();
+            let tm = ui.ctx().tex_manager();
+            let tm = tm.read();
+            let mut items: Vec<(usize, String)> = tm
+                .allocated()
+                .map(|(_, m)| {
+                    (
+                        m.bytes_used(),
+                        format!("{} {}x{}", m.name, m.size[0], m.size[1]),
+                    )
+                })
+                .collect();
+            items.sort_by(|a, b| b.0.cmp(&a.0));
+            let total: usize = items.iter().map(|(b, _)| b).sum();
+            log::debug!(
+                "textures: {} alloc, {:.1} MB total | top: {}",
+                tm.num_allocated(),
+                total as f32 / 1e6,
+                items
+                    .iter()
+                    .take(4)
+                    .map(|(b, n)| format!("{n} {:.1}MB", *b as f32 / 1e6))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+            log::debug!(
+                "ring: {} frames, {:.2} GB (budget {:.2} GB) | rss: {} MB",
+                self.state.ring.len(),
+                self.state.ring_bytes as f64 / 1e9,
+                self.state.ring_budget_bytes as f64 / 1e9,
+                std::fs::read_to_string("/proc/self/statm")
+                    .ok()
+                    .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+                    .map(|pages| pages * 4096 / 1_000_000)
+                    .map(|mb| mb.to_string())
+                    .unwrap_or_else(|| "?".into()),
+            );
+            // Belt-and-braces on top of the mallopt tuning in main.rs: hand
+            // free heap pages back to the OS periodically, so a process left
+            // open all day doesn't creep into system memory pressure.
+            if self.last_trim.elapsed() >= std::time::Duration::from_secs(300) {
+                self.last_trim = std::time::Instant::now();
+                #[cfg(target_env = "gnu")]
+                unsafe {
+                    libc::malloc_trim(0);
+                }
+            }
+        }
 
         let dt = ui.input(|i| i.stable_dt);
         self.state.tick(std::time::Duration::from_secs_f32(dt));

@@ -44,8 +44,12 @@ const USER_AGENT: &str = "stormscope/0.1 (Linux NEXRAD radar viewer; github.com/
 /// pace the queue, otherwise a warm 100-tile cache takes seconds to trickle
 /// in and looks like re-downloading.
 const MAX_IN_FLIGHT: usize = 8;
-/// Decoded textures kept alive (~64 MB of 256x256 RGBA).
-const TEXTURE_CACHE_TILES: usize = 640;
+/// Decoded textures kept alive. 192 x 256x256 RGBA = 48 MB of GPU/system
+/// memory — this is a *cache*, not a working set (a full viewport is ~30-90
+/// tiles), and on shared-memory GPUs every tile here competes with system
+/// RAM: an oversized cap under memory pressure is what makes the GPU driver
+/// stall on buffer eviction (whole-desktop stutter).
+const TEXTURE_CACHE_TILES: usize = 192;
 const TILE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Minimum gap between actual *network* requests (enforced inside workers by
 /// `NetGate`, so cached tiles never wait on it). Wikimedia rate-limits
@@ -56,6 +60,14 @@ const MAX_NET_IN_FLIGHT: usize = 3;
 /// After every provider rate-limits us, pause network fetches this long
 /// (disk-cache reads keep flowing).
 const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(15);
+
+/// How long a provider that answered 403/429 is skipped entirely.
+///
+/// Wikimedia 403s anonymous clients for long stretches; without a breaker the
+/// app re-asks it for *every tile* (one wasted request + a global fetch pause
+/// each), so panning looks like the map is broken. 30 minutes, because a
+/// provider that blocks anonymous clients does it for hours, not seconds.
+const PROVIDER_BLOCK: Duration = Duration::from_secs(30 * 60);
 /// How long a failed tile stays suppressed before we try it again (so a
 /// transient 403/timeout isn't a permanent blank spot).
 const FAILED_RETRY: Duration = Duration::from_secs(180);
@@ -375,6 +387,28 @@ fn decode_tile(bytes: &[u8]) -> Option<egui::ColorImage> {
 /// REQUIRED" watermark tiles with HTTP 200.
 const PROVIDERS: [&str; 2] = [WIKIMEDIA_URL, OSM_URL];
 
+/// Per-provider circuit-breaker state: millis (since process start) until
+/// which the provider is skipped because it answered 403/429.
+static PROVIDER_BLOCKED_MS: [std::sync::atomic::AtomicU64; PROVIDERS.len()] =
+    [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+/// Provider that last served a tile successfully: tried first next time, so
+/// the app follows whichever server is actually answering today.
+static LAST_GOOD_PROVIDER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+/// Monotonic base for the millisecond stamps above.
+static BASE: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+/// Which providers to try, in order, right now: the last good one first,
+/// then the rest, skipping blocked ones. Pure, so it is unit-tested.
+fn provider_candidates(blocked_until_ms: [u64; PROVIDERS.len()], last_good: usize, now_ms: u64) -> Vec<usize> {
+    let n = blocked_until_ms.len();
+    let start = last_good.min(n.saturating_sub(1));
+    (0..n)
+        .map(|off| (start + off) % n)
+        .filter(|&i| blocked_until_ms[i] <= now_ms)
+        .collect()
+}
+
 /// Reject responses that are not a real basemap tile.
 ///
 /// Providers signal errors in ways that defeat naive `status().is_success()`
@@ -394,29 +428,52 @@ fn validate_tile(key: TileKey, bytes: &[u8]) -> Option<egui::ColorImage> {
     Some(image)
 }
 
-/// Returns `(bytes, rate_limited)`: `rate_limited` means the attempt failed
-/// AND at least one provider answered 403/429 — the caller should pause.
+/// Returns `(bytes, all_throttled)`: `all_throttled` means every provider we
+/// could try answered 403/429 — only then should the caller pause. A single
+/// throttled provider is circuit-broken here instead (see [`PROVIDER_BLOCK`]),
+/// which keeps the healthy provider serving.
 fn http_get(client: &reqwest::blocking::Client, key: TileKey) -> (Option<Vec<u8>>, bool) {
-    let mut saw_throttle = false;
-    for template in PROVIDERS {
-        let url = tile_url(template, key);
+    use std::sync::atomic::Ordering;
+    let now_ms = BASE.elapsed().as_millis() as u64;
+    let blocked: [u64; PROVIDERS.len()] =
+        std::array::from_fn(|i| PROVIDER_BLOCKED_MS[i].load(Ordering::Relaxed));
+    let candidates = provider_candidates(blocked, LAST_GOOD_PROVIDER.load(Ordering::Relaxed), now_ms);
+    if candidates.is_empty() {
+        return (None, true); // every provider is in cooldown
+    }
+
+    let mut throttled = 0usize;
+    for i in candidates.iter().copied() {
+        let url = tile_url(PROVIDERS[i], key);
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => match resp.bytes() {
-                Ok(b) if !b.is_empty() => return (Some(b.to_vec()), false),
+                Ok(b) if !b.is_empty() => {
+                    LAST_GOOD_PROVIDER.store(i, Ordering::Relaxed);
+                    return (Some(b.to_vec()), false);
+                }
                 Ok(_) => log::warn!("tile {key:?}: empty body from {url}"),
                 Err(e) => log::warn!("tile {key:?}: body read error from {url}: {e}"),
             },
             Ok(resp) => {
                 let status = resp.status();
                 if status.as_u16() == 403 || status.as_u16() == 429 {
-                    saw_throttle = true;
+                    // Circuit-break this provider: one log line per cooldown,
+                    // not one per tile (a rate-limited server stays blocked).
+                    PROVIDER_BLOCKED_MS[i]
+                        .store(now_ms + PROVIDER_BLOCK.as_millis() as u64, Ordering::Relaxed);
+                    throttled += 1;
+                    log::warn!(
+                        "tile {key:?}: HTTP {status} from {url} — skipping this provider for {} min",
+                        PROVIDER_BLOCK.as_secs() / 60
+                    );
+                } else {
+                    log::warn!("tile {key:?}: HTTP {status} from {url}");
                 }
-                log::warn!("tile {key:?}: HTTP {status} from {url}");
             }
             Err(e) => log::warn!("tile {key:?}: fetch error from {url}: {e}"),
         }
     }
-    (None, saw_throttle)
+    (None, throttled >= candidates.len())
 }
 
 /// Worker: disk cache first, then the provider list. Never runs on the UI
@@ -917,5 +974,23 @@ mod tests {
         assert!(rect.min.x.is_finite() && rect.min.y.is_finite());
         // No client => nothing queued, no worker threads spawned.
         assert!(layer.pending.is_empty() && layer.queue.is_empty());
+    }
+
+    /// The 403 storm fix: a provider answering 403/429 is skipped entirely
+    /// (until its cooldown expires), the last provider that worked is tried
+    /// first, and a globally throttled state is reported only when *nothing*
+    /// can be tried.
+    #[test]
+    fn provider_candidates_prefer_last_good_and_skip_blocked() {
+        let now = 1_000_000u64;
+        // Nothing blocked: last-good first, then the rest.
+        assert_eq!(provider_candidates([0, 0], 0, now), vec![0, 1]);
+        assert_eq!(provider_candidates([0, 0], 1, now), vec![1, 0]);
+        // Wikimedia (index 0) is in cooldown: OSM is the only candidate.
+        assert_eq!(provider_candidates([now + 1, 0], 0, now), vec![1]);
+        // ...and it stays preferred after the cooldown expires.
+        assert_eq!(provider_candidates([0, 0], 1, now), vec![1, 0]);
+        // Both blocked => nothing to try (caller pauses).
+        assert_eq!(provider_candidates([now + 1, now + 1], 0, now), Vec::<usize>::new());
     }
 }

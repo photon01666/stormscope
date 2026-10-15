@@ -9,9 +9,33 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// How many decoded volumes we keep resident for looping. 24 scans ≈ 2 hours
-/// of wall-clock radar time. The user's machine has 62 GB RAM and a decoded
-/// volume is ~150 MB, so this lands around 3-4 GB — comfortable.
+/// of wall-clock radar time — but the *memory budget* below is the binding
+/// limit in practice (a decoded volume runs 150-200 MB), so the ring doesn't
+/// pin ~5 GB of RAM on a machine that has other work to do.
 pub const RING_CAPACITY: usize = 24;
+
+/// Resident-memory budget for the animation ring. Evicting oldest-first down
+/// to this keeps the app's footprint predictable: leaving it open all night
+/// must not push the system into swap (and, on a shared-memory GPU, into
+/// driver buffer-eviction stalls that stutter the whole desktop).
+pub const RING_BUDGET_BYTES: usize = 3 * 1024 * 1024 * 1024;
+
+/// Never trim below this many frames — a loop needs a few scans to be a loop.
+pub const MIN_RING_FRAMES: usize = 8;
+
+/// Approximate resident size of one decoded volume: gate data is the bulk
+/// (i16 per gate per moment), plus azimuth tables and struct overhead.
+fn volume_bytes(v: &radar_core::Volume) -> usize {
+    let mut n = std::mem::size_of::<radar_core::Volume>() + v.sweeps.len() * 64;
+    for s in &v.sweeps {
+        n += std::mem::size_of::<radar_core::Sweep>();
+        n += s.azimuths_deg.len() * std::mem::size_of::<f32>();
+        for m in &s.moments {
+            n += std::mem::size_of::<radar_core::MomentData>() + m.data.len() * 2;
+        }
+    }
+    n
+}
 
 /// A user-placed, labeled location pin on the map. Persisted to
 /// `~/.config/stormscope/markers.json`.
@@ -66,6 +90,8 @@ pub enum MeasureDrag {
 pub struct Frame {
     pub volume_start: DateTime<Utc>,
     pub volume: Arc<Volume>,
+    /// Approximate resident bytes of `volume` (ring budget accounting).
+    pub bytes: usize,
 }
 
 pub struct AppState {
@@ -92,6 +118,11 @@ pub struct AppState {
     pub ring: VecDeque<Frame>,
     /// Playhead into `ring` (0..ring.len()). Clamped on push.
     pub playhead: usize,
+    /// Resident bytes across `ring` (sum of `Frame::bytes`).
+    pub ring_bytes: usize,
+    /// Eviction budget for `ring_bytes` (a field, not just the const, so
+    /// tests can shrink it).
+    pub ring_budget_bytes: usize,
 
     // Alerts
     pub alerts: Vec<radar_core::warnings::Warning>,
@@ -183,6 +214,8 @@ impl Default for AppState {
             },
             ring: VecDeque::with_capacity(RING_CAPACITY),
             playhead: 0,
+            ring_bytes: 0,
+            ring_budget_bytes: RING_BUDGET_BYTES,
             alerts: Vec::new(),
             show_alerts: true,
             show_tracks: true,
@@ -297,14 +330,24 @@ impl AppState {
             return; // duplicate
         }
         let pos = self.ring.partition_point(|f| f.volume_start < start);
+        let bytes = volume_bytes(&volume);
         if self.mode != Mode::Live && !self.ring.is_empty() && pos <= self.playhead {
             // Older scans landing before the current frame must not move the
             // view off it.
             self.playhead += 1;
         }
-        self.ring.insert(pos, Frame { volume_start: start, volume });
-        while self.ring.len() > RING_CAPACITY {
-            self.ring.pop_front();
+        self.ring.insert(pos, Frame { volume_start: start, bytes, volume });
+        self.ring_bytes += bytes;
+        // Trim: the count cap AND the memory budget. The budget is what
+        // actually binds on precip VCPs (150-200 MB/volume), and it is the
+        // difference between a 5 GB overnight footprint and a ~3 GB one —
+        // which matters because this app shares RAM (and, on this Intel GPU,
+        // GEM/VRAM) with whatever else the desktop runs.
+        while self.ring.len() > RING_CAPACITY
+            || (self.ring.len() > MIN_RING_FRAMES && self.ring_bytes > self.ring_budget_bytes)
+        {
+            let Some(old) = self.ring.pop_front() else { break };
+            self.ring_bytes = self.ring_bytes.saturating_sub(old.bytes);
             self.playhead = self.playhead.saturating_sub(1);
         }
         if self.mode == Mode::Live {
@@ -419,8 +462,7 @@ mod tests {
     /// Scrubbing back in Archive mode must not be yanked forward when an older
     /// scan backfills in ahead of the playhead.
     #[test]
-    fn archive_mode_keeps_the_selected_frame_when_backfilling() {
-        let mut s = state();
+    fn archive_mode_keeps_the_selected_frame_when_backfilling() {        let mut s = state();
         s.mode = Mode::Archive;
         s.push_volume(vol("KTWX", at(50)));
         s.push_volume(vol("KTWX", at(40)));
@@ -429,5 +471,55 @@ mod tests {
         s.push_volume(vol("KTWX", at(10))); // older scan backfills in
         assert_eq!(s.ring.len(), 4);
         assert_eq!(s.current().map(|f| f.volume_start), Some(at(30)));
+    }
+
+    /// The ring must respect the memory budget: with a tiny budget the oldest
+    /// frames are evicted (but never below MIN_RING_FRAMES), and the
+    /// accounting tracks what is resident.
+    #[test]
+    fn ring_evicts_by_memory_budget() {
+        let mut s = state();
+        // ~1 MB per volume.
+        let big = Arc::new(Volume {
+            meta: VolumeMeta {
+                site_id: "KTWX".into(),
+                volume_start: at(0),
+                vcp: None,
+                sequence_number: None,
+                sweep_count: 1,
+                moments: vec![],
+            },
+            sweeps: vec![radar_core::Sweep {
+                elevation_deg: 0.5,
+                elevation_measured_deg: 0.5,
+                azimuth_width_deg: 0.5,
+                azimuths_deg: vec![0.0; 10],
+                moments: vec![radar_core::MomentData {
+                    kind: radar_core::Moment::Reflectivity,
+                    calibration: radar_core::MomentCalibration::default(),
+                    range_start_m: 0.0,
+                    gate_size_m: 250.0,
+                    gate_count: 500_000,
+                    ray_count: 1,
+                    data: vec![0i16; 500_000],
+                }],
+            }],
+        });
+        let per_frame = volume_bytes(&big);
+        assert!(per_frame >= 1_000_000, "fixture should be ~1 MB, got {per_frame}");
+
+        // Budget for ~4 frames, with a floor of MIN_RING_FRAMES (8).
+        s.ring_budget_bytes = per_frame * 4;
+        for m in 0..30u32 {
+            let mut v = (*big).clone();
+            v.meta.volume_start = at(m % 59);
+            s.push_volume(Arc::new(v));
+        }
+        // Floor wins over the budget until the frame count exceeds it.
+        assert_eq!(s.ring.len(), MIN_RING_FRAMES);
+        assert!(s.ring_bytes <= per_frame * MIN_RING_FRAMES + per_frame);
+        assert_eq!(s.ring_bytes, s.ring.iter().map(|f| f.bytes).sum::<usize>());
+        // The newest frame is what Live mode shows.
+        assert_eq!(s.playhead, s.ring.len() - 1);
     }
 }

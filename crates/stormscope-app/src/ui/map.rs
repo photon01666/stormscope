@@ -407,8 +407,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     let show_spc = app.state.show_outlook && app.state.outlook.is_some();
     draw_attribution(&painter, tile_resp.rect, show_spc);
 
-    // --- Scan-mode badge (precip vs clear-air) at top-center ---------------
-    draw_mode_badge(ui, &painter, tile_resp.rect, app);
+    // --- Top-center badge row: scan mode, scan age, alerts ---------------
+    draw_top_badges(ui, &painter, tile_resp.rect, app);
 
     // --- Min dBZ quick-adjust bar at bottom-center --------------------------
     draw_min_dbz_bar(ui.ctx(), tile_resp.rect, app);
@@ -1154,36 +1154,72 @@ fn draw_dashed(
 /// legitimately thin and speckled — the mode badge answers "why does the
 /// radar look like dots?" at a glance; the age badge answers "how stale is
 /// this?", turning amber then red as the data ages past its scan cadence.
-fn draw_mode_badge(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app: &StormApp) {
+/// Top-center badge row: scan mode (precip vs clear-air, with VCP), the age
+/// of the newest scan, and the alerts count.
+///
+/// The alerts badge is the entry point to the alerts browser. When the
+/// selected station has a watch or warning in force nearby, the badge
+/// flashes in that alert's family color (dimmed for watches), so an issued
+/// watch/warning is visible without opening anything.
+fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app: &mut StormApp) {
     use radar_core::vcp::ScanMode;
-    if app.state.current().is_none() {
-        return; // nothing loaded yet — don't flash a confusing badge
-    }
-    // The age readout ticks every second, so keep a 1 Hz repaint coming
-    // even when the loop is paused and nothing else animates.
+    // The age readout ticks every second, so keep a 1 Hz repaint coming even
+    // when the loop is paused and nothing else animates.
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_secs(1));
-    let mode = app.state.scan_mode();
-    let vcp = app.state.current().and_then(|f| f.volume.meta.vcp);
-    let mode_text = match vcp {
-        Some(v) => format!("{} · VCP {v}", mode.label()),
-        None => mode.label().to_string(),
-    };
-    let mode_color = match mode {
-        ScanMode::Precip => egui::Color32::from_rgb(125, 255, 176), // green
-        ScanMode::ClearAir => egui::Color32::from_rgb(255, 209, 102), // amber
-        ScanMode::Unknown => egui::Color32::from_white_alpha(190),
-    };
 
-    let mut badges = vec![(mode_text, mode_color)];
-    if let Some(lat) = app.state.latency() {
-        let secs = lat.num_seconds().max(0);
-        let age_color = match age_band(mode, secs) {
-            AgeBand::Fresh => egui::Color32::from_white_alpha(220),
-            AgeBand::Warn => egui::Color32::from_rgb(255, 209, 102), // amber
-            AgeBand::Old => egui::Color32::from_rgb(255, 96, 96),    // red
+    let mut badges: Vec<(String, egui::Color32)> = Vec::new();
+    if app.state.current().is_some() {
+        let mode = app.state.scan_mode();
+        let vcp = app.state.current().and_then(|f| f.volume.meta.vcp);
+        let mode_text = match vcp {
+            Some(v) => format!("{} · VCP {v}", mode.label()),
+            None => mode.label().to_string(),
         };
-        badges.push((format!("{} old", fmt_data_age(secs)), age_color));
+        let mode_color = match mode {
+            ScanMode::Precip => egui::Color32::from_rgb(125, 255, 176), // green
+            ScanMode::ClearAir => egui::Color32::from_rgb(255, 209, 102), // amber
+            ScanMode::Unknown => egui::Color32::from_white_alpha(190),
+        };
+        badges.push((mode_text, mode_color));
+
+        if let Some(lat) = app.state.latency() {
+            let secs = lat.num_seconds().max(0);
+            let age_color = match age_band(mode, secs) {
+                AgeBand::Fresh => egui::Color32::from_white_alpha(220),
+                AgeBand::Warn => egui::Color32::from_rgb(255, 209, 102), // amber
+                AgeBand::Old => egui::Color32::from_rgb(255, 96, 96),    // red
+            };
+            badges.push((format!("{} old", fmt_data_age(secs)), age_color));
+        }
+    }
+
+    // Alerts: the count is nationwide (nothing hidden); the flash is for
+    // watches/warnings near the *selected station*.
+    let alert_count = if app.state.all_alerts.is_empty() {
+        app.state.alerts.len()
+    } else {
+        app.state.all_alerts.len()
+    };
+    let significant = radar_core::sites::site(&app.state.site_id).and_then(|s| {
+        super::alerts::significant_near(
+            &app.state.alerts,
+            s.latitude,
+            s.longitude,
+            crate::state::STATION_ALERT_RADIUS_KM,
+        )
+    });
+    let alerts_color = significant.map_or(egui::Color32::from_white_alpha(220), |w| {
+        super::alerts::pulse_color(w)
+    });
+    badges.push((format!("⚠ {alert_count} alerts"), alerts_color));
+
+    // Flash phase for the alerts badge (also drives the repaint below).
+    let now = ui.ctx().input(|i| i.time);
+    let flash = (0.55 + 0.45 * (now * 4.0).sin()) as f32;
+    if significant.is_some() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(120));
     }
 
     let font = egui::FontId::proportional(15.0);
@@ -1196,29 +1232,76 @@ fn draw_mode_badge(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
         .collect();
     let pad = egui::vec2(24.0, 12.0);
     let gap = 8.0;
-    let total_w: f32 = galleys.iter().map(|g| g.size().x + pad.x).sum::<f32>()
-        + gap * (galleys.len().saturating_sub(1) as f32);
+    let total_w: f32 =
+        galleys.iter().map(|g| g.size().x + pad.x).sum::<f32>() + gap * (galleys.len() - 1) as f32;
     let top = rect.min.y + 8.0;
     let mut x = rect.center().x - total_w / 2.0;
-    for (galley, color) in galleys.iter().zip(badges.iter().map(|(_, c)| c)) {
+    let mut alerts_rect = None;
+    let last = badges.len() - 1;
+    for (i, (galley, color)) in galleys
+        .iter()
+        .zip(badges.iter().map(|(_, c)| c))
+        .enumerate()
+    {
         let size = galley.size();
         let bg = egui::Rect::from_min_size(
             egui::pos2(x, top),
             egui::vec2(size.x + pad.x, size.y + pad.y),
         );
         painter.rect_filled(bg, 7.0, egui::Color32::from_black_alpha(200));
-        painter.rect_stroke(
-            bg,
-            7.0,
-            egui::Stroke::new(1.0, color.gamma_multiply(0.5)),
-            egui::StrokeKind::Outside,
-        );
+        if i == last && significant.is_some() {
+            // Flash: a glow ring whose width and opacity follow the phase.
+            painter.rect_stroke(
+                bg.expand(1.0 + 2.0 * flash),
+                9.0,
+                egui::Stroke::new(2.0, color.gamma_multiply(0.35 + 0.5 * flash)),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if !(i == last && app.alerts_badge_hovered) {
+            painter.rect_stroke(
+                bg,
+                7.0,
+                egui::Stroke::new(
+                    if i == last && significant.is_some() {
+                        1.8
+                    } else {
+                        1.0
+                    },
+                    color.gamma_multiply(0.5),
+                ),
+                egui::StrokeKind::Outside,
+            );
+        }
         painter.galley(
             egui::pos2(bg.min.x + pad.x / 2.0, top + pad.y / 2.0),
             (*galley).clone(),
             *color,
         );
+        if i == last {
+            alerts_rect = Some(bg);
+        }
         x += size.x + pad.x + gap;
+    }
+
+    // The alerts pill is a button: click opens the browser, hover brightens.
+    if let Some(bg) = alerts_rect {
+        let resp = ui.interact(
+            bg,
+            egui::Id::new("stormscope.alerts.badge"),
+            egui::Sense::click(),
+        );
+        app.alerts_badge_hovered = resp.hovered();
+        let hover_text = match significant {
+            Some(w) => format!(
+                "{} in force near {} — click for the alerts browser",
+                w.event, app.state.site_id
+            ),
+            None => format!("{alert_count} active alerts — click to browse"),
+        };
+        if resp.on_hover_text(hover_text).clicked() {
+            app.state.alerts_popup_open = true;
+        }
     }
 }
 

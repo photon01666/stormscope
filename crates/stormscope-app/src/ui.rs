@@ -268,13 +268,6 @@ fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
             ui.label(format!("+{}m", lat.num_minutes()));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button(format!("⚠ {} alerts", app.state.alerts.len()))
-                .on_hover_text("Open the alerts browser")
-                .clicked()
-            {
-                app.state.alerts_popup_open = true;
-            }
             ui.label(app.state.status_text.clone());
         });
     });
@@ -504,8 +497,13 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.add_space(6.0);
     ui.checkbox(&mut app.state.show_alerts, "Show warnings");
     ui.checkbox(&mut app.state.show_tracks, "Show storm tracks");
+    let alert_count = if app.state.all_alerts.is_empty() {
+        app.state.alerts.len()
+    } else {
+        app.state.all_alerts.len()
+    };
     if ui
-        .button(format!("⚠ Alerts ({})", app.state.alerts.len()))
+        .button(format!("⚠ Alerts ({alert_count})"))
         .on_hover_text("Browse active alerts: all US, or just this station")
         .clicked()
     {

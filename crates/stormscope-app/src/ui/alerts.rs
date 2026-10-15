@@ -60,6 +60,74 @@ fn matches_filter(w: &Warning, needle: &str) -> bool {
         .any(|f| f.to_lowercase().contains(&needle))
 }
 
+/// Priority for "watch or greater" alerts, most severe first. `None` means
+/// the alert is not something worth flashing a badge about (advisories,
+/// statements, outlooks).
+///
+/// Deliberately event-name based rather than severity/urgency based: NWS
+/// watches and warnings are the two families people act on, and their names
+/// say which they are.
+fn significant_priority(w: &Warning) -> Option<u8> {
+    let is_watch = w.event.contains("Watch");
+    let is_warning = w.event.contains("Warning");
+    if !is_watch && !is_warning {
+        return None;
+    }
+    // Total order, no ties: warnings always outrank watches, and within a
+    // class the family order is tornado > severe > flood > other.
+    let class = if is_warning { 4 } else { 2 };
+    let family = if w.is_tornado() {
+        3
+    } else if w.is_severe_thunderstorm() {
+        2
+    } else if w.is_flash_flood() {
+        1
+    } else {
+        0
+    };
+    Some(class * 2 + family)
+}
+
+/// Color the top-of-map alerts badge flashes for a watch/warning: the family
+/// color (matching the map polygons), dimmed for watches so a watch reads as
+/// less urgent than the corresponding warning.
+pub(super) fn pulse_color(w: &Warning) -> egui::Color32 {
+    let base = if w.is_tornado() {
+        egui::Color32::from_rgb(255, 60, 120)
+    } else if w.is_severe_thunderstorm() {
+        egui::Color32::from_rgb(255, 220, 60)
+    } else if w.is_flash_flood() {
+        egui::Color32::from_rgb(80, 255, 120)
+    } else {
+        egui::Color32::from_rgb(255, 255, 255)
+    };
+    if w.event.contains("Watch") {
+        base.gamma_multiply(0.72)
+    } else {
+        base
+    }
+}
+
+/// The most significant watch-or-greater alert near (lat, lon), if any — what
+/// the top-of-map badge flashes for.
+pub(super) fn significant_near<'a>(
+    alerts: &'a [Warning],
+    lat: f64,
+    lon: f64,
+    radius_km: f64,
+) -> Option<&'a Warning> {
+    alerts
+        .iter()
+        .filter(|w| {
+            w.centroid().is_some_and(|(alat, alon)| {
+                radar_render::surface_distance_m(lon, lat, alon, alat) <= radius_km * 1000.0
+            })
+        })
+        .filter_map(|w| significant_priority(w).map(|p| (p, w)))
+        .max_by_key(|(p, _)| *p)
+        .map(|(_, w)| w)
+}
+
 /// Ray-casting point-in-polygon test against an exterior ring. NWS warning
 /// polygons are single-ring in practice, so holes are ignored.
 pub(super) fn ring_contains(ring: &[(f64, f64)], lon: f64, lat: f64) -> bool {
@@ -509,6 +577,46 @@ mod tests {
             warning_at(&[zone], -97.3, 35.4).is_none(),
             "no polygon, no hit"
         );
+    }
+
+    /// Alerts badge: only watches/warnings count, warnings outrank watches,
+    /// and advisories never flash anything.
+    #[test]
+    fn significant_alerts_rank_warnings_over_watches() {
+        let p = |event: &str| significant_priority(&warn("x", event, 35.4, -97.3, true));
+        assert!(p("Tornado Warning").unwrap() > p("Severe Thunderstorm Warning").unwrap());
+        assert!(
+            p("Severe Thunderstorm Warning").unwrap() > p("Tornado Watch").unwrap(),
+            "an active warning outranks any watch"
+        );
+        assert!(p("Tornado Watch").unwrap() > p("Flash Flood Watch").unwrap());
+        assert!(p("Wind Advisory").is_none());
+        assert!(p("Special Weather Statement").is_none());
+
+        // The nearest significant alert wins; advisories and far alerts do not.
+        let site = (35.3331, -97.2778);
+        let alerts = vec![
+            warn("adv", "Wind Advisory", 35.4, -97.3, true),
+            warn("watch", "Tornado Watch", 35.4, -97.3, true),
+            warn("warn", "Severe Thunderstorm Warning", 35.5, -97.4, true),
+            warn("far", "Tornado Warning", 45.0, -97.3, true),
+        ];
+        let got = significant_near(&alerts, site.0, site.1, STATION_ALERT_RADIUS_KM).unwrap();
+        assert_eq!(got.id, "warn", "most significant near-station alert");
+        // With no significant alert nearby: nothing to flash.
+        assert!(significant_near(&alerts[..1], site.0, site.1, STATION_ALERT_RADIUS_KM).is_none());
+        assert!(significant_near(&alerts[3..], site.0, site.1, 100.0).is_none());
+    }
+
+    /// Watches flash in the family color but dimmed, so they read as less
+    /// urgent than the matching warning.
+    #[test]
+    fn watch_pulse_is_dimmed_family_color() {
+        let w = warn("w", "Severe Thunderstorm Warning", 35.4, -97.3, true);
+        let watch = warn("v", "Severe Thunderstorm Watch", 35.4, -97.3, true);
+        assert_eq!(pulse_color(&w), egui::Color32::from_rgb(255, 220, 60));
+        assert_ne!(pulse_color(&watch), pulse_color(&w));
+        assert!(pulse_color(&watch).r() < pulse_color(&w).r());
     }
 
     /// Alert colors follow the event family, matching the map polygons.

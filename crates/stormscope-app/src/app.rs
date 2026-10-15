@@ -123,6 +123,9 @@ pub struct StormApp {
     /// Cache section awaiting the user's "yes" in the clear-cache dialog.
     /// Set by the Settings menu, cleared when the dialog is dismissed.
     pub confirm_clear: Option<ClearTarget>,
+    /// True while the pointer is over the top-center alerts badge, so the
+    /// hover state can brighten its border.
+    pub alerts_badge_hovered: bool,
     /// Throttle for the debug-level GPU texture accounting log (memory
     /// pressure in this app shows up as resident textures/GPU memory).
     pub tex_stats_at: std::time::Instant,
@@ -214,6 +217,7 @@ impl StormApp {
             marker_etas: Vec::new(),
             min_dbz_bar_rect: None,
             min_dbz_scroll_acc: 0.0,
+            alerts_badge_hovered: false,
             confirm_clear: None,
             tex_stats_at: std::time::Instant::now(),
             last_trim: std::time::Instant::now(),

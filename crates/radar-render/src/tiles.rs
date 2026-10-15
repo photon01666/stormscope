@@ -1,5 +1,5 @@
 //! Raster basemap tile layer with on-disk cache, an LRU of decoded egui
-//! textures, and background fetching. (W3)
+//! textures, and background fetching.
 //!
 //! Providers (both keyless, both require attribution):
 //!   1. Wikimedia `maps.wikimedia.org/osm-intl` — generous limits, no key.
@@ -17,8 +17,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use lru::LruCache;
@@ -27,7 +27,7 @@ use crate::projection::MapView;
 
 /// Tile edge in pixels (Carto/OSM standard raster tiles).
 pub const TILE_PX: f64 = 256.0;
-/// Highest integer zoom we ever request.
+/// Highest integer zoom requested.
 pub const MAX_TILE_ZOOM: u8 = 19;
 
 /// Wikimedia's keyless OSM-based raster basemap (primary).
@@ -37,7 +37,8 @@ const WIKIMEDIA_URL: &str = "https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}.png
 /// cache keeps request volume low).
 const OSM_URL: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 /// Descriptive User-Agent (OSM tile usage policy asks for one).
-const USER_AGENT: &str = "stormscope/0.1 (Linux NEXRAD radar viewer; github.com/stormscope/stormscope)";
+const USER_AGENT: &str =
+    "stormscope/0.1 (Linux NEXRAD radar viewer; github.com/stormscope/stormscope)";
 /// Concurrent tile downloads. Deliberately small: be polite to the servers.
 /// Concurrent tile *worker threads*. Disk-cache hits finish in ~2ms, so
 /// this mainly bounds thread count while a warm viewport loads — it must NOT
@@ -68,7 +69,7 @@ const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(15);
 /// each), so panning looks like the map is broken. 30 minutes, because a
 /// provider that blocks anonymous clients does it for hours, not seconds.
 const PROVIDER_BLOCK: Duration = Duration::from_secs(30 * 60);
-/// How long a failed tile stays suppressed before we try it again (so a
+/// How long a failed tile stays suppressed before a retry is allowed (so a
 /// transient 403/timeout isn't a permanent blank spot).
 const FAILED_RETRY: Duration = Duration::from_secs(180);
 /// On-disk cache policy: tiles older than 30 days are evicted...
@@ -98,13 +99,11 @@ impl NetGate {
         }
     }
 
-    /// Wait for a network slot + spacing. `Err(())` means we are in a
+    /// Wait for a network slot + spacing. `Err(())` means a rate-limit pause is in
     /// rate-limit pause — caller should skip the network entirely.
     fn enter(&self) -> Result<NetSlot<'_>, ()> {
         use std::sync::atomic::Ordering;
-        if Instant::now()
-            < *self.paused_until.lock().unwrap_or_else(|e| e.into_inner())
-        {
+        if Instant::now() < *self.paused_until.lock().unwrap_or_else(|e| e.into_inner()) {
             return Err(());
         }
         // Concurrency cap.
@@ -143,7 +142,9 @@ struct NetSlot<'a> {
 
 impl Drop for NetSlot<'_> {
     fn drop(&mut self) {
-        self.gate.active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.gate
+            .active
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -185,8 +186,13 @@ impl TileRange {
 
     pub fn keys(&self) -> impl Iterator<Item = TileKey> + '_ {
         let z = self.z;
-        (self.y0..=self.y1)
-            .flat_map(move |y| (self.x0..=self.x1).map(move |x| TileKey { z, x: x as u32, y: y as u32 }))
+        (self.y0..=self.y1).flat_map(move |y| {
+            (self.x0..=self.x1).map(move |x| TileKey {
+                z,
+                x: x as u32,
+                y: y as u32,
+            })
+        })
     }
 }
 
@@ -213,7 +219,13 @@ pub fn tile_range(view: &MapView) -> TileRange {
     } else {
         (y0.max(0), y1.min(n - 1))
     };
-    TileRange { z, x0: cx0, x1: cx1, y0: cy0, y1: cy1 }
+    TileRange {
+        z,
+        x0: cx0,
+        x1: cx1,
+        y0: cy0,
+        y1: cy1,
+    }
 }
 
 /// Viewport-pixel rect `[x0, y0, x1, y1]` (top-left origin, f64, sub-pixel
@@ -335,7 +347,7 @@ fn tile_url(template: &str, key: TileKey) -> String {
 /// applying the dark-basemap transform.
 ///
 /// No free dark raster basemap exists anymore (Carto gated dark_all behind an
-/// API key and serves watermarks). Instead we synthesize a dark theme from the
+/// API key and serves watermarks). Instead a dark theme is synthesized from the
 /// real Wikimedia/OSM light tiles: invert luminance while keeping each pixel's
 /// original hue, then lift the floor so land isn't pure black and push the
 /// contrast so road/water labels stay legible as light ink on a dark ground.
@@ -389,18 +401,23 @@ const PROVIDERS: [&str; 2] = [WIKIMEDIA_URL, OSM_URL];
 
 /// Per-provider circuit-breaker state: millis (since process start) until
 /// which the provider is skipped because it answered 403/429.
-static PROVIDER_BLOCKED_MS: [std::sync::atomic::AtomicU64; PROVIDERS.len()] =
-    [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+static PROVIDER_BLOCKED_MS: [std::sync::atomic::AtomicU64; PROVIDERS.len()] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
 /// Provider that last served a tile successfully: tried first next time, so
 /// the app follows whichever server is actually answering today.
-static LAST_GOOD_PROVIDER: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static LAST_GOOD_PROVIDER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// Monotonic base for the millisecond stamps above.
 static BASE: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 
 /// Which providers to try, in order, right now: the last good one first,
 /// then the rest, skipping blocked ones. Pure, so it is unit-tested.
-fn provider_candidates(blocked_until_ms: [u64; PROVIDERS.len()], last_good: usize, now_ms: u64) -> Vec<usize> {
+fn provider_candidates(
+    blocked_until_ms: [u64; PROVIDERS.len()],
+    last_good: usize,
+    now_ms: u64,
+) -> Vec<usize> {
     let n = blocked_until_ms.len();
     let start = last_good.min(n.saturating_sub(1));
     (0..n)
@@ -428,7 +445,7 @@ fn validate_tile(key: TileKey, bytes: &[u8]) -> Option<egui::ColorImage> {
     Some(image)
 }
 
-/// Returns `(bytes, all_throttled)`: `all_throttled` means every provider we
+/// Returns `(bytes, all_throttled)`: `all_throttled` means every provider that
 /// could try answered 403/429 — only then should the caller pause. A single
 /// throttled provider is circuit-broken here instead (see [`PROVIDER_BLOCK`]),
 /// which keeps the healthy provider serving.
@@ -437,7 +454,8 @@ fn http_get(client: &reqwest::blocking::Client, key: TileKey) -> (Option<Vec<u8>
     let now_ms = BASE.elapsed().as_millis() as u64;
     let blocked: [u64; PROVIDERS.len()] =
         std::array::from_fn(|i| PROVIDER_BLOCKED_MS[i].load(Ordering::Relaxed));
-    let candidates = provider_candidates(blocked, LAST_GOOD_PROVIDER.load(Ordering::Relaxed), now_ms);
+    let candidates =
+        provider_candidates(blocked, LAST_GOOD_PROVIDER.load(Ordering::Relaxed), now_ms);
     if candidates.is_empty() {
         return (None, true); // every provider is in cooldown
     }
@@ -459,8 +477,10 @@ fn http_get(client: &reqwest::blocking::Client, key: TileKey) -> (Option<Vec<u8>
                 if status.as_u16() == 403 || status.as_u16() == 429 {
                     // Circuit-break this provider: one log line per cooldown,
                     // not one per tile (a rate-limited server stays blocked).
-                    PROVIDER_BLOCKED_MS[i]
-                        .store(now_ms + PROVIDER_BLOCK.as_millis() as u64, Ordering::Relaxed);
+                    PROVIDER_BLOCKED_MS[i].store(
+                        now_ms + PROVIDER_BLOCK.as_millis() as u64,
+                        Ordering::Relaxed,
+                    );
                     throttled += 1;
                     log::warn!(
                         "tile {key:?}: HTTP {status} from {url} — skipping this provider for {} min",
@@ -489,7 +509,10 @@ fn fetch_tile(
     let path = tile_path(cache_dir, key);
     if let Ok(bytes) = std::fs::read(&path) {
         if let Some(image) = validate_tile(key, &bytes) {
-            return TileMsg { key, image: Some(image) };
+            return TileMsg {
+                key,
+                image: Some(image),
+            };
         }
         log::warn!("tile {key:?}: evicting invalid cache file {path:?}");
         let _ = std::fs::remove_file(&path);
@@ -519,7 +542,10 @@ fn fetch_tile(
         if let Err(e) = std::fs::write(&path, &bytes) {
             log::debug!("tile {key:?}: cache write {path:?}: {e}");
         }
-        return TileMsg { key, image: Some(image) };
+        return TileMsg {
+            key,
+            image: Some(image),
+        };
     }
     TileMsg { key, image: None }
 }
@@ -621,7 +647,11 @@ impl TileLayer {
             if key.z < k as u8 {
                 break;
             }
-            let anc = TileKey { z: key.z - k as u8, x: key.x >> k, y: key.y >> k };
+            let anc = TileKey {
+                z: key.z - k as u8,
+                x: key.x >> k,
+                y: key.y >> k,
+            };
             if let Some(rect) = ancestor_uv(&key, &anc) {
                 if let Some(handle) = self.textures.get(&anc) {
                     return Some((handle.id(), rect));
@@ -642,14 +672,20 @@ impl TileLayer {
             for y in 0..16 {
                 for x in 0..16 {
                     let on = (x / 4 + y / 4) % 2 == 0;
-                    let c: [u8; 4] = if on { [34, 37, 45, 255] } else { [26, 28, 34, 255] };
+                    let c: [u8; 4] = if on {
+                        [34, 37, 45, 255]
+                    } else {
+                        [26, 28, 34, 255]
+                    };
                     px.extend_from_slice(&c);
                 }
             }
             let img = egui::ColorImage::from_rgba_unmultiplied([16, 16], &px);
-            let handle = ui
-                .ctx()
-                .load_texture("stormscope tile placeholder", img, egui::TextureOptions::LINEAR);
+            let handle = ui.ctx().load_texture(
+                "stormscope tile placeholder",
+                img,
+                egui::TextureOptions::LINEAR,
+            );
             self.placeholder = Some(handle);
         }
         self.placeholder.as_ref().unwrap().id()
@@ -712,7 +748,7 @@ impl TileLayer {
         }
 
         // 2) Viewport rect: same origin every layer must use.
-        // (`paint` takes `&egui::Ui` per the API contract, so we register the
+        // (`paint` takes `&egui::Ui` per the API contract, so the widget rect
         // widget rect via `interact` without advancing the layout cursor.)
         let origin = ui.cursor().min;
         let (w, h) = (view.width(), view.height());
@@ -755,7 +791,10 @@ impl TileLayer {
                 } else {
                     painter.image(placeholder_id, screen, uv, egui::Color32::WHITE);
                 }
-                if self.client.is_some() && !self.failed.contains_key(&key) && !self.pending.contains(&key) {
+                if self.client.is_some()
+                    && !self.failed.contains_key(&key)
+                    && !self.pending.contains(&key)
+                {
                     self.pending.insert(key);
                     self.queue.push_back(key);
                 }
@@ -778,7 +817,9 @@ impl TileLayer {
         // hit the disk cache first (fast) and only the network path is gated
         // by NetGate — pacing spawns made warm caches trickly-slow.
         while self.in_flight() < MAX_IN_FLIGHT {
-            let Some(key) = self.queue.pop_front() else { break };
+            let Some(key) = self.queue.pop_front() else {
+                break;
+            };
             self.spawn(key);
         }
 
@@ -824,15 +865,31 @@ mod tests {
                     .map(|r| cx >= r[0] && cx < r[2] && cy >= r[1] && cy < r[3])
                     .unwrap_or(false)
             });
-            assert!(covered, "viewport point ({cx}, {cy}) is not covered by any tile");
+            assert!(
+                covered,
+                "viewport point ({cx}, {cy}) is not covered by any tile"
+            );
         }
         // Adjacent tiles must be exactly contiguous (no gaps/overlaps).
         let keys: Vec<TileKey> = range.keys().collect();
         let a = tile_view_rect(keys[0], &view).unwrap();
-        let right = TileKey { z: keys[0].z, x: keys[0].x + 1, y: keys[0].y };
+        let right = TileKey {
+            z: keys[0].z,
+            x: keys[0].x + 1,
+            y: keys[0].y,
+        };
         let b = tile_view_rect(right, &view).unwrap();
-        assert!((a[2] - b[0]).abs() < 1e-9, "horizontal tile gap: {:?} {:?}", a[2], b[0]);
-        let down = TileKey { z: keys[0].z, x: keys[0].x, y: keys[0].y + 1 };
+        assert!(
+            (a[2] - b[0]).abs() < 1e-9,
+            "horizontal tile gap: {:?} {:?}",
+            a[2],
+            b[0]
+        );
+        let down = TileKey {
+            z: keys[0].z,
+            x: keys[0].x,
+            y: keys[0].y + 1,
+        };
         let c = tile_view_rect(down, &view).unwrap();
         assert!((a[3] - c[1]).abs() < 1e-9, "vertical tile gap");
     }
@@ -866,16 +923,29 @@ mod tests {
         let ts = rect[2] - rect[0]; // tile size in view px
         let px_from_tile = rect[0] + (mx - key.x as f64 * ts);
         let py_from_tile = rect[1] + (my - key.y as f64 * ts);
-        assert!((px - px_from_tile).abs() < 1e-9, "tile x path disagrees: {px} vs {px_from_tile}");
-        assert!((py - py_from_tile).abs() < 1e-9, "tile y path disagrees: {py} vs {py_from_tile}");
+        assert!(
+            (px - px_from_tile).abs() < 1e-9,
+            "tile x path disagrees: {px} vs {px_from_tile}"
+        );
+        assert!(
+            (py - py_from_tile).abs() < 1e-9,
+            "tile y path disagrees: {py} vs {py_from_tile}"
+        );
 
         // The tile's NW corner must decode to the same lon/lat through the
         // view mapping as through plain XYZ tile math (ties z, scale and
         // origin together).
         let (lon_a, lat_a) = view.view_px_to_lonlat(rect[0], rect[1]);
-        let (lon_b, lat_b) = merc_px_to_lonlat(key.x as f64 * 256.0, key.y as f64 * 256.0, key.z as f64);
-        assert!((lon_a - lon_b).abs() < 1e-9, "tile NW lon mismatch: {lon_a} vs {lon_b}");
-        assert!((lat_a - lat_b).abs() < 1e-9, "tile NW lat mismatch: {lat_a} vs {lat_b}");
+        let (lon_b, lat_b) =
+            merc_px_to_lonlat(key.x as f64 * 256.0, key.y as f64 * 256.0, key.z as f64);
+        assert!(
+            (lon_a - lon_b).abs() < 1e-9,
+            "tile NW lon mismatch: {lon_a} vs {lon_b}"
+        );
+        assert!(
+            (lat_a - lat_b).abs() < 1e-9,
+            "tile NW lat mismatch: {lat_a} vs {lat_b}"
+        );
     }
 
     /// A geolocated synthetic gate projects to the same pixel no matter
@@ -898,8 +968,15 @@ mod tests {
         let (mx, my) = lonlat_to_merc_px(glon, glat, view.zoom);
         let tx = (mx / ts).floor();
         let ty = (my / ts).floor();
-        let rect = tile_view_rect(TileKey { z: tile_zoom(&view), x: tx as u32, y: ty as u32 }, &view)
-            .expect("gate must fall on-grid at this zoom");
+        let rect = tile_view_rect(
+            TileKey {
+                z: tile_zoom(&view),
+                x: tx as u32,
+                y: ty as u32,
+            },
+            &view,
+        )
+        .expect("gate must fall on-grid at this zoom");
         assert!(
             px >= rect[0] && px < rect[2] && py >= rect[1] && py < rect[3],
             "gate pixel ({px},{py}) outside its tile rect {rect:?}"
@@ -908,9 +985,12 @@ mod tests {
         assert!((rect[0] + (mx - tx * ts) - px).abs() < 1e-9);
         assert!((rect[1] + (my - ty * ts) - py).abs() < 1e-9);
         // Sanity: ~40 km east at zoom 9 is ~160 px right of center.
-        let expected_px = view.width() as f64 / 2.0 + 40_000.0
-            / crate::projection::meters_per_pixel(view.center_lat, view.zoom);
-        assert!((px - expected_px).abs() < 5.0, "px={px} expected≈{expected_px}");
+        let expected_px = view.width() as f64 / 2.0
+            + 40_000.0 / crate::projection::meters_per_pixel(view.center_lat, view.zoom);
+        assert!(
+            (px - expected_px).abs() < 5.0,
+            "px={px} expected≈{expected_px}"
+        );
     }
 
     /// Ancestor UV math: a child tile must map to exactly its quadrant of the
@@ -928,7 +1008,10 @@ mod tests {
         assert_eq!(uv.max.y, 1.0);
         // Upper-left quadrant.
         let uv = ancestor_uv(&z9(100, 198), &anc).expect("should be a descendant");
-        assert_eq!((uv.min.x, uv.min.y, uv.max.x, uv.max.y), (0.0, 0.0, 0.5, 0.5));
+        assert_eq!(
+            (uv.min.x, uv.min.y, uv.max.x, uv.max.y),
+            (0.0, 0.0, 0.5, 0.5)
+        );
         // Two levels up: one sixteenth of the grand-parent's UV space.
         // (101,199) low-2-bits are (0b01, 0b11) -> col 1, row 3 of 4x4.
         let gp = TileKey { z: 7, x: 25, y: 49 };
@@ -976,7 +1059,7 @@ mod tests {
         assert!(layer.pending.is_empty() && layer.queue.is_empty());
     }
 
-    /// The 403 storm fix: a provider answering 403/429 is skipped entirely
+    /// Provider circuit breaking: a provider answering 403/429 is skipped
     /// (until its cooldown expires), the last provider that worked is tried
     /// first, and a globally throttled state is reported only when *nothing*
     /// can be tried.
@@ -991,6 +1074,9 @@ mod tests {
         // ...and it stays preferred after the cooldown expires.
         assert_eq!(provider_candidates([0, 0], 1, now), vec![1, 0]);
         // Both blocked => nothing to try (caller pauses).
-        assert_eq!(provider_candidates([now + 1, now + 1], 0, now), Vec::<usize>::new());
+        assert_eq!(
+            provider_candidates([now + 1, now + 1], 0, now),
+            Vec::<usize>::new()
+        );
     }
 }

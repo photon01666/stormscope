@@ -1,11 +1,11 @@
-//! Live-endpoint integration tests (W2).
+//! Live-endpoint integration tests.
 //!
 //! These hit REAL public endpoints (no credentials):
 //! * `unidata-nexrad-level2` S3 bucket (archive listing + object GET)
 //! * `api.weather.gov` (active alerts, radar station catalog)
 //!
-//! Timeouts are bounded; network failures will fail these tests by design —
-//! they are the W2 acceptance suite.
+//! Timeouts are bounded; network failures fail these tests by design rather
+//! than skipping, so they need a network connection.
 //!
 //! The realtime poller test is `#[ignore]`d: a full volume scan takes
 //! minutes, so run it manually with:
@@ -64,9 +64,19 @@ fn list_archive_ktlx_today_returns_volumes_newest_first() {
 
     let newest = &volumes[0];
     let name = newest.file_name();
-    assert!(name.starts_with("KTLX"), "key {name} should start with site");
-    assert!(name.contains("_V0"), "key {name} should carry a volume version");
-    assert!(newest.key.contains(&format!("{}/KTLX/", newest.date.format("%Y/%m/%d"))));
+    assert!(
+        name.starts_with("KTLX"),
+        "key {name} should start with site"
+    );
+    assert!(
+        name.contains("_V0"),
+        "key {name} should carry a volume version"
+    );
+    assert!(
+        newest
+            .key
+            .contains(&format!("{}/KTLX/", newest.date.format("%Y/%m/%d")))
+    );
     assert!(newest.volume_start.date_naive() == newest.date);
 
     // Newest-first ordering.
@@ -115,28 +125,17 @@ fn fetch_archive_downloads_and_caches_one_volume() {
     let again = src.fetch_archive_bytes(target).expect("cache hit");
     assert_eq!(again, bytes);
 
-    // 2) Decode step (radar-decode is W1's parallel workstream and may still
-    //    be `todo!()` — tolerate Err AND panic until it lands).
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| src.fetch_archive(target))) {
-        Ok(Ok(volume)) => {
-            assert_eq!(volume.meta.site_id, "KTLX");
-            assert!(!volume.sweeps.is_empty(), "decoded volume has sweeps");
-            eprintln!(
-                "decoded {}: {} sweeps, tilts {:?}",
-                target.key,
-                volume.sweeps.len(),
-                volume.tilts()
-            );
-        }
-        Ok(Err(e)) => {
-            eprintln!(
-                "NOTE: download+cache OK but decode failed while radar-decode (W1) is in flight: {e:#}"
-            );
-        }
-        Err(_) => {
-            eprintln!("NOTE: radar-decode (W1) still todo!(); download+cache verified only");
-        }
-    }
+    // 2) Decode step: fetch_archive downloads (or reuses the cache) and
+    //    decodes; both must succeed.
+    let volume = src.fetch_archive(target).expect("fetch + decode");
+    assert_eq!(volume.meta.site_id, "KTLX");
+    assert!(!volume.sweeps.is_empty(), "decoded volume has sweeps");
+    eprintln!(
+        "decoded {}: {} sweeps, tilts {:?}",
+        target.key,
+        volume.sweeps.len(),
+        volume.tilts()
+    );
 }
 
 #[test]
@@ -156,7 +155,11 @@ fn alerts_active_near_okc_returns_vec() {
 #[test]
 fn station_catalog_fetches_all_wsr88d() {
     let sites = radar_data::sites_gen::fetch_catalog(TEST_UA).expect("radar stations fetch");
-    assert!(sites.len() >= 140, "expected ~159 WSR-88D sites, got {}", sites.len());
+    assert!(
+        sites.len() >= 140,
+        "expected ~159 WSR-88D sites, got {}",
+        sites.len()
+    );
     let ktlx = sites.iter().find(|s| s.id == "KTLX").expect("KTLX present");
     assert!((ktlx.latitude - 35.33).abs() < 0.05);
     assert!(ktlx.elevation_m > 300.0);
@@ -171,7 +174,10 @@ fn station_catalog_fetches_all_wsr88d() {
 fn realtime_poller_emits_a_volume() {
     use std::time::Duration;
     // Surface the poller's diagnostics: RUST_LOG=radar_data=debug cargo test ...
-    let _ = env_logger::builder().is_test(true).parse_default_env().try_init();
+    let _ = env_logger::builder()
+        .is_test(true)
+        .parse_default_env()
+        .try_init();
     let src = scratch_source();
     let (rx, _poller) = src.start_realtime("KTLX").expect("poller thread");
     let volume = rx

@@ -6,7 +6,7 @@
 //! ```
 
 use radar_core::{Moment, MomentCalibration, MomentData, Sweep};
-use radar_render::{rasterize_sweep_into, rasterize_sweep_premultiplied_into, MapView};
+use radar_render::{MapView, rasterize_sweep_into, rasterize_sweep_premultiplied_into};
 use std::time::Instant;
 
 const RADAR_LAT: f64 = 35.3331;
@@ -87,13 +87,27 @@ fn main() -> anyhow::Result<()> {
     // Warm up + time the straight-alpha path.
     let mut buf = vec![0u8; w * h * 4];
     rasterize_sweep_into(
-        &sweep, Moment::Reflectivity, &view, RADAR_LAT, RADAR_LON, 0.5, 0.0, &mut buf,
+        &sweep,
+        Moment::Reflectivity,
+        &view,
+        RADAR_LAT,
+        RADAR_LON,
+        0.5,
+        0.0,
+        &mut buf,
     );
     let t0 = Instant::now();
     for _ in 0..N {
         buf.fill(0);
         rasterize_sweep_into(
-            &sweep, Moment::Reflectivity, &view, RADAR_LAT, RADAR_LON, 0.5, 0.0, &mut buf,
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            RADAR_LAT,
+            RADAR_LON,
+            0.5,
+            0.0,
+            &mut buf,
         );
     }
     let straight = t0.elapsed().as_secs_f64() / N as f64;
@@ -101,13 +115,27 @@ fn main() -> anyhow::Result<()> {
     // Premultiplied path.
     let mut buf = vec![0u8; w * h * 4];
     rasterize_sweep_premultiplied_into(
-        &sweep, Moment::Reflectivity, &view, RADAR_LAT, RADAR_LON, 0.5, 0.0, &mut buf,
+        &sweep,
+        Moment::Reflectivity,
+        &view,
+        RADAR_LAT,
+        RADAR_LON,
+        0.5,
+        0.0,
+        &mut buf,
     );
     let t1 = Instant::now();
     for _ in 0..N {
         buf.fill(0);
         rasterize_sweep_premultiplied_into(
-            &sweep, Moment::Reflectivity, &view, RADAR_LAT, RADAR_LON, 0.5, 0.0, &mut buf,
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            RADAR_LAT,
+            RADAR_LON,
+            0.5,
+            0.0,
+            &mut buf,
         );
     }
     let premul = t1.elapsed().as_secs_f64() / N as f64;
@@ -143,18 +171,37 @@ fn main() -> anyhow::Result<()> {
     for _ in 0..N {
         buf.fill(0);
         radar_render::rasterize_sweep_from_geometry_pm(
-            &sweep, Moment::Reflectivity, &geom, &rows, &view, 0.5, 0.0, 1.0, &mut buf,
+            &sweep,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &view,
+            0.5,
+            0.0,
+            1.0,
+            &mut buf,
         );
     }
     let cached = t4.elapsed().as_secs_f64() / N as f64;
 
     // Pan: same zoom, translated center (rebuild-free).
-    let panned = MapView { center_lon: view.center_lon + 0.02, ..view };
+    let panned = MapView {
+        center_lon: view.center_lon + 0.02,
+        ..view
+    };
     let t5 = Instant::now();
     for _ in 0..N {
         buf.fill(0);
         radar_render::rasterize_sweep_from_geometry_pm(
-            &sweep, Moment::Reflectivity, &geom, &rows, &panned, 0.5, 0.0, 1.0, &mut buf,
+            &sweep,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &panned,
+            0.5,
+            0.0,
+            1.0,
+            &mut buf,
         );
     }
     let pan = t5.elapsed().as_secs_f64() / N as f64;
@@ -163,13 +210,25 @@ fn main() -> anyhow::Result<()> {
     // geometry table is reused) — every gate still runs the value/color
     // mapping and the splat *call*, but all splats clip, so the difference
     // against the full viewport isolates the actual pixel work.
-    let tiny = MapView { width_px: 1.0, height_px: 1.0, ..view };
+    let tiny = MapView {
+        width_px: 1.0,
+        height_px: 1.0,
+        ..view
+    };
     let mut tiny_buf = vec![0u8; 4];
     let t6 = Instant::now();
     for _ in 0..N {
         tiny_buf.fill(0);
         radar_render::rasterize_sweep_from_geometry_pm(
-            &sweep, Moment::Reflectivity, &geom, &rows, &tiny, 0.5, 0.0, 1.0, &mut tiny_buf,
+            &sweep,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &tiny,
+            0.5,
+            0.0,
+            1.0,
+            &mut tiny_buf,
         );
     }
     let gate_only = t6.elapsed().as_secs_f64() / N as f64;
@@ -183,7 +242,15 @@ fn main() -> anyhow::Result<()> {
     for _ in 0..N {
         mbuf.fill(0);
         radar_render::rasterize_sweep_from_geometry_pm(
-            &sweep, Moment::Reflectivity, &geom, &rows, &view, 0.5, 0.0, 0.5, &mut mbuf,
+            &sweep,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &view,
+            0.5,
+            0.0,
+            0.5,
+            &mut mbuf,
         );
     }
     let motion = t7.elapsed().as_secs_f64() / N as f64;

@@ -12,7 +12,11 @@ fn main() -> anyhow::Result<()> {
     let mut vols = Vec::new();
     for (name, bytes) in [("a", a), ("b", b)] {
         let vol = radar_decode::decode_volume_file(&bytes)?;
-        println!("== {name}: {} sweeps, start {}", vol.sweeps.len(), vol.meta.volume_start);
+        println!(
+            "== {name}: {} sweeps, start {}",
+            vol.sweeps.len(),
+            vol.meta.volume_start
+        );
         for (i, s) in vol.sweeps.iter().take(3).enumerate() {
             let md = s.moments.first();
             println!(
@@ -33,15 +37,14 @@ fn main() -> anyhow::Result<()> {
     // volume a's (same set, phase-shifted)? If so, a cached geometry table
     // can be *row-remapped* instead of rebuilt.
     let ang_diff = |x: f32, y: f32| ((x - y + 180.0).rem_euclid(360.0) - 180.0).abs();
-    for (si, (sa, sb)) in vols[0]
-        .sweeps
-        .iter()
-        .zip(vols[1].sweeps.iter())
-        .enumerate()
-    {
+    for (si, (sa, sb)) in vols[0].sweeps.iter().zip(vols[1].sweeps.iter()).enumerate() {
         let (aa, ab) = (&sa.azimuths_deg, &sb.azimuths_deg);
         if aa.len() != ab.len() || aa.is_empty() {
-            println!("sweep {si}: ray counts differ ({} vs {})", aa.len(), ab.len());
+            println!(
+                "sweep {si}: ray counts differ ({} vs {})",
+                aa.len(),
+                ab.len()
+            );
             continue;
         }
         let n = aa.len();

@@ -57,7 +57,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
 /// matches a 1080p baseline — i.e. `extra = (phys / 1080) / os_scale`:
 ///
 /// * 4K @1x OS scale → 2.5x sidebar text (capped)
-/// * 4K @1.5x OS scale (e.g. Hyprland 4K) → ~1.67x on top of the 1.5x
+/// * 4K at 150% OS scale → ~1.67x on top of the 1.5x
 /// * 4K @2x OS scale → 1.0 (the OS already doubled everything)
 /// * 1080p → 1.0
 ///
@@ -317,9 +317,9 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         .clicked()
     {
         app.state.mode = Mode::Archive;
-        let _ = app.tx.send(crate::app::DataCmd::LoadLastHour(
-            app.state.site_id.clone(),
-        ));
+        let _ = app
+            .tx
+            .send(crate::app::DataCmd::LoadLastHour(app.state.site_id.clone()));
     }
 
     // Archive date picker — only meaningful in Archive mode.
@@ -328,7 +328,9 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.label("Archive day (Central)");
         ui.horizontal(|ui| {
             if ui.button("◀").clicked() {
-                app.state.archive_date = app.state.archive_date
+                app.state.archive_date = app
+                    .state
+                    .archive_date
                     .pred_opt()
                     .unwrap_or(app.state.archive_date);
             }
@@ -341,7 +343,9 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                     .with_timezone(crate::timefmt::central())
                     .date_naive();
                 if app.state.archive_date < today {
-                    app.state.archive_date = app.state.archive_date
+                    app.state.archive_date = app
+                        .state
+                        .archive_date
                         .succ_opt()
                         .unwrap_or(app.state.archive_date);
                 }
@@ -369,10 +373,7 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                     let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(-1));
                 }
                 if ui
-                    .add_enabled(
-                        last < app.state.archive_total,
-                        egui::Button::new("later ▶"),
-                    )
+                    .add_enabled(last < app.state.archive_total, egui::Button::new("later ▶"))
                     .clicked()
                 {
                     let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(1));
@@ -414,7 +415,9 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             }
         });
     if ui.button("Apply site").clicked() {
-        let _ = app.tx.send(crate::app::DataCmd::SetSite(app.state.site_id.clone()));
+        let _ = app
+            .tx
+            .send(crate::app::DataCmd::SetSite(app.state.site_id.clone()));
     }
 
     // Product (moment) selector.
@@ -454,7 +457,10 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         .map(|(i, _)| i)
         .unwrap_or(0);
     egui::ComboBox::from_id_salt("tilt")
-        .selected_text(format!("{:.1}°", tilts.get(tilt_idx).copied().unwrap_or(0.5)))
+        .selected_text(format!(
+            "{:.1}°",
+            tilts.get(tilt_idx).copied().unwrap_or(0.5)
+        ))
         .show_ui(ui, |ui| {
             for (i, t) in tilts.iter().enumerate() {
                 ui.selectable_value(&mut tilt_idx, i, format!("{t:.1}°"));
@@ -487,10 +493,14 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // --- SPC convective outlook overlay ------------------------------------
     ui.add_space(6.0);
-    let toggled = ui.checkbox(&mut app.state.show_outlook, "Show SPC outlook").changed();
+    let toggled = ui
+        .checkbox(&mut app.state.show_outlook, "Show SPC outlook")
+        .changed();
     if toggled && app.state.show_outlook {
         // Fetch the selected day fresh when the layer is switched on.
-        let _ = app.tx.send(crate::app::DataCmd::LoadOutlook(app.state.outlook_day));
+        let _ = app
+            .tx
+            .send(crate::app::DataCmd::LoadOutlook(app.state.outlook_day));
     }
     if app.state.show_outlook {
         ui.horizontal(|ui| {
@@ -562,7 +572,11 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.measure_bubble_rect = None;
         }
     });
-    match (app.state.measure_mode, app.state.measure_a, app.state.measure_b) {
+    match (
+        app.state.measure_mode,
+        app.state.measure_a,
+        app.state.measure_b,
+    ) {
         (true, Some(a), Some(b)) => {
             let m = radar_render::surface_distance_m(a.0, a.1, b.0, b.1);
             ui.label(
@@ -662,8 +676,12 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     }
     if let Some(i) = edit {
         // Seed the persistent draft the popup edits (immediate-mode TextEdit).
-        app.state.pending_marker_label =
-            app.state.markers.get(i).map(|m| m.label.clone()).unwrap_or_default();
+        app.state.pending_marker_label = app
+            .state
+            .markers
+            .get(i)
+            .map(|m| m.label.clone())
+            .unwrap_or_default();
         app.state.pending_marker = Some(i);
     }
     if let Some(i) = del {
@@ -774,8 +792,8 @@ fn confirm_clear_dialog(ctx: &egui::Context, app: &mut StormApp) {
 
     let mut accepted = false;
     let mut dismissed = false;
-    let res = egui::containers::Modal::new(egui::Id::new("stormscope.confirm-clear"))
-        .show(ctx, |ui| {
+    let res =
+        egui::containers::Modal::new(egui::Id::new("stormscope.confirm-clear")).show(ctx, |ui| {
             ui.set_min_width(360.0);
             ui.heading(title);
             ui.add_space(8.0);
@@ -786,10 +804,7 @@ fn confirm_clear_dialog(ctx: &egui::Context, app: &mut StormApp) {
                     dismissed = true;
                 }
                 if ui
-                    .add(
-                        egui::Button::new(verb)
-                            .fill(egui::Color32::from_rgb(150, 52, 52)),
-                    )
+                    .add(egui::Button::new(verb).fill(egui::Color32::from_rgb(150, 52, 52)))
                     .clicked()
                 {
                     accepted = true;
@@ -917,14 +932,20 @@ mod tests {
         assert_eq!(hidpi_text_scale(Some(1080.0), Some(1.0), 1.0, 800.0), 1.0);
         // 4K, no OS scaling: doubled boost, capped at 2.5x.
         assert_eq!(hidpi_text_scale(Some(2160.0), Some(1.0), 1.0, 800.0), 2.5);
-        // This box: 4K monitor (1440pt @1.5x Hyprland scale) → ~1.67x extra.
+        // 4K monitor at 150% scale (1440pt logical) → ~1.67x extra.
         let s = hidpi_text_scale(Some(1440.0), Some(1.5), 1.5, 700.0);
-        assert!((s - (1.0 + (2.0 / 1.5 - 1.0) * 2.0)).abs() < 1e-6, "got {s}");
+        assert!(
+            (s - (1.0 + (2.0 / 1.5 - 1.0) * 2.0)).abs() < 1e-6,
+            "got {s}"
+        );
         // 4K at 200% OS scale: the OS already doubled everything.
         assert_eq!(hidpi_text_scale(Some(1080.0), Some(2.0), 2.0, 700.0), 1.0);
         // 1440p monitor, no OS scaling: ~1.67x.
         let s = hidpi_text_scale(Some(1440.0), Some(1.0), 1.0, 800.0);
-        assert!((s - (1.0 + (1440.0 / 1080.0 - 1.0) * 2.0)).abs() < 1e-6, "got {s}");
+        assert!(
+            (s - (1.0 + (1440.0 / 1080.0 - 1.0) * 2.0)).abs() < 1e-6,
+            "got {s}"
+        );
         // Beyond the cap: clamps at 2.5x.
         assert_eq!(hidpi_text_scale(Some(4320.0), Some(1.0), 1.0, 800.0), 2.5);
         // Unknown monitor: falls back to window physical height.
@@ -944,7 +965,10 @@ mod tests {
     #[test]
     fn sidebar_panel_height_fills_middle_rect() {
         let h = sidebar_panel_height(middle());
-        assert!((h - (710.0 - 16.0)).abs() < 1e-6, "should span the middle rect, got {h}");
+        assert!(
+            (h - (710.0 - 16.0)).abs() < 1e-6,
+            "should span the middle rect, got {h}"
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Sweep rasterization into an RGBA viewport overlay. (W3)
+//! Sweep rasterization into an RGBA viewport overlay.
 //!
 //! For every ray/gate of a [`Sweep`] the gate is geolocated with the
 //! 4/3-earth model ([`gate_latlon`]), projected into the viewport with the
@@ -7,7 +7,7 @@
 //! in the buffer.
 
 use crate::colormap::ColorTable;
-use crate::projection::{MercProjector, MapView};
+use crate::projection::{MapView, MercProjector};
 use radar_core::{Moment, Sweep};
 
 // Re-export so `radar_render::raster::gate_latlon` keeps working.
@@ -30,7 +30,11 @@ impl RadarImage {
     /// A fully transparent image the size of the viewport.
     pub fn transparent(view: &MapView) -> Self {
         let (w, h) = (view.width(), view.height());
-        Self { width: w, height: h, rgba: vec![0u8; w * h * 4] }
+        Self {
+            width: w,
+            height: h,
+            rgba: vec![0u8; w * h * 4],
+        }
     }
 
     /// Straight RGBA of one pixel (out of range => fully transparent).
@@ -56,7 +60,16 @@ pub fn rasterize_sweep(
     min_dbz: f32,
 ) -> RadarImage {
     let mut img = RadarImage::transparent(view);
-    rasterize_sweep_into(sweep, moment, view, radar_lat, radar_lon, opacity, min_dbz, &mut img.rgba);
+    rasterize_sweep_into(
+        sweep,
+        moment,
+        view,
+        radar_lat,
+        radar_lon,
+        opacity,
+        min_dbz,
+        &mut img.rgba,
+    );
     img
 }
 
@@ -102,7 +115,9 @@ pub fn rasterize_sweep_into(
     min_dbz: f32,
     buf: &mut [u8],
 ) {
-    rasterize_impl::<false>(sweep, moment, view, radar_lat, radar_lon, opacity, min_dbz, buf);
+    rasterize_impl::<false>(
+        sweep, moment, view, radar_lat, radar_lon, opacity, min_dbz, buf,
+    );
 }
 
 /// Premultiplied-alpha [`rasterize_sweep_into`]: same geometry, same
@@ -119,7 +134,9 @@ pub fn rasterize_sweep_premultiplied_into(
     min_dbz: f32,
     buf: &mut [u8],
 ) {
-    rasterize_impl::<true>(sweep, moment, view, radar_lat, radar_lon, opacity, min_dbz, buf);
+    rasterize_impl::<true>(
+        sweep, moment, view, radar_lat, radar_lon, opacity, min_dbz, buf,
+    );
 }
 
 /// Shared gate loop; `PM` selects the premultiplied blend (see the wrappers).
@@ -165,12 +182,15 @@ fn rasterize_impl<const PM: bool>(
     let thresh = floor.max(min_dbz);
 
     // Prefer the measured tilt when present; fall back to the requested one.
-    let elevation_deg = if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
-        sweep.elevation_measured_deg
-    } else {
-        sweep.elevation_deg
-    };
-    let az_width_rad = (sweep.azimuth_width_deg as f64).clamp(0.05, 45.0).to_radians();
+    let elevation_deg =
+        if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
+            sweep.elevation_measured_deg
+        } else {
+            sweep.elevation_deg
+        };
+    let az_width_rad = (sweep.azimuth_width_deg as f64)
+        .clamp(0.05, 45.0)
+        .to_radians();
     // Ground meters per viewport pixel at the view center — used only to size
     // splats (positions always come from the exact projection).
     let m_per_px = crate::projection::meters_per_pixel(view.center_lat, view.zoom).max(1e-6);
@@ -204,7 +224,8 @@ fn rasterize_impl<const PM: bool>(
             if !(slant_m > 0.0) {
                 continue;
             }
-            let (glat, glon) = gate_latlon(radar_lat, radar_lon, azimuth_deg, elevation_deg, slant_m);
+            let (glat, glon) =
+                gate_latlon(radar_lat, radar_lon, azimuth_deg, elevation_deg, slant_m);
             let (px, py) = proj.view_px(glon, glat);
 
             // Screen-space footprint of this gate: radial (gate size) vs
@@ -223,7 +244,16 @@ fn rasterize_impl<const PM: bool>(
 
 /// Paint a filled disc of straight-alpha `color` (scaled by `op`/255) centered
 /// at (cx, cy) in viewport pixels, source-over composited into `buf`.
-fn splat_disc(buf: &mut [u8], w: usize, h: usize, cx: f64, cy: f64, r: f64, color: [u8; 4], op: u32) {
+fn splat_disc(
+    buf: &mut [u8],
+    w: usize,
+    h: usize,
+    cx: f64,
+    cy: f64,
+    r: f64,
+    color: [u8; 4],
+    op: u32,
+) {
     if !(cx.is_finite() && cy.is_finite() && r.is_finite()) || r <= 0.0 {
         return;
     }
@@ -394,14 +424,15 @@ impl GateGeometry {
             .first()
             .map(|m| (m.ray_count, m.gate_count, m.range_start_m, m.gate_size_m))
             .unwrap_or((0, 0, 0.0, 0.0));
-        let elevation_deg = if sweep.elevation_measured_deg.is_finite()
-            && sweep.elevation_measured_deg != 0.0
-        {
-            sweep.elevation_measured_deg
-        } else {
-            sweep.elevation_deg
-        };
-        let az_width_rad = (sweep.azimuth_width_deg as f64).clamp(0.05, 45.0).to_radians();
+        let elevation_deg =
+            if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
+                sweep.elevation_measured_deg
+            } else {
+                sweep.elevation_deg
+            };
+        let az_width_rad = (sweep.azimuth_width_deg as f64)
+            .clamp(0.05, 45.0)
+            .to_radians();
 
         let n = ray_count * gate_count;
         let mut world_x = vec![f64::NAN; n];
@@ -445,12 +476,7 @@ impl GateGeometry {
     /// Can this table serve `sweep`? Returns how its rows map (`None` =
     /// rebuild needed). The table is zoom-independent, so pans and zooms
     /// always reuse it.
-    pub fn reuse_for(
-        &self,
-        sweep: &Sweep,
-        radar_lat: f64,
-        radar_lon: f64,
-    ) -> Option<RowMap> {
+    pub fn reuse_for(&self, sweep: &Sweep, radar_lat: f64, radar_lon: f64) -> Option<RowMap> {
         if self.shape != Self::shape_key(sweep, radar_lat, radar_lon) {
             return None;
         }
@@ -625,7 +651,16 @@ fn blend_pm(dst: &mut [u8], o: usize, sr: u32, sg: u32, sb: u32, sa: u32) {
 
 /// [`splat_disc`] for a premultiplied-alpha buffer: premultiplies the color
 /// once per gate, then blends division-free per pixel.
-fn splat_disc_pm(buf: &mut [u8], w: usize, h: usize, cx: f64, cy: f64, r: f64, color: [u8; 4], op: u32) {
+fn splat_disc_pm(
+    buf: &mut [u8],
+    w: usize,
+    h: usize,
+    cx: f64,
+    cy: f64,
+    r: f64,
+    color: [u8; 4],
+    op: u32,
+) {
     if !(cx.is_finite() && cy.is_finite() && r.is_finite()) || r <= 0.0 {
         return;
     }
@@ -731,7 +766,11 @@ mod tests {
             azimuths_deg: vec![90.0],
             moments: vec![MomentData {
                 kind: Moment::Reflectivity,
-                calibration: MomentCalibration { scale: 1.0, offset: 0.0, threshold: 0.0 },
+                calibration: MomentCalibration {
+                    scale: 1.0,
+                    offset: 0.0,
+                    threshold: 0.0,
+                },
                 range_start_m: 30_000.0,
                 gate_size_m: 500.0,
                 gate_count: 1,
@@ -755,7 +794,15 @@ mod tests {
     fn single_gate_projects_to_expected_pixel() {
         let sweep = single_gate_sweep();
         let view = view();
-        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
+        let img = rasterize_sweep(
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            1.0,
+            f32::NEG_INFINITY,
+        );
 
         assert_eq!(img.width, 800);
         assert_eq!(img.height, 600);
@@ -768,12 +815,18 @@ mod tests {
         // The echo must be painted at that pixel...
         let (gx, gy) = (px as usize, py as usize);
         let painted = img.pixel(gx, gy);
-        assert!(painted[3] > 0, "expected paint at ({gx},{gy}), got {painted:?}");
+        assert!(
+            painted[3] > 0,
+            "expected paint at ({gx},{gy}), got {painted:?}"
+        );
         // ...which is east of center (x grows east) and just south of center:
         // a due-east great circle starts at its vertex, so it bows slightly
         // equatorward (south) — sub-pixel-ish at 30 km.
         assert!(px > 400.0, "gate should be east of center: {px}");
-        assert!(py > 300.0 && py < 310.0, "gate should sit just south of center: {py}");
+        assert!(
+            py > 300.0 && py < 310.0,
+            "gate should sit just south of center: {py}"
+        );
 
         // Far corner untouched.
         assert_eq!(img.pixel(0, 0), [0, 0, 0, 0]);
@@ -786,20 +839,64 @@ mod tests {
         // DN 0 => no data.
         sweep.moments[0].data[0] = 0;
         let view = view();
-        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
-        assert!(img.rgba.iter().all(|&b| b == 0), "DN 0 must leave the buffer transparent");
+        let img = rasterize_sweep(
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            1.0,
+            f32::NEG_INFINITY,
+        );
+        assert!(
+            img.rgba.iter().all(|&b| b == 0),
+            "DN 0 must leave the buffer transparent"
+        );
         // Premultiplied path: same promise.
-        let img = rasterize_sweep_premultiplied(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
-        assert!(img.rgba.iter().all(|&b| b == 0), "DN 0 must leave the pm buffer transparent");
+        let img = rasterize_sweep_premultiplied(
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            1.0,
+            f32::NEG_INFINITY,
+        );
+        assert!(
+            img.rgba.iter().all(|&b| b == 0),
+            "DN 0 must leave the pm buffer transparent"
+        );
 
         // Below the REF floor (5 dBZ) => no paint either.
         sweep.moments[0].data[0] = 4;
-        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
-        assert!(img.rgba.iter().all(|&b| b == 0), "below-floor gates must not paint");
+        let img = rasterize_sweep(
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            1.0,
+            f32::NEG_INFINITY,
+        );
+        assert!(
+            img.rgba.iter().all(|&b| b == 0),
+            "below-floor gates must not paint"
+        );
 
         // Missing moment entirely => transparent, no panic.
-        let empty = Sweep { moments: vec![], ..sweep };
-        let img = rasterize_sweep(&empty, Moment::Velocity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
+        let empty = Sweep {
+            moments: vec![],
+            ..sweep
+        };
+        let img = rasterize_sweep(
+            &empty,
+            Moment::Velocity,
+            &view,
+            35.0,
+            -97.0,
+            1.0,
+            f32::NEG_INFINITY,
+        );
         assert!(img.rgba.iter().all(|&b| b == 0));
     }
 
@@ -818,18 +915,39 @@ mod tests {
         let o = ((py as usize * w) + px as usize) * 4;
         let before = [buf[o], buf[o + 1], buf[o + 2], buf[o + 3]];
 
-        rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.5, f32::NEG_INFINITY, &mut buf);
+        rasterize_sweep_into(
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            0.5,
+            f32::NEG_INFINITY,
+            &mut buf,
+        );
 
         let after = [buf[o], buf[o + 1], buf[o + 2], buf[o + 3]];
         assert_eq!(after[3], 255, "opaque background stays opaque");
         assert_ne!(after, before, "color must have shifted toward the echo");
         // Source-over with 50% opacity: toward REF red-ish at 50 dBZ.
-        assert!(after[0] > before[0], "red should increase: {before:?} -> {after:?}");
+        assert!(
+            after[0] > before[0],
+            "red should increase: {before:?} -> {after:?}"
+        );
 
         // Opacity 0 must be a no-op.
         let mut untouched = vec![10u8; w * h * 4];
         let snapshot = untouched.clone();
-        rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.0, f32::NEG_INFINITY, &mut untouched);
+        rasterize_sweep_into(
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            0.0,
+            f32::NEG_INFINITY,
+            &mut untouched,
+        );
         assert_eq!(untouched, snapshot);
     }
 
@@ -847,10 +965,22 @@ mod tests {
 
         let view = view();
         let straight = rasterize_sweep(
-            &sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.7, f32::NEG_INFINITY,
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            0.7,
+            f32::NEG_INFINITY,
         );
         let pm = rasterize_sweep_premultiplied(
-            &sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.7, f32::NEG_INFINITY,
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            0.7,
+            f32::NEG_INFINITY,
         );
         assert_eq!(straight.rgba.len(), pm.rgba.len());
         let mut painted = 0usize;
@@ -871,7 +1001,10 @@ mod tests {
                 );
             }
         }
-        assert!(painted > 100, "fixture should paint a fair number of pixels, got {painted}");
+        assert!(
+            painted > 100,
+            "fixture should paint a fair number of pixels, got {painted}"
+        );
     }
 
     #[test]
@@ -893,18 +1026,34 @@ mod tests {
         let (w, h) = (view.width(), view.height());
         let mut via_geom = vec![0u8; w * h * 4];
         rasterize_sweep_from_geometry_pm(
-            &sweep, Moment::Reflectivity, &geom, &rows, &view, 0.7, f32::NEG_INFINITY, 1.0,
+            &sweep,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &view,
+            0.7,
+            f32::NEG_INFINITY,
+            1.0,
             &mut via_geom,
         );
         let direct = rasterize_sweep_premultiplied(
-            &sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.7, f32::NEG_INFINITY,
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            0.7,
+            f32::NEG_INFINITY,
         );
-        assert_eq!(via_geom, direct.rgba, "geometry-table raster must equal the direct path");
+        assert_eq!(
+            via_geom, direct.rgba,
+            "geometry-table raster must equal the direct path"
+        );
     }
 
     #[test]
     fn resolution_change_keeps_echoes_georeferenced() {
-        // The regression that mattered: at half resolution the buffer must
+        // Regression guard: at half resolution the buffer must
         // show the SAME ground area as the full-res view (just coarser) —
         // a missing position scale turned it into a 2x center crop.
         let mut sweep = single_gate_sweep();
@@ -935,7 +1084,13 @@ mod tests {
         };
 
         let full = rasterize_sweep_premultiplied(
-            &sweep, Moment::Reflectivity, &view, 35.0, -97.0, 0.7, f32::NEG_INFINITY,
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            0.7,
+            f32::NEG_INFINITY,
         );
         let (fx, fy) = centroid(&full.rgba, full.width, full.height);
 
@@ -943,7 +1098,14 @@ mod tests {
         let (hw, hh) = (half.width(), half.height());
         let mut hbuf = vec![0u8; hw * hh * 4];
         rasterize_sweep_from_geometry_pm(
-            &sweep, Moment::Reflectivity, &geom, &rows, &view, 0.7, f32::NEG_INFINITY, 0.5,
+            &sweep,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &view,
+            0.7,
+            f32::NEG_INFINITY,
+            0.5,
             &mut hbuf,
         );
         let (hx, hy) = centroid(&hbuf, hw, hh);
@@ -969,7 +1131,10 @@ mod tests {
         let geom = GateGeometry::build(&sweep, 35.0, -97.0);
 
         // Pan: same zoom, shifted center -> reusable, raster matches direct.
-        let panned = MapView { center_lon: view.center_lon + 0.05, ..view };
+        let panned = MapView {
+            center_lon: view.center_lon + 0.05,
+            ..view
+        };
         let rows = geom
             .reuse_for(&sweep, 35.0, -97.0)
             .expect("pan must not invalidate");
@@ -977,29 +1142,64 @@ mod tests {
         let (w, h) = (view.width(), view.height());
         let mut via_geom = vec![0u8; w * h * 4];
         rasterize_sweep_from_geometry_pm(
-            &sweep, Moment::Reflectivity, &geom, &rows, &panned, 0.7, f32::NEG_INFINITY, 1.0,
+            &sweep,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &panned,
+            0.7,
+            f32::NEG_INFINITY,
+            1.0,
             &mut via_geom,
         );
         let direct = rasterize_sweep_premultiplied(
-            &sweep, Moment::Reflectivity, &panned, 35.0, -97.0, 0.7, f32::NEG_INFINITY,
+            &sweep,
+            Moment::Reflectivity,
+            &panned,
+            35.0,
+            -97.0,
+            0.7,
+            f32::NEG_INFINITY,
         );
-        assert_eq!(via_geom, direct.rgba, "translated geometry must equal a direct raster");
+        assert_eq!(
+            via_geom, direct.rgba,
+            "translated geometry must equal a direct raster"
+        );
 
         // Zoom: the table is zoom-independent, so it still serves — and a
         // raster at the new zoom must match a direct raster there.
-        let zoomed = MapView { zoom: view.zoom + 0.5, ..view };
+        let zoomed = MapView {
+            zoom: view.zoom + 0.5,
+            ..view
+        };
         let rows = geom
             .reuse_for(&sweep, 35.0, -97.0)
             .expect("zoom must not invalidate");
         let mut via_geom = vec![0u8; w * h * 4];
         rasterize_sweep_from_geometry_pm(
-            &sweep, Moment::Reflectivity, &geom, &rows, &zoomed, 0.7, f32::NEG_INFINITY, 1.0,
+            &sweep,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &zoomed,
+            0.7,
+            f32::NEG_INFINITY,
+            1.0,
             &mut via_geom,
         );
         let direct = rasterize_sweep_premultiplied(
-            &sweep, Moment::Reflectivity, &zoomed, 35.0, -97.0, 0.7, f32::NEG_INFINITY,
+            &sweep,
+            Moment::Reflectivity,
+            &zoomed,
+            35.0,
+            -97.0,
+            0.7,
+            f32::NEG_INFINITY,
         );
-        assert_eq!(via_geom, direct.rgba, "zoomed raster from the cached table must match direct");
+        assert_eq!(
+            via_geom, direct.rgba,
+            "zoomed raster from the cached table must match direct"
+        );
     }
 
     #[test]
@@ -1054,12 +1254,29 @@ mod tests {
         let (w, h) = (view.width(), view.height());
         let mut via_geom = vec![0u8; w * h * 4];
         rasterize_sweep_from_geometry_pm(
-            &b, Moment::Reflectivity, &geom, &rows, &view, 1.0, f32::NEG_INFINITY, 1.0,
+            &b,
+            Moment::Reflectivity,
+            &geom,
+            &rows,
+            &view,
+            1.0,
+            f32::NEG_INFINITY,
+            1.0,
             &mut via_geom,
         );
-        let direct =
-            rasterize_sweep_premultiplied(&b, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
-        assert_eq!(via_geom, direct.rgba, "row-remapped raster must equal the direct path");
+        let direct = rasterize_sweep_premultiplied(
+            &b,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            1.0,
+            f32::NEG_INFINITY,
+        );
+        assert_eq!(
+            via_geom, direct.rgba,
+            "row-remapped raster must equal the direct path"
+        );
     }
 
     #[test]
@@ -1067,7 +1284,9 @@ mod tests {
         // Measured on consecutive KTWX volumes: the layout repeats rotated
         // by an arbitrary phase with up to ~0.11 deg of jitter per ray.
         let n = 720usize;
-        let a_az: Vec<f32> = (0..n).map(|i| (i as f32 * 0.5 + 14.2).rem_euclid(360.0)).collect();
+        let a_az: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * 0.5 + 14.2).rem_euclid(360.0))
+            .collect();
         let shift = 62usize;
         let jitter = |i: usize| (((i * 37) % 11) as f32 - 5.0) * 0.02; // ±0.1 deg
         let b_az: Vec<f32> = (0..n)
@@ -1081,7 +1300,11 @@ mod tests {
             azimuths_deg: az,
             moments: vec![radar_core::MomentData {
                 kind: Moment::Reflectivity,
-                calibration: radar_core::MomentCalibration { scale: 2.0, offset: 66.0, threshold: 0.0 },
+                calibration: radar_core::MomentCalibration {
+                    scale: 2.0,
+                    offset: 66.0,
+                    threshold: 0.0,
+                },
                 range_start_m: 500.0,
                 gate_size_m: 250.0,
                 gate_count: 1832,
@@ -1097,7 +1320,11 @@ mod tests {
                 assert_eq!(m.len(), n);
                 // Table row 0 holds azimuth a_az[0]; the candidate ray that
                 // carries it is (n - shift), so that ray maps to row 0.
-                assert_eq!(m[(n - shift) % n] as usize, 0, "phase-shifted ray must map to row 0");
+                assert_eq!(
+                    m[(n - shift) % n] as usize,
+                    0,
+                    "phase-shifted ray must map to row 0"
+                );
                 assert_eq!(m[(n - shift + 1) % n] as usize, 1);
             }
             other => panic!("expected a row remap for the real-world rotation, got {other:?}"),
@@ -1114,7 +1341,11 @@ mod tests {
             azimuths_deg: vec![90.0],
             moments: vec![MomentData {
                 kind: Moment::Reflectivity,
-                calibration: MomentCalibration { scale: 1.0, offset: 0.0, threshold: 0.0 },
+                calibration: MomentCalibration {
+                    scale: 1.0,
+                    offset: 0.0,
+                    threshold: 0.0,
+                },
                 range_start_m: 10_000.0,
                 gate_size_m: 10_000.0,
                 gate_count: 4,
@@ -1123,7 +1354,15 @@ mod tests {
             }],
         };
         let view = view();
-        let img = rasterize_sweep(&sweep, Moment::Reflectivity, &view, 35.0, -97.0, 1.0, f32::NEG_INFINITY);
+        let img = rasterize_sweep(
+            &sweep,
+            Moment::Reflectivity,
+            &view,
+            35.0,
+            -97.0,
+            1.0,
+            f32::NEG_INFINITY,
+        );
         let mut last_px = -1.0;
         for gate in 0..4 {
             let slant = 10_000.0 + (gate as f32 + 0.5) * 10_000.0;

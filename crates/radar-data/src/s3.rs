@@ -1,4 +1,4 @@
-//! Anonymous S3 access to the NOAA NEXRAD buckets + real-time polling. (W2)
+//! Anonymous S3 access to the NOAA NEXRAD buckets + real-time polling.
 //!
 //! Wraps [`nexrad_data::aws`] (`archive` + `realtime`) against the Unidata
 //! mirrors of the NOAA Open Data buckets:
@@ -15,7 +15,7 @@
 //! dedicated current-thread tokio runtimes behind blocking methods, matching
 //! the crate's std-thread/`mpsc` conventions.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -45,7 +45,8 @@ pub struct RealtimePoller {
 
 impl RealtimePoller {
     pub fn stop(&self) {
-        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -136,9 +137,10 @@ impl S3Source {
         let _guard = self.rt_lock.lock().unwrap_or_else(|e| e.into_inner());
         // NOTE: `tokio::time::timeout` must be constructed inside the async
         // block — its timer is created eagerly and needs the runtime context.
-        match self.rt.block_on(async move {
-            tokio::time::timeout(limit, fut).await
-        }) {
+        match self
+            .rt
+            .block_on(async move { tokio::time::timeout(limit, fut).await })
+        {
             Ok(out) => Ok(out),
             Err(_) => Err(anyhow!("S3 operation timed out after {}s", limit.as_secs())),
         }
@@ -156,9 +158,10 @@ impl S3Source {
             let mut last_err = None;
             let mut out = None;
             for attempt in 0..3 {
-                match self
-                    .block_on_timeout(LIST_TIMEOUT, nexrad_data::aws::archive::list_files(&site, &date))
-                {
+                match self.block_on_timeout(
+                    LIST_TIMEOUT,
+                    nexrad_data::aws::archive::list_files(&site, &date),
+                ) {
                     Ok(Ok(ids)) => {
                         out = Some(ids);
                         break;
@@ -220,7 +223,10 @@ impl S3Source {
         }
         let ident = nexrad_data::aws::archive::Identifier::new(r.file_name().to_string());
         let file = self
-            .block_on_timeout(DOWNLOAD_TIMEOUT, nexrad_data::aws::archive::download_file(ident))
+            .block_on_timeout(
+                DOWNLOAD_TIMEOUT,
+                nexrad_data::aws::archive::download_file(ident),
+            )
             .with_context(|| format!("downloading {ARCHIVE_BUCKET}/{}", r.key))?
             .with_context(|| format!("downloading {ARCHIVE_BUCKET}/{}", r.key))?;
         let bytes = file.data().to_vec();
@@ -243,7 +249,10 @@ impl S3Source {
         }
         let gz = self.fetch_archive_bytes(r)?;
         let volume = decode_archive_bytes(&gz)?;
-        self.mem.lock().unwrap().insert(r.key.clone(), Arc::clone(&volume));
+        self.mem
+            .lock()
+            .unwrap()
+            .insert(r.key.clone(), Arc::clone(&volume));
         Ok(volume)
     }
 
@@ -252,7 +261,10 @@ impl S3Source {
     /// channel is bounded (a few volumes) so a slow consumer applies
     /// backpressure instead of unbounded buffering; the background thread
     /// exits when the receiver is dropped.
-    pub fn start_realtime(&self, site: &str) -> Result<(Receiver<radar_core::Volume>, RealtimePoller)> {
+    pub fn start_realtime(
+        &self,
+        site: &str,
+    ) -> Result<(Receiver<radar_core::Volume>, RealtimePoller)> {
         let site = site.trim().to_ascii_uppercase();
         if site.len() != 4 {
             return Err(anyhow!("site id must be 4 characters, got {site:?}"));
@@ -321,7 +333,10 @@ fn realtime_poll_loop(
         }
         match block_on_timed(rt, LIST_TIMEOUT, get_latest_volume(site)) {
             None => {
-                log::warn!("realtime {site}: get_latest_volume stalled >{}s", LIST_TIMEOUT.as_secs());
+                log::warn!(
+                    "realtime {site}: get_latest_volume stalled >{}s",
+                    LIST_TIMEOUT.as_secs()
+                );
                 if failing_too_long(&mut failing_since) {
                     log::warn!("realtime {site}: giving up after continuous failures");
                     return;
@@ -371,38 +386,38 @@ fn realtime_poll_loop(
                 log::debug!("realtime {site}: cancelled");
                 return;
             }
-            let chunks = match block_on_timed(rt, LIST_TIMEOUT, list_chunks_in_volume(site, volume, 200))
-            {
-                None => {
-                    log::warn!(
-                        "realtime {site}: listing volume {} stalled >{}s",
-                        volume.as_number(),
-                        LIST_TIMEOUT.as_secs()
-                    );
-                    if failing_too_long(&mut failing_since) {
-                        log::warn!("realtime {site}: giving up after continuous failures");
-                        return;
+            let chunks =
+                match block_on_timed(rt, LIST_TIMEOUT, list_chunks_in_volume(site, volume, 200)) {
+                    None => {
+                        log::warn!(
+                            "realtime {site}: listing volume {} stalled >{}s",
+                            volume.as_number(),
+                            LIST_TIMEOUT.as_secs()
+                        );
+                        if failing_too_long(&mut failing_since) {
+                            log::warn!("realtime {site}: giving up after continuous failures");
+                            return;
+                        }
+                        std::thread::sleep(REALTIME_POLL);
+                        continue;
                     }
-                    std::thread::sleep(REALTIME_POLL);
-                    continue;
-                }
-                Some(Ok(c)) => {
-                    failing_since = None;
-                    c
-                }
-                Some(Err(e)) => {
-                    log::warn!(
-                        "realtime {site}: listing volume {} failed: {e}",
-                        volume.as_number()
-                    );
-                    if failing_too_long(&mut failing_since) {
-                        log::warn!("realtime {site}: giving up after continuous failures");
-                        return;
+                    Some(Ok(c)) => {
+                        failing_since = None;
+                        c
                     }
-                    std::thread::sleep(REALTIME_POLL);
-                    continue;
-                }
-            };
+                    Some(Err(e)) => {
+                        log::warn!(
+                            "realtime {site}: listing volume {} failed: {e}",
+                            volume.as_number()
+                        );
+                        if failing_too_long(&mut failing_since) {
+                            log::warn!("realtime {site}: giving up after continuous failures");
+                            return;
+                        }
+                        std::thread::sleep(REALTIME_POLL);
+                        continue;
+                    }
+                };
             let mut chunks = chunks;
             chunks.sort_by_key(|c| c.sequence());
 
@@ -473,13 +488,12 @@ fn realtime_poll_loop(
 
             if saw_end && !assembled.is_empty() {
                 // Concatenate strictly in sequence order, starting at the
-                // Start chunk's (1-based) sequence; gaps mean we can't trust
-                // the assembly.
+                // Start chunk's (1-based) sequence; gaps mean the volume
+                // can't be trusted.
                 let have: Vec<usize> = assembled.keys().copied().collect();
                 let contiguous_from_start = match (have.first(), start_seq) {
                     (Some(&first), Some(seq)) => {
-                        first == seq
-                            && have.windows(2).all(|w| w[1] == w[0] + 1)
+                        first == seq && have.windows(2).all(|w| w[1] == w[0] + 1)
                     }
                     _ => false,
                 };
@@ -554,7 +568,12 @@ fn realtime_poll_loop(
 /// multi-member gzip stream, and the archive decoder reads only one member.
 /// Anything that isn't Archive II is left alone rather than poisoning the key.
 /// Best-effort: failures are logged and the live pipeline continues.
-fn persist_volume(cache: &DiskCache, site: &str, epoch: Option<chrono::NaiveDateTime>, bytes: &[u8]) {
+fn persist_volume(
+    cache: &DiskCache,
+    site: &str,
+    epoch: Option<chrono::NaiveDateTime>,
+    bytes: &[u8],
+) {
     if bytes.is_empty() {
         return;
     }
@@ -592,7 +611,10 @@ fn persist_volume(cache: &DiskCache, site: &str, epoch: Option<chrono::NaiveDate
     let rel = format!("l2/{site}/{name}.gz");
     match cache.write(&rel, &gz) {
         Ok(_) => {
-            log::debug!("realtime {site}: cached volume {name} ({} bytes gz)", gz.len());
+            log::debug!(
+                "realtime {site}: cached volume {name} ({} bytes gz)",
+                gz.len()
+            );
             let _ = cache.sweep(); // opportunistic size cap
         }
         Err(e) => log::warn!("realtime {site}: caching volume {name} failed: {e:#}"),
@@ -632,8 +654,8 @@ fn is_gzip(bytes: &[u8]) -> bool {
 }
 
 fn gzip(bytes: &[u8]) -> Result<Vec<u8>> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::io::Write;
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(bytes)?;
@@ -675,7 +697,8 @@ mod tests {
 
     #[test]
     fn persist_volume_normalizes_to_single_gzip_member() {
-        let root = std::env::temp_dir().join(format!("stormscope-persist-test-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("stormscope-persist-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let cache = DiskCache::new(root.clone(), 1 << 20);
         let prefix = NaiveDate::from_ymd_opt(2026, 10, 13)
@@ -687,7 +710,10 @@ mod tests {
 
         // Raw Archive II bytes are stored as a single gzip member.
         persist_volume(&cache, "KTWX", Some(prefix), &raw);
-        let gz = cache.read("l2/KTWX/KTWX20261013_131500_V06.gz").unwrap().unwrap();
+        let gz = cache
+            .read("l2/KTWX/KTWX20261013_131500_V06.gz")
+            .unwrap()
+            .unwrap();
         assert!(is_gzip(&gz));
         assert_eq!(gunzip(&gz).unwrap(), raw);
 
@@ -696,12 +722,20 @@ mod tests {
         let mut multi = gzip(&raw[..11]).unwrap();
         multi.extend_from_slice(&gzip(&raw[11..]).unwrap());
         persist_volume(&cache, "KTLX", Some(prefix), &multi);
-        let gz2 = cache.read("l2/KTLX/KTLX20261013_131500_V06.gz").unwrap().unwrap();
+        let gz2 = cache
+            .read("l2/KTLX/KTLX20261013_131500_V06.gz")
+            .unwrap()
+            .unwrap();
         assert_eq!(gunzip(&gz2).unwrap(), raw);
 
         // Non-Archive II bytes are never cached.
         persist_volume(&cache, "KOAX", Some(prefix), b"not-a-volume");
-        assert!(cache.read("l2/KOAX/KOAX20261013_131500_V06.gz").unwrap().is_none());
+        assert!(
+            cache
+                .read("l2/KOAX/KOAX20261013_131500_V06.gz")
+                .unwrap()
+                .is_none()
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

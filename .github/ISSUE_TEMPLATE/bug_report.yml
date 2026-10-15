@@ -34,7 +34,7 @@ body:
     attributes:
       label: Environment
       description: GPU + driver, Wayland or X11, desktop/compositor, monitor scale factor.
-      placeholder: Intel Arc A310 / Mesa 26.2, Wayland (Hyprland), scale 1.5
+      placeholder: e.g. NVIDIA RTX 3060 / driver 555, Wayland or X11, scale 1.5
     validations:
       required: true
   - type: textarea

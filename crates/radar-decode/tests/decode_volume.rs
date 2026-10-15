@@ -32,7 +32,8 @@ fn fixture_path() -> PathBuf {
 
 fn print_volume_stats(label: &str, volume: &radar_core::Volume) {
     let meta = &volume.meta;
-    println!("[{label}] site={} start={} vcp={:?} seq={:?} sweeps={} moments={:?}",
+    println!(
+        "[{label}] site={} start={} vcp={:?} seq={:?} sweeps={} moments={:?}",
         meta.site_id,
         meta.volume_start,
         meta.vcp,
@@ -65,9 +66,18 @@ fn print_volume_stats(label: &str, volume: &radar_core::Volume) {
             }
             println!(
                 "[{label}]   {}: gates={} rays={} range_start={:.0}m gate={:.0}m cal=({:.1},{:.1},{:.1}) nonzero={} min={:.1} max={:.1} {}",
-                m.kind.label(), m.gate_count, m.ray_count, m.range_start_m, m.gate_size_m,
-                m.calibration.scale, m.calibration.offset, m.calibration.threshold,
-                nonzero, min, max, m.kind.unit(),
+                m.kind.label(),
+                m.gate_count,
+                m.ray_count,
+                m.range_start_m,
+                m.gate_size_m,
+                m.calibration.scale,
+                m.calibration.offset,
+                m.calibration.threshold,
+                nonzero,
+                min,
+                max,
+                m.kind.unit(),
             );
         }
     }
@@ -83,7 +93,14 @@ fn assert_sane_volume(volume: &radar_core::Volume) {
 
     // Volume start is the day of the fixture.
     let start = volume.meta.volume_start;
-    assert_eq!((start.date_naive().year(), start.date_naive().month(), start.date_naive().day()), (2026, 10, 12));
+    assert_eq!(
+        (
+            start.date_naive().year(),
+            start.date_naive().month(),
+            start.date_naive().day()
+        ),
+        (2026, 10, 12)
+    );
 
     // Lowest tilt is ~0.5 deg.
     let tilts = volume.tilts();
@@ -95,9 +112,19 @@ fn assert_sane_volume(volume: &radar_core::Volume) {
     // The lowest tilt carries reflectivity with plausible geometry and data.
     let idx = volume.sweep_index_for_tilt(0.5).expect("tilt lookup");
     let sweep = &volume.sweeps[idx];
-    let refl = sweep.moment(Moment::Reflectivity).expect("REF on lowest tilt");
-    assert!(refl.gate_count >= 200, "REF gate count too small: {}", refl.gate_count);
-    assert!(refl.ray_count >= 300, "REF ray count too small: {}", refl.ray_count);
+    let refl = sweep
+        .moment(Moment::Reflectivity)
+        .expect("REF on lowest tilt");
+    assert!(
+        refl.gate_count >= 200,
+        "REF gate count too small: {}",
+        refl.gate_count
+    );
+    assert!(
+        refl.ray_count >= 300,
+        "REF ray count too small: {}",
+        refl.ray_count
+    );
     assert_eq!(refl.data.len(), refl.ray_count * refl.gate_count);
     assert!(refl.calibration.scale > 0.0);
 
@@ -116,13 +143,21 @@ fn assert_sane_volume(volume: &radar_core::Volume) {
         (-10.0..=85.0).contains(&max_dbz),
         "implausible max reflectivity: {max_dbz} dBZ"
     );
-    assert!(min_dbz >= -40.0, "implausible min reflectivity: {min_dbz} dBZ");
+    assert!(
+        min_dbz >= -40.0,
+        "implausible min reflectivity: {min_dbz} dBZ"
+    );
 
     // Every sweep's moment matrices are consistently sized.
     for (i, sweep) in volume.sweeps.iter().enumerate() {
         assert!(!sweep.azimuths_deg.is_empty(), "sweep {i} has no azimuths");
         for m in &sweep.moments {
-            assert_eq!(m.data.len(), m.ray_count * m.gate_count, "sweep {i} {:?}", m.kind);
+            assert_eq!(
+                m.data.len(),
+                m.ray_count * m.gate_count,
+                "sweep {i} {:?}",
+                m.kind
+            );
         }
     }
 }
@@ -153,8 +188,12 @@ fn decode_realtime_volume_from_assembled_stream() {
             .expect("gunzip fixture");
         raw
     };
-    assert!(raw.starts_with(b"AR2V"), "fixture stream lacks archive header");
-    let headerless = decode_realtime_volume(&raw[24..]).expect("decode_realtime_volume (headerless)");
+    assert!(
+        raw.starts_with(b"AR2V"),
+        "fixture stream lacks archive header"
+    );
+    let headerless =
+        decode_realtime_volume(&raw[24..]).expect("decode_realtime_volume (headerless)");
     print_volume_stats("realtime-headerless", &headerless);
     assert_sane_volume(&headerless);
 

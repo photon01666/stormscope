@@ -27,7 +27,7 @@ const MAX_ZOOM: f64 = 12.0;
 pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Interaction -----------------------------------------------------
     // The tile layer derives the viewport rect from the current cursor and
-    // registers a hover widget over it; we reuse that same rect for pan/zoom
+    // registers a hover widget over it; that same rect is reused for pan/zoom
     // and for every overlay layer so nothing drifts.
     // Interactive widget over the whole viewport. Drag sense is required for
     // panning (`drag_delta()` is always zero on a hover-only widget).
@@ -118,8 +118,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // IMPORTANT: read the pointer position *before* taking the input lock.
     // Calling `response.hover_pos()` from inside a `ctx.input(..)` closure
     // re-enters egui's Context lock (both go through `Context::write`) and
-    // self-deadlocks the frame — that also starves the next frame's pointer
-    // events, which is why the wheel appeared dead.
+    // self-deadlocks the frame, starving the next frame's pointer events.
     if response.hovered() {
         // Anchor = pointer position in viewport-relative pixels.
         let pointer = response.hover_pos();
@@ -132,7 +131,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             let anchor = pointer
                 .map(|p| ((p.x - rect.min.x) as f64, (p.y - rect.min.y) as f64))
                 .unwrap_or((rect.width() as f64 / 2.0, rect.height() as f64 / 2.0));
-            let (wheel, pinch) = ui.ctx().input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+            let (wheel, pinch) = ui
+                .ctx()
+                .input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
             let mut z = app.state.view.zoom;
             let zd = pinch as f64;
             if zd != 1.0 {
@@ -176,14 +177,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // moment, tilt, view, opacity) — never per frame.
     if let Some(frame) = app.state.current() {
         if let Some(site) = radar_core::sites::site(&app.state.site_id) {
-            if let Some(si) =
-                frame
-                    .volume
-                    .sweep_index_for_tilt_moment(app.state.tilt_deg, app.state.moment)
+            if let Some(si) = frame
+                .volume
+                .sweep_index_for_tilt_moment(app.state.tilt_deg, app.state.moment)
             {
                 let sweep = &frame.volume.sweeps[si];
                 if sweep.moment(app.state.moment).is_some() {
-                    // Motion = we expect another re-raster right away (drag,
+                    // Motion = another re-raster is expected imminently (drag,
                     // playback, or a burst of wheel-zoom steps). Motion frames
                     // rasterize at half resolution (~4x fewer pixels); once
                     // motion stops, the next raster is full resolution. Both
@@ -208,8 +208,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             app.radar_view_change_at = std::time::Instant::now();
                         }
                     }
-                    let burst = app.radar_view_change_at.elapsed()
-                        < std::time::Duration::from_millis(150);
+                    let burst =
+                        app.radar_view_change_at.elapsed() < std::time::Duration::from_millis(150);
                     let motion = response.dragged()
                         || burst
                         || app.state.loop_state == crate::state::LoopState::Playing;
@@ -257,9 +257,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             // site, reused across pans, zooms, moment
                             // switches and playback frames (rotated scan
                             // layouts remap rows instead of rebuilding).
-                            let mut rows = app.radar_geom.as_ref().and_then(|g| {
-                                g.reuse_for(sweep, site.latitude, site.longitude)
-                            });
+                            let mut rows = app
+                                .radar_geom
+                                .as_ref()
+                                .and_then(|g| g.reuse_for(sweep, site.latitude, site.longitude));
                             if rows.is_none() {
                                 let t0 = std::time::Instant::now();
                                 app.radar_geom = Some(radar_render::GateGeometry::build(
@@ -289,10 +290,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                 raster_scale,
                                 &mut app.radar_buf,
                             );
-                            let color = egui::ColorImage::from_rgba_premultiplied(
-                                [rw, rh],
-                                &app.radar_buf,
-                            );
+                            let color =
+                                egui::ColorImage::from_rgba_premultiplied([rw, rh], &app.radar_buf);
                             let (ox0, oy0) = view.origin_px();
                             match &mut app.radar_tex {
                                 Some(rt) => {
@@ -332,10 +331,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         }
                     }
                     if let Some(rt) = &app.radar_tex {
-                        let uv = egui::Rect::from_min_max(
-                            egui::pos2(0.0, 0.0),
-                            egui::pos2(1.0, 1.0),
-                        );
+                        let uv =
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                         if rt.sig == sig {
                             // Current view: draw in place (a motion raster is
                             // stretched to the viewport rect for free).
@@ -434,15 +431,12 @@ fn zoom_view(dst: &mut MapView, cur: MapView, new_zoom: f64, anchor: (f64, f64))
     let (ax, ay) = radar_render::lonlat_to_merc_px(lon, lat, new_zoom);
     // ...which pins the new view center: after the zoom the anchor pixel must
     // still show that same geo point, so center = point - anchor + halfsize.
-    // (An earlier "probe" formulation double-counted the offset and flung
-    // the view thousands of km away on every zoom — the vanishing-map bug.)
+    // Deriving the anchor from a probe position instead double-counts the
+    // offset and sends the view far off-target.
     let half_w = cur.width() as f64 / 2.0;
     let half_h = cur.height() as f64 / 2.0;
-    let (cx, cy) = radar_render::merc_px_to_lonlat(
-        ax - anchor.0 + half_w,
-        ay - anchor.1 + half_h,
-        new_zoom,
-    );
+    let (cx, cy) =
+        radar_render::merc_px_to_lonlat(ax - anchor.0 + half_w, ay - anchor.1 + half_h, new_zoom);
     dst.zoom = new_zoom;
     dst.center_lon = cx;
     dst.center_lat = cy.clamp(-85.0, 85.0);
@@ -524,12 +518,7 @@ fn measure_interaction(
     view: MapView,
     app: &mut StormApp,
 ) {
-    let markers: Vec<(f64, f64)> = app
-        .state
-        .markers
-        .iter()
-        .map(|m| (m.lon, m.lat))
-        .collect();
+    let markers: Vec<(f64, f64)> = app.state.markers.iter().map(|m| (m.lon, m.lat)).collect();
     let sites: Vec<(f64, f64)> = radar_core::sites::SITES
         .iter()
         .map(|s| (s.longitude, s.latitude))
@@ -560,7 +549,7 @@ fn measure_interaction(
         }
     }
 
-    // 2) Drag in flight: move the grabbed endpoint (snapping) or slide the
+    // 2) Drag in progress: move the grabbed endpoint (snapping) or slide the
     // bubble by the drag delta (delta, not absolute: no jump on grab).
     if response.dragged() {
         match app.state.measure_drag {
@@ -620,20 +609,22 @@ pub(super) fn format_miles(miles: f64) -> String {
 }
 
 /// Ground-range rings around the selected radar (50 km steps).
-fn draw_range_rings(
-    painter: &egui::Painter,
-    origin: egui::Pos2,
-    view: &MapView,
-    app: &StormApp,
-) {
-    let Some(site) = radar_core::sites::site(&app.state.site_id) else { return };
+fn draw_range_rings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
+    let Some(site) = radar_core::sites::site(&app.state.site_id) else {
+        return;
+    };
     let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60));
     for km in [50u32, 100, 150, 200, 250] {
         let mut pts = Vec::with_capacity(96);
         for i in 0..=96 {
             let az = i as f32 * 360.0 / 96.0;
-            let (lat, lon) =
-                radar_render::gate_latlon(site.latitude, site.longitude, az, 0.0, km as f32 * 1000.0);
+            let (lat, lon) = radar_render::gate_latlon(
+                site.latitude,
+                site.longitude,
+                az,
+                0.0,
+                km as f32 * 1000.0,
+            );
             let (vx, vy) = view.lonlat_to_view_px(lon, lat);
             pts.push(egui::pos2(origin.x + vx as f32, origin.y + vy as f32));
         }
@@ -755,10 +746,7 @@ fn draw_outlooks(
                 .collect();
             if fills {
                 let fill = egui::Color32::from_rgba_unmultiplied(
-                    f.fill[0],
-                    f.fill[1],
-                    f.fill[2],
-                    fill_alpha,
+                    f.fill[0], f.fill[1], f.fill[2], fill_alpha,
                 );
                 if let Some(mesh) = triangulate(&rings, fill) {
                     painter.add(egui::Shape::mesh(mesh));
@@ -1007,7 +995,9 @@ pub(super) fn fmt_eta(minutes: f64) -> String {
 /// nowcast line and an mph speed label.
 fn draw_tracks(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
     const NOWCAST_MIN: f64 = 30.0;
-    let Some((_, tracks)) = &app.tracks_cache else { return };
+    let Some((_, tracks)) = &app.tracks_cache else {
+        return;
+    };
     if tracks.is_empty() {
         return;
     }
@@ -1040,10 +1030,7 @@ fn draw_tracks(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app:
         for sign in [-1.0, 1.0] {
             let hx = ux * cs - uy * sn * sign;
             let hy = ux * sn * sign + uy * cs;
-            let barb = egui::pos2(
-                tip.x - (hx * 9.0) as f32,
-                tip.y - (hy * 9.0) as f32,
-            );
+            let barb = egui::pos2(tip.x - (hx * 9.0) as f32, tip.y - (hy * 9.0) as f32);
             painter.line_segment([tip, barb], egui::Stroke::new(2.0, white));
         }
 
@@ -1252,10 +1239,7 @@ fn draw_min_dbz_bar(ctx: &egui::Context, map_rect: egui::Rect, app: &mut StormAp
         return;
     }
     let width = 380.0;
-    let pos = egui::pos2(
-        map_rect.center().x - width / 2.0,
-        map_rect.bottom() - 78.0,
-    );
+    let pos = egui::pos2(map_rect.center().x - width / 2.0, map_rect.bottom() - 78.0);
     let area = egui::Area::new(egui::Id::new("stormscope.min_dbz.bar"))
         .fixed_pos(pos)
         .movable(false)
@@ -1278,9 +1262,11 @@ fn draw_min_dbz_bar(ctx: &egui::Context, map_rect: egui::Rect, app: &mut StormAp
                         );
                     });
                     ui.label(
-                        egui::RichText::new("filters weak returns on REF products · scroll to adjust")
-                            .weak()
-                            .small(),
+                        egui::RichText::new(
+                            "filters weak returns on REF products · scroll to adjust",
+                        )
+                        .weak()
+                        .small(),
                     );
                 });
         });
@@ -1362,12 +1348,7 @@ fn draw_measure(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
 }
 
 /// One measurement endpoint pin with an optional snapped-on halo.
-fn draw_measure_pin(
-    painter: &egui::Painter,
-    at: egui::Pos2,
-    fill: egui::Color32,
-    snapped: bool,
-) {
+fn draw_measure_pin(painter: &egui::Painter, at: egui::Pos2, fill: egui::Color32, snapped: bool) {
     painter.circle_filled(at, 8.0, egui::Color32::from_black_alpha(200));
     painter.circle_filled(at, 6.0, fill);
     painter.circle_stroke(at, 6.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
@@ -1400,10 +1381,7 @@ fn draw_bubble(
         .iter()
         .map(|(t, f, c)| painter.layout_no_wrap(t.clone(), f.clone(), *c))
         .collect();
-    let w = galleys
-        .iter()
-        .map(|g| g.size().x)
-        .fold(0.0, f32::max);
+    let w = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max);
     let h: f32 = galleys.iter().map(|g| g.size().y).sum();
     let pad = egui::vec2(12.0, 8.0);
     let rect = egui::Rect::from_center_size(center, egui::vec2(w, h) + pad * 2.0);
@@ -1464,7 +1442,9 @@ fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
 
 /// Small modal for naming a new marker or editing an existing one.
 fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
-    let Some(idx) = app.state.pending_marker else { return };
+    let Some(idx) = app.state.pending_marker else {
+        return;
+    };
     if idx >= app.state.markers.len() {
         app.state.pending_marker = None;
         return;
@@ -1478,39 +1458,46 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
     let mut to_delete = false;
     let mut to_cancel = false;
 
-    egui::Window::new(if is_new { "Name this marker" } else { "Edit marker" })
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -140.0))
-        .show(ui.ctx(), |ui| {
-            ui.label("Label");
-            let resp = ui
-                .add(egui::TextEdit::singleline(draft).desired_width(260.0))
-                .on_hover_text("Type a name, then press Enter or Save");
-            // Grab focus automatically while naming a new pin so typing works
-            // immediately (no need to click the field first).
-            if is_new {
-                resp.request_focus();
+    egui::Window::new(if is_new {
+        "Name this marker"
+    } else {
+        "Edit marker"
+    })
+    .collapsible(false)
+    .resizable(false)
+    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -140.0))
+    .show(ui.ctx(), |ui| {
+        ui.label("Label");
+        let resp = ui
+            .add(egui::TextEdit::singleline(draft).desired_width(260.0))
+            .on_hover_text("Type a name, then press Enter or Save");
+        // Grab focus automatically while naming a new pin so typing works
+        // immediately (no need to click the field first).
+        if is_new {
+            resp.request_focus();
+        }
+        let typed_ok = !draft.trim().is_empty();
+        if typed_ok && resp.lost_focus() {
+            to_save = true; // Enter or click-away commits a non-empty name
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(typed_ok, egui::Button::new("Save"))
+                .clicked()
+            {
+                to_save = true;
             }
-            let typed_ok = !draft.trim().is_empty();
-            if typed_ok && resp.lost_focus() {
-                to_save = true; // Enter or click-away commits a non-empty name
+            if ui.button("Delete").clicked() {
+                to_delete = true;
             }
-            ui.horizontal(|ui| {
-                if ui.add_enabled(typed_ok, egui::Button::new("Save")).clicked() {
-                    to_save = true;
-                }
-                if ui.button("Delete").clicked() {
-                    to_delete = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    to_cancel = true;
-                }
-            });
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if ui.button("Cancel").clicked() {
                 to_cancel = true;
             }
         });
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            to_cancel = true;
+        }
+    });
 
     if to_save {
         let name = app.state.pending_marker_label.trim().to_string();
@@ -1605,7 +1592,7 @@ mod tests {
     }
 
     /// A concave polygon must come back fully triangulated (a fan fill would
-    /// leak outside it — that's the whole reason we use earcut).
+    /// leak outside it — which is why earcut is used here).
     #[test]
     fn triangulate_fills_concave_polygon() {
         let ring = vec![
@@ -1617,7 +1604,10 @@ mod tests {
         ];
         let mesh = triangulate(&[ring], egui::Color32::RED).expect("mesh");
         assert_eq!(mesh.vertices.len(), 5);
-        assert!(mesh.indices.len() >= 3, "must produce at least one triangle");
+        assert!(
+            mesh.indices.len() >= 3,
+            "must produce at least one triangle"
+        );
         assert_eq!(mesh.indices.len() % 3, 0);
     }
 
@@ -1724,7 +1714,10 @@ mod tests {
         assert_eq!(consume_wheel_steps(&mut ev, &mut acc), 0.0);
         let mut ev = mk(30.0);
         assert_eq!(consume_wheel_steps(&mut ev, &mut acc), 1.0);
-        assert!((acc - 10.0).abs() < 1e-3, "residue kept for next time: {acc}");
+        assert!(
+            (acc - 10.0).abs() < 1e-3,
+            "residue kept for next time: {acc}"
+        );
         // Non-wheel events pass through untouched.
         let mut ev = vec![Event::Key {
             key: egui::Key::Space,
@@ -1738,7 +1731,8 @@ mod tests {
     }
 
     #[test]
-    fn miles_readout_uses_statute_miles() {        // 1 degree of latitude ≈ 69.1 mi; long hauls drop the decimal.
+    fn miles_readout_uses_statute_miles() {
+        // 1 degree of latitude ≈ 69.1 mi; long hauls drop the decimal.
         assert_eq!(format_miles(111_194.9 / 1609.344), "69.1 mi");
         assert_eq!(format_miles(150.0), "150 mi");
     }

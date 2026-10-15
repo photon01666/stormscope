@@ -6,7 +6,7 @@
 //! feature carries SPC's own `stroke`/`fill` hex colors plus `DN`, `LABEL`,
 //! `LABEL2` and ISO issue/valid/expire timestamps.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use radar_core::outlooks::{Outlook, OutlookFeature};
 
@@ -66,8 +66,16 @@ pub fn parse_outlook(day: u8, fc: &serde_json::Value) -> Result<Outlook> {
     let mut forecaster = String::new();
 
     for f in features_json {
-        let Some(props) = f.get("properties") else { continue };
-        let s = |k: &str| props.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let Some(props) = f.get("properties") else {
+            continue;
+        };
+        let s = |k: &str| {
+            props
+                .get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
         let dn = props.get("DN").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
 
         // Metadata is repeated on every feature; take the first non-empty.
@@ -100,14 +108,25 @@ pub fn parse_outlook(day: u8, fc: &serde_json::Value) -> Result<Outlook> {
 
     // Least severe first so higher categories draw on top.
     features.sort_by_key(|f| f.dn);
-    Ok(Outlook { day, issue, valid, expire, forecaster, features })
+    Ok(Outlook {
+        day,
+        issue,
+        valid,
+        expire,
+        forecaster,
+        features,
+    })
 }
 
 /// All polygons of a GeoJSON Polygon/MultiPolygon geometry, each with its
 /// full ring list (`[exterior, hole, ...]`), vertices as `(lon, lat)`.
 fn geometry_polygons(geometry: Option<&serde_json::Value>) -> Vec<Vec<Vec<(f64, f64)>>> {
-    let Some(geometry) = geometry else { return Vec::new() };
-    let Some(coords) = geometry.get("coordinates") else { return Vec::new() };
+    let Some(geometry) = geometry else {
+        return Vec::new();
+    };
+    let Some(coords) = geometry.get("coordinates") else {
+        return Vec::new();
+    };
     match geometry.get("type").and_then(|t| t.as_str()) {
         Some("Polygon") => one_polygon(coords).into_iter().collect(),
         Some("MultiPolygon") => coords
@@ -130,11 +149,7 @@ fn one_polygon(polygon: &serde_json::Value) -> Option<Vec<Vec<(f64, f64)>>> {
             }
         }
     }
-    if rings.is_empty() {
-        None
-    } else {
-        Some(rings)
-    }
+    if rings.is_empty() { None } else { Some(rings) }
 }
 
 fn ring_from_json(ring: &serde_json::Value) -> Option<Vec<(f64, f64)>> {
@@ -210,7 +225,10 @@ mod tests {
         let o = parse_outlook(1, &fc).unwrap();
         assert_eq!(o.day, 1);
         assert_eq!(o.forecaster, "Dean/Chalmers");
-        assert_eq!(o.issue, Some("2026-10-13T05:22:00Z".parse::<DateTime<Utc>>().unwrap()));
+        assert_eq!(
+            o.issue,
+            Some("2026-10-13T05:22:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
         assert_eq!(o.features.len(), 2);
         // Sorted least -> most severe.
         assert_eq!(o.features[0].label, "TSTM");

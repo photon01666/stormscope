@@ -1,4 +1,4 @@
-//! Moment -> RGBA color tables in the style of NWS/GR2Analyst. (W3)
+//! Moment -> RGBA color tables in the style of NWS/GR2Analyst.
 //!
 //! Every table is a plain list of `(value, RGBA)` stops with linear
 //! interpolation between neighbours, so ramps are easy to read and tune.
@@ -21,20 +21,20 @@ pub struct ColorTable {
 // -> magenta -> white, spanning 5..75 dBZ.
 // ---------------------------------------------------------------------------
 const REFLECTIVITY_STOPS: &[Stop] = &[
-    (5.0, [0, 0, 0, 0]),           // below 5 dBZ: nothing to show
-    (8.0, [160, 160, 160, 255]),   // faint gray
-    (12.0, [90, 200, 90, 255]),    // gray-green
-    (16.0, [0, 220, 0, 255]),      // green
-    (22.0, [0, 245, 0, 255]),      // bright green
-    (26.0, [255, 255, 0, 255]),    // yellow
-    (32.0, [255, 190, 0, 255]),    // gold
-    (36.0, [255, 130, 0, 255]),    // orange
-    (42.0, [255, 60, 0, 255]),     // red-orange
-    (48.0, [255, 0, 0, 255]),      // red
-    (56.0, [255, 0, 255, 255]),    // magenta
-    (64.0, [255, 120, 255, 255]),  // pink-magenta
-    (70.0, [255, 255, 255, 255]),  // white
-    (75.0, [255, 255, 255, 255]),  // clamped top
+    (5.0, [0, 0, 0, 0]),          // below 5 dBZ: nothing to show
+    (8.0, [160, 160, 160, 255]),  // faint gray
+    (12.0, [90, 200, 90, 255]),   // gray-green
+    (16.0, [0, 220, 0, 255]),     // green
+    (22.0, [0, 245, 0, 255]),     // bright green
+    (26.0, [255, 255, 0, 255]),   // yellow
+    (32.0, [255, 190, 0, 255]),   // gold
+    (36.0, [255, 130, 0, 255]),   // orange
+    (42.0, [255, 60, 0, 255]),    // red-orange
+    (48.0, [255, 0, 0, 255]),     // red
+    (56.0, [255, 0, 255, 255]),   // magenta
+    (64.0, [255, 120, 255, 255]), // pink-magenta
+    (70.0, [255, 255, 255, 255]), // white
+    (75.0, [255, 255, 255, 255]), // clamped top
 ];
 
 // ---------------------------------------------------------------------------
@@ -174,7 +174,10 @@ fn stops_for(kind: Moment) -> &'static [Stop] {
 
 impl ColorTable {
     pub fn for_moment(kind: Moment) -> Self {
-        Self { kind, stops: stops_for(kind) }
+        Self {
+            kind,
+            stops: stops_for(kind),
+        }
     }
 
     /// The moment this table renders (for `label()` / `unit()`).
@@ -218,7 +221,9 @@ impl ColorTable {
         if v >= last.0 {
             return last.1;
         }
-        let i = match stops.binary_search_by(|s| s.0.partial_cmp(&v).unwrap_or(std::cmp::Ordering::Equal)) {
+        let i = match stops
+            .binary_search_by(|s| s.0.partial_cmp(&v).unwrap_or(std::cmp::Ordering::Equal))
+        {
             // Exact hit on a stop.
             Ok(i) => return stops[i].1,
             // v sits between stops[i - 1] and stops[i]; v >= stops[0] so i >= 1.
@@ -229,7 +234,9 @@ impl ColorTable {
         let t = if v1 > v0 { (v - v0) / (v1 - v0) } else { 0.0 };
         let mut out = [0u8; 4];
         for (o, (a, b)) in out.iter_mut().zip(c0.iter().zip(c1.iter())) {
-            *o = (*a as f32 + (*b as f32 - *a as f32) * t).round().clamp(0.0, 255.0) as u8;
+            *o = (*a as f32 + (*b as f32 - *a as f32) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8;
         }
         out
     }
@@ -258,7 +265,11 @@ mod tests {
             assert!(lo < hi, "{m:?} empty range");
             let below = t.map(lo - 1.0);
             assert_eq!(below, [0, 0, 0, 0], "{m:?} below-range alpha must be 0");
-            assert_eq!(t.map(f32::NAN), [0, 0, 0, 0], "{m:?} NaN must be transparent");
+            assert_eq!(
+                t.map(f32::NAN),
+                [0, 0, 0, 0],
+                "{m:?} NaN must be transparent"
+            );
             // Inside the range the color is opaque (upper half at least).
             let mid = t.map((lo + hi) / 2.0);
             assert_eq!(mid[3], 255, "{m:?} mid-range must be opaque");
@@ -297,9 +308,15 @@ mod tests {
         let t = ColorTable::for_moment(Moment::Velocity);
         // NEXRAD convention: negative = inbound = green, positive = red.
         let inbound = t.map(-12.0);
-        assert!(inbound[1] > inbound[0] && inbound[1] > inbound[2], "inbound must be green");
+        assert!(
+            inbound[1] > inbound[0] && inbound[1] > inbound[2],
+            "inbound must be green"
+        );
         let outbound = t.map(12.0);
-        assert!(outbound[0] > outbound[1] && outbound[0] > outbound[2], "outbound must be red");
+        assert!(
+            outbound[0] > outbound[1] && outbound[0] > outbound[2],
+            "outbound must be red"
+        );
         assert_eq!(inbound[3], 255);
         // Discrete bands: constant inside [5,10), different at 10.
         assert_eq!(t.map(5.5), t.map(9.99));
@@ -317,7 +334,10 @@ mod tests {
         let t = ColorTable::for_moment(Moment::CorrelationCoefficient);
         assert_eq!(t.range(), (0.2, 1.0));
         let low = t.map(0.3);
-        assert!((low[0] as i32 - low[1] as i32).abs() < 40, "low CC should be grayish: {low:?}");
+        assert!(
+            (low[0] as i32 - low[1] as i32).abs() < 40,
+            "low CC should be grayish: {low:?}"
+        );
         // Green channel never decreases from 0.2 to 1.0.
         let mut prev = 0u8;
         for i in 0..=100 {
@@ -336,7 +356,11 @@ mod tests {
         for &m in ALL {
             let t = ColorTable::for_moment(m);
             for w in t.stops().windows(2) {
-                assert!(w[0].0 < w[1].0, "{m:?} stops not strictly increasing: {}", w[0].0);
+                assert!(
+                    w[0].0 < w[1].0,
+                    "{m:?} stops not strictly increasing: {}",
+                    w[0].0
+                );
             }
         }
         let t = ColorTable::for_moment(Moment::Reflectivity);
@@ -346,7 +370,10 @@ mod tests {
         let mid = t.map(45.0);
         for ch in 0..4 {
             let expected = (a[ch] as i32 + b[ch] as i32) / 2;
-            assert!((mid[ch] as i32 - expected).abs() <= 1, "channel {ch} not linear");
+            assert!(
+                (mid[ch] as i32 - expected).abs() <= 1,
+                "channel {ch} not linear"
+            );
         }
     }
 }

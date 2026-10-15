@@ -6,11 +6,12 @@ use stormscope_app::StormApp;
 /// radar volumes) every few minutes.
 ///
 /// Without this, glibc keeps freed decode buffers in its heap/arenas and the
-/// process RSS creeps from ~2 GB to ~5 GB over a night. That is not just the
-/// app's problem: on this box the GPU is a shared-memory Intel Arc, so system
-/// RAM pressure makes the driver fail to evict GPU buffers (`[TTM] Buffer
-/// eviction failed`) and *the whole desktop* stutters until the app is
-/// restarted. Best-effort; a no-op on non-glibc targets.
+/// process RSS creeps from ~2 GB to ~5 GB over a long session. That is not
+/// just the app's problem: on GPUs that share system memory (integrated
+/// graphics, small-VRAM cards) RAM pressure makes the driver fail to evict
+/// GPU buffers (`[TTM] Buffer eviction failed`) and the whole desktop
+/// stutters until the app is restarted. Best-effort; a no-op on non-glibc
+/// targets.
 fn tune_allocator() {
     #[cfg(target_env = "gnu")]
     unsafe {

@@ -1,5 +1,5 @@
 //! Projection: WGS84 <-> Web Mercator (EPSG:3857) tile pixels, and radar
-//! gate geolocation with the 4/3-earth refraction model. (W3)
+//! gate geolocation with the 4/3-earth refraction model.
 
 /// Current viewport in screen pixels at a given integer-ish zoom.
 #[derive(Copy, Clone, Debug)]
@@ -13,7 +13,13 @@ pub struct MapView {
 
 impl Default for MapView {
     fn default() -> Self {
-        Self { center_lat: 35.3331, center_lon: -97.2778, zoom: 8.0, width_px: 1280.0, height_px: 800.0 }
+        Self {
+            center_lat: 35.3331,
+            center_lon: -97.2778,
+            zoom: 8.0,
+            width_px: 1280.0,
+            height_px: 800.0,
+        }
     }
 }
 
@@ -33,7 +39,10 @@ impl MapView {
     /// screen position from this origin so the layers line up exactly.
     pub fn origin_px(&self) -> (f64, f64) {
         let (cx, cy) = lonlat_to_merc_px(self.center_lon, self.center_lat, self.zoom);
-        (cx - self.width() as f64 / 2.0, cy - self.height() as f64 / 2.0)
+        (
+            cx - self.width() as f64 / 2.0,
+            cy - self.height() as f64 / 2.0,
+        )
     }
 
     /// Project WGS84 to viewport pixel coordinates; (0,0) is the top-left
@@ -158,8 +167,7 @@ pub fn gate_latlon(
     let sin_phi2 = phi1.sin() * delta.cos() + phi1.cos() * delta.sin() * theta.cos();
     let phi2 = sin_phi2.clamp(-1.0, 1.0).asin();
     let lambda2 = lambda1
-        + (theta.sin() * delta.sin() * phi1.cos())
-            .atan2(delta.cos() - phi1.sin() * phi2.sin());
+        + (theta.sin() * delta.sin() * phi1.cos()).atan2(delta.cos() - phi1.sin() * phi2.sin());
 
     let mut lat = phi2.to_degrees();
     let mut lon = lambda2.to_degrees();
@@ -237,7 +245,11 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        for &(lon, lat, zoom) in &[(-97.2778, 35.3331, 8.0), (0.0, 0.0, 3.0), (151.2, -33.87, 11.0)] {
+        for &(lon, lat, zoom) in &[
+            (-97.2778, 35.3331, 8.0),
+            (0.0, 0.0, 3.0),
+            (151.2, -33.87, 11.0),
+        ] {
             let (x, y) = lonlat_to_merc_px(lon, lat, zoom);
             let (lon2, lat2) = merc_px_to_lonlat(x, y, zoom);
             assert!((lon - lon2).abs() < 1e-9 && (lat - lat2).abs() < 1e-9);
@@ -296,7 +308,10 @@ mod tests {
         // max latitude), so it bows equatorward (south in the northern
         // hemisphere); an off-axis (NE) ray bows poleward — see
         // `gate_northeast_is_poleward` below. Either way: definite deflection.
-        assert!(lat < 35.0 - 1e-3, "due-east gate should bow equatorward: lat={lat}");
+        assert!(
+            lat < 35.0 - 1e-3,
+            "due-east gate should bow equatorward: lat={lat}"
+        );
         // Ground distance stays within 0.3% of the slant range.
         let d = haversine_m(35.0, -97.0, lat, lon);
         assert!((d - 100_000.0).abs() < 300.0, "d={d}");

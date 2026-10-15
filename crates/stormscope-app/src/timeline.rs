@@ -10,7 +10,11 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         let playing = app.state.loop_state == LoopState::Playing;
         let label = if playing { "Pause" } else { "Play" };
         if ui.button(label).clicked() {
-            app.state.loop_state = if playing { LoopState::Paused } else { LoopState::Playing };
+            app.state.loop_state = if playing {
+                LoopState::Paused
+            } else {
+                LoopState::Playing
+            };
         }
         if ui.button("⏮").clicked() {
             app.state.playhead = 0;
@@ -65,7 +69,14 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         };
         let bar = egui::Rect::from_center_size(
             egui::pos2(cx, rect.center().y),
-            egui::vec2((slot * 0.5).max(2.0), if selected { height - 4.0 } else { height - 10.0 }),
+            egui::vec2(
+                (slot * 0.5).max(2.0),
+                if selected {
+                    height - 4.0
+                } else {
+                    height - 10.0
+                },
+            ),
         );
         painter.rect_filled(bar, 1.0, color);
     }

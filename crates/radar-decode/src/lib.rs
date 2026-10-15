@@ -1,6 +1,6 @@
 //! radar-decode — NEXRAD Archive II bytes -> `radar_core::Volume`.
 //!
-//! Workstream W1. See PLAN.md. Wraps the `nexrad-data`/`nexrad-decode`
+//! Wraps the `nexrad-data`/`nexrad-decode`
 //! crates (ICD 2620010H parsing) and maps their output onto the frozen
 //! `radar_core` data model. Verified against real KTLX volume data.
 
@@ -8,9 +8,9 @@ use std::io::Read;
 
 use chrono::{DateTime, Utc};
 use nexrad_data::volume::{File, Header, Record};
+use nexrad_decode::messages::MessageContents;
 use nexrad_decode::messages::digital_radar_data::{GenericDataBlock, Message as Message31};
 use nexrad_decode::messages::digital_radar_data_legacy::Message as Message1;
-use nexrad_decode::messages::MessageContents;
 use radar_core::{Moment, MomentCalibration, MomentData, Sweep, Volume, VolumeMeta};
 
 #[derive(Debug, thiserror::Error)]
@@ -71,9 +71,7 @@ pub fn decode_volume_file(bytes: &[u8]) -> Result<Volume, DecodeError> {
         .map_err(|e| DecodeError::Other(e.into()))?;
 
     let head = ArchiveHead::from_header(file.header());
-    let records = file
-        .records()
-        .map_err(|e| DecodeError::Other(e.into()))?;
+    let records = file.records().map_err(|e| DecodeError::Other(e.into()))?;
 
     let mut collector = Collector::default();
     for record in &records {
@@ -132,17 +130,24 @@ fn split_ldm_records(data: &[u8]) -> Result<Vec<Record<'_>>, DecodeError> {
     let mut pos = 0usize;
     while pos < data.len() {
         if pos + 4 > data.len() {
-            log::warn!("trailing {} bytes without LDM record header", data.len() - pos);
+            log::warn!(
+                "trailing {} bytes without LDM record header",
+                data.len() - pos
+            );
             break;
         }
-        let size = i32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()).unsigned_abs() as usize;
+        let size =
+            i32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()).unsigned_abs() as usize;
         if size == 0 {
             log::warn!("zero-size LDM record at byte {pos}; stopping");
             break;
         }
         let end = pos + 4 + size;
         if end > data.len() {
-            log::warn!("truncated LDM record at byte {pos} (need {end}, have {}); stopping", data.len());
+            log::warn!(
+                "truncated LDM record at byte {pos} (need {end}, have {}); stopping",
+                data.len()
+            );
             break;
         }
         records.push(Record::from_slice(&data[pos..end]));
@@ -252,7 +257,11 @@ impl Collector {
                     if self.vcp.is_none() {
                         self.vcp = Some(VcpInfo {
                             pattern_number: m.header().pattern_number(),
-                            cut_elevations_deg: m.elevations().iter().map(|e| e.elevation_angle()).collect(),
+                            cut_elevations_deg: m
+                                .elevations()
+                                .iter()
+                                .map(|e| e.elevation_angle())
+                                .collect(),
                         });
                     }
                 }
@@ -264,7 +273,9 @@ impl Collector {
                         }
                     }
                     if self.vcp_hint.is_none() {
-                        self.vcp_hint = m.volume_data_block().map(|b| b.volume_coverage_pattern_number());
+                        self.vcp_hint = m
+                            .volume_data_block()
+                            .map(|b| b.volume_coverage_pattern_number());
                     }
                     self.radials.push(radial_from_m31(&m));
                 }
@@ -288,16 +299,20 @@ impl Collector {
             .or(self.site_hint)
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
-        let volume_start = head.volume_start.or_else(|| {
-            self.radials.iter().filter_map(|r| r.time).min()
-        });
+        let volume_start = head
+            .volume_start
+            .or_else(|| self.radials.iter().filter_map(|r| r.time).min());
         let Some(volume_start) = volume_start else {
             return Err(DecodeError::Unsupported(
                 "volume has neither a header nor radial timestamps".to_string(),
             ));
         };
 
-        let vcp_number = self.vcp.as_ref().map(|v| v.pattern_number).or(self.vcp_hint);
+        let vcp_number = self
+            .vcp
+            .as_ref()
+            .map(|v| v.pattern_number)
+            .or(self.vcp_hint);
 
         // Group consecutive radials by elevation number (mirrors
         // `nexrad_model::data::Sweep::from_radials`).
@@ -350,9 +365,15 @@ fn radial_from_m31(m: &Message31<'_>) -> RawRadial {
         (Moment::Reflectivity, m.reflectivity_data_block()),
         (Moment::Velocity, m.velocity_data_block()),
         (Moment::SpectrumWidth, m.spectrum_width_data_block()),
-        (Moment::DifferentialReflectivity, m.differential_reflectivity_data_block()),
+        (
+            Moment::DifferentialReflectivity,
+            m.differential_reflectivity_data_block(),
+        ),
         (Moment::DifferentialPhase, m.differential_phase_data_block()),
-        (Moment::CorrelationCoefficient, m.correlation_coefficient_data_block()),
+        (
+            Moment::CorrelationCoefficient,
+            m.correlation_coefficient_data_block(),
+        ),
     ] {
         if let Some(raw) = block.and_then(|b| generic_to_raw(kind, b.inner())) {
             moments.push(raw);
@@ -433,7 +454,10 @@ fn generic_to_raw(kind: Moment, block: &GenericDataBlock<'_>) -> Option<RawMomen
     let header = block.header();
     let word_size_bytes = header.data_word_size_raw() as usize / 8;
     if word_size_bytes != 1 && word_size_bytes != 2 {
-        log::warn!("skipping {kind:?} block with unusual word size {}", header.data_word_size_raw());
+        log::warn!(
+            "skipping {kind:?} block with unusual word size {}",
+            header.data_word_size_raw()
+        );
         return None;
     }
 
@@ -557,12 +581,24 @@ mod tests {
         assert_eq!(map_block_name(b"VR "), Some(Moment::Velocity));
         assert_eq!(map_block_name(b"SW "), Some(Moment::SpectrumWidth));
         assert_eq!(map_block_name(b"SV "), Some(Moment::SpectrumWidth));
-        assert_eq!(map_block_name(b"ZDR"), Some(Moment::DifferentialReflectivity));
-        assert_eq!(map_block_name(b"DR "), Some(Moment::DifferentialReflectivity));
+        assert_eq!(
+            map_block_name(b"ZDR"),
+            Some(Moment::DifferentialReflectivity)
+        );
+        assert_eq!(
+            map_block_name(b"DR "),
+            Some(Moment::DifferentialReflectivity)
+        );
         assert_eq!(map_block_name(b"PHI"), Some(Moment::DifferentialPhase));
         assert_eq!(map_block_name(b"DP "), Some(Moment::DifferentialPhase));
-        assert_eq!(map_block_name(b"KDP"), Some(Moment::SpecificDifferentialPhase));
-        assert_eq!(map_block_name(b"KD "), Some(Moment::SpecificDifferentialPhase));
+        assert_eq!(
+            map_block_name(b"KDP"),
+            Some(Moment::SpecificDifferentialPhase)
+        );
+        assert_eq!(
+            map_block_name(b"KD "),
+            Some(Moment::SpecificDifferentialPhase)
+        );
         assert_eq!(map_block_name(b"RHO"), Some(Moment::CorrelationCoefficient));
         assert_eq!(map_block_name(b"CC "), Some(Moment::CorrelationCoefficient));
         assert_eq!(map_block_name(b"RF "), Some(Moment::CorrelationCoefficient));

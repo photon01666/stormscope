@@ -10,5 +10,7 @@ pub fn central() -> &'static chrono_tz::Tz {
 
 /// "2:35:04 PM CDT" — scan times, archive stamps.
 pub fn fmt_central(dt: &DateTime<Utc>) -> String {
-    dt.with_timezone(central()).format("%-I:%M:%S %p %Z").to_string()
+    dt.with_timezone(central())
+        .format("%-I:%M:%S %p %Z")
+        .to_string()
 }

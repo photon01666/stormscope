@@ -1,5 +1,5 @@
 //! NWS active-alert model (subset of the api.weather.gov CAP/GeoJSON
-//! properties we actually render).
+//! properties the app renders).
 
 use chrono::{DateTime, Utc};
 

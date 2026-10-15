@@ -26,8 +26,8 @@ earcutr.workspace = true
 # stormscope left open for a day doesn't grow into a memory-pressure problem.
 libc = "0.2"
 # Force the wgpu renderer (Vulkan on Linux) and native Wayland windows.
-# eframe's `default` includes both glow and wgpu; we drop glow so the app is
-# Vulkan-only, and keep wayland+x11 for native Hyprland/Wayland support.
+# eframe's `default` includes both glow and wgpu; glow is dropped so the app is
+# Vulkan-only, with wayland+x11 for native Wayland (X11 as fallback).
 eframe = { version = "0.36", default-features = false, features = [
     "default_fonts",
     "wgpu",
@@ -35,7 +35,7 @@ eframe = { version = "0.36", default-features = false, features = [
     "x11",
 ] }
 egui = "0.36"
-# Same wgpu line eframe uses, so there is a single GPU/Vulkan context and we
-# can name egui_wgpu::RenderState when handing the device to the renderer.
+# Same wgpu line eframe uses, so there is a single GPU/Vulkan context and
+# egui_wgpu::RenderState can name the device handed to the renderer.
 egui-wgpu = "0.36"
 wgpu = { workspace = true }

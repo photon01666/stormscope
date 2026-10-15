@@ -1,4 +1,4 @@
-//! stormscope — app shell (W4, owned by lead).
+//! stormscope — app shell.
 //!
 //! Layout: auto-hiding controls sidebar (site, product, tilt, opacity, loop
 //! controls) sliding in over the central map on left-edge hover,
@@ -6,7 +6,7 @@
 //! bottom timeline scrubber, top status bar.
 //!
 //! This module owns UI + state wiring only; heavy work (fetch, decode,
-//! rasterize) happens on background threads whose results we poll each frame.
+//! rasterize) happens on background threads whose results are polled each frame.
 
 mod app;
 mod background;

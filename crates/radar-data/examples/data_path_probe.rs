@@ -1,4 +1,4 @@
-//! Ad-hoc timing probe for the stormscope data path (W2 diagnostics).
+//! Timing probe for the stormscope data path.
 //!
 //! Reproduces, step by step and with wall-clock timings, what the app does:
 //!   1. archive listing for a Central day (list_central_day equivalent),
@@ -156,7 +156,11 @@ fn archive_half(site: &str) {
         );
         let t0 = Instant::now();
         match src.fetch_archive_bytes(newest) {
-            Ok(b) => println!("  download newest: {} bytes in {:.2?}", b.len(), t0.elapsed()),
+            Ok(b) => println!(
+                "  download newest: {} bytes in {:.2?}",
+                b.len(),
+                t0.elapsed()
+            ),
             Err(e) => println!("  download newest FAILED in {:.2?}: {e:#}", t0.elapsed()),
         }
     }

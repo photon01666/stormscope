@@ -98,7 +98,11 @@ pub struct MomentCalibration {
 
 impl Default for MomentCalibration {
     fn default() -> Self {
-        Self { scale: 1.0, offset: 2.0, threshold: 0.0 }
+        Self {
+            scale: 1.0,
+            offset: 2.0,
+            threshold: 0.0,
+        }
     }
 }
 
@@ -268,12 +272,19 @@ mod tests {
             sweep(0.5, &[Moment::Reflectivity, Moment::CorrelationCoefficient]),
             sweep(
                 0.5,
-                &[Moment::Reflectivity, Moment::Velocity, Moment::SpectrumWidth],
+                &[
+                    Moment::Reflectivity,
+                    Moment::Velocity,
+                    Moment::SpectrumWidth,
+                ],
             ),
             sweep(0.9, &[Moment::Reflectivity]),
         ]);
         // VEL lives on the second 0.5° cut, though sweep 0 is tilt-nearest.
-        assert_eq!(v.sweep_index_for_tilt_moment(0.5, Moment::Velocity), Some(1));
+        assert_eq!(
+            v.sweep_index_for_tilt_moment(0.5, Moment::Velocity),
+            Some(1)
+        );
         // REF prefers the first 0.5° cut.
         assert_eq!(
             v.sweep_index_for_tilt_moment(0.5, Moment::Reflectivity),
@@ -281,6 +292,9 @@ mod tests {
         );
         // No 0.9 VEL cut in this synthetic volume: fall back to the nearest
         // sweep that does carry velocity instead of rendering nothing.
-        assert_eq!(v.sweep_index_for_tilt_moment(0.9, Moment::Velocity), Some(1));
+        assert_eq!(
+            v.sweep_index_for_tilt_moment(0.9, Moment::Velocity),
+            Some(1)
+        );
     }
 }

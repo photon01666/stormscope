@@ -7,7 +7,7 @@
 //!
 //! Only `WSR-88D` stations are emitted: they are the sites that carry Level
 //! II data on the NOAA/Unidata S3 buckets this app fetches from. (TDWR and
-//! Profiler stations from the same API have no L2 feed.) (W2)
+//! Profiler stations from the same API have no L2 feed.)
 
 use anyhow::{Context, Result};
 
@@ -15,7 +15,8 @@ use anyhow::{Context, Result};
 pub const RADARS_URL: &str = "https://api.weather.gov/radar/stations";
 
 /// api.weather.gov rejects generic user agents; keep this descriptive.
-pub const DEFAULT_USER_AGENT: &str = "stormscope/0.1 (radar catalog generator; dev@stormscope.local)";
+pub const DEFAULT_USER_AGENT: &str =
+    "stormscope/0.1 (radar catalog generator; dev@stormscope.local)";
 
 /// One WSR-88D site in the generated catalog.
 #[derive(Debug, Clone, PartialEq)]

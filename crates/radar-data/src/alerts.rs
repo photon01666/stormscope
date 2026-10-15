@@ -1,4 +1,4 @@
-//! NWS active alerts via api.weather.gov. (W2)
+//! NWS active alerts via api.weather.gov.
 //!
 //! `AlertSource::active_near` fetches
 //! `https://api.weather.gov/alerts/active?status=actual` (one request per
@@ -6,10 +6,10 @@
 //! by polygon-centroid distance. api.weather.gov rejects generic User-Agents,
 //! so [`AlertSource::new`] requires a descriptive one.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
-use radar_core::warnings::Warning;
 use radar_core::sites::haversine_km;
+use radar_core::warnings::Warning;
 
 const ALERTS_URL: &str = "https://api.weather.gov/alerts/active";
 
@@ -72,7 +72,9 @@ pub(crate) fn alerts_near_in(
     };
     for feature in features {
         if let Some(w) = parse_feature(feature) {
-            let Some(rings) = w.polygon.as_ref() else { continue };
+            let Some(rings) = w.polygon.as_ref() else {
+                continue;
+            };
             let Some(ring) = rings.first() else { continue };
             let (clat, clon) = ring_centroid(ring);
             if haversine_km(lat, lon, clat, clon) <= radius_km {
@@ -98,7 +100,11 @@ fn severity_rank(s: &str) -> u8 {
 fn parse_feature(feature: &serde_json::Value) -> Option<Warning> {
     let props = feature.get("properties")?;
     let s = |k: &str| -> String {
-        props.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+        props
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
     };
     let expires = props
         .get("expires")
@@ -106,7 +112,8 @@ fn parse_feature(feature: &serde_json::Value) -> Option<Warning> {
         .and_then(|v| DateTime::parse_from_rfc3339(v).ok())
         .map(|d| d.with_timezone(&Utc))
         .or_else(|| {
-            props.get("effective")
+            props
+                .get("effective")
                 .and_then(|v| v.as_str())
                 .and_then(|v| DateTime::parse_from_rfc3339(v).ok())
                 .map(|d| d.with_timezone(&Utc))
@@ -141,11 +148,16 @@ fn issuing_office(props: &serde_json::Value) -> String {
         }
     }
     let params = props.get("parameters");
-    if let Some(vtec) = params.and_then(|p| p.get("VTEC")).and_then(|v| v.as_array()) {
+    if let Some(vtec) = params
+        .and_then(|p| p.get("VTEC"))
+        .and_then(|v| v.as_array())
+    {
         for entry in vtec {
             // "/O.NEW.KABQ.SV.W.0326.261012T0100Z-261012T0130Z/"
             let Some(line) = entry.as_str() else { continue };
-            let Some(tuple) = line.split('/').nth(1) else { continue };
+            let Some(tuple) = line.split('/').nth(1) else {
+                continue;
+            };
             // Fields: mode/act, action (NEW/CON/EXP), office, phenomenon,
             // significance, product number, times.
             let office = tuple.split('.').nth(2);
@@ -196,11 +208,7 @@ fn geometry_rings(geometry: Option<&serde_json::Value>) -> Option<Vec<Vec<(f64, 
         }
         _ => return None,
     }
-    if rings.is_empty() {
-        None
-    } else {
-        Some(rings)
-    }
+    if rings.is_empty() { None } else { Some(rings) }
 }
 
 /// First (exterior) ring of one GeoJSON polygon `coordinates` value.
@@ -232,8 +240,8 @@ fn ring_centroid(ring: &[(f64, f64)]) -> (f64, f64) {
 }
 
 // Keep the WFO strip logic honest: US WFOs are Kxxx CONUS / Txxx TDWR /
-// PxNN Alaska-ish; the first letter is a region prefix we drop for the
-// 4-char "Kxxx" case only.
+// PxNN Alaska-ish; the first letter is a region prefix that is dropped for
+// the 4-char "Kxxx" case only.
 fn office_from_vtec_tuple(office: &str) -> String {
     if office.len() == 4 && office.starts_with('K') {
         office[1..].to_string()
@@ -299,7 +307,10 @@ mod tests {
         assert!(w.is_tornado());
         assert_eq!(w.severity, "Extreme");
         assert_eq!(w.urgency, "Immediate");
-        assert_eq!(w.expires, "2026-10-12T01:30:00Z".parse::<DateTime<Utc>>().unwrap());
+        assert_eq!(
+            w.expires,
+            "2026-10-12T01:30:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
         assert_eq!(w.office, "OUN");
         assert!(w.headline.contains("Tornado Warning"));
         let rings = w.polygon.as_ref().unwrap();

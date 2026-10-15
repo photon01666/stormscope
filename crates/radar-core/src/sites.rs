@@ -21,7 +21,13 @@ pub struct RadarSite {
 
 macro_rules! site {
     ($id:literal, $name:literal, $lat:expr, $lon:expr, $elev:expr) => {
-        RadarSite { id: $id, name: $name, latitude: $lat, longitude: $lon, elevation_m: $elev }
+        RadarSite {
+            id: $id,
+            name: $name,
+            latitude: $lat,
+            longitude: $lon,
+            elevation_m: $elev,
+        }
     };
 }
 
@@ -194,13 +200,11 @@ pub fn site(id: &str) -> Option<&'static RadarSite> {
 
 /// Nearest site to a lat/lon, useful for "locate me" style startup.
 pub fn nearest(lat: f64, lon: f64) -> Option<&'static RadarSite> {
-    SITES
-        .iter()
-        .min_by(|a, b| {
-            haversine_km(lat, lon, a.latitude, a.longitude)
-                .partial_cmp(&haversine_km(lat, lon, b.latitude, b.longitude))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+    SITES.iter().min_by(|a, b| {
+        haversine_km(lat, lon, a.latitude, a.longitude)
+            .partial_cmp(&haversine_km(lat, lon, b.latitude, b.longitude))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
 }
 
 /// Great-circle distance in kilometers.

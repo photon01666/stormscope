@@ -1,6 +1,6 @@
 //! radar-render — projection, color tables, sweep rasterization, tile map.
 //!
-//! Workstream W3. See PLAN.md. Public API:
+//! Public API:
 //!
 //! ```ignore
 //! pub struct MapView { center_lat, center_lon, zoom, width_px, height_px }
@@ -25,13 +25,13 @@ pub mod tracks;
 
 pub use colormap::{ColorTable, Stop};
 pub use projection::{
-    gate_latlon, initial_bearing_deg, lonlat_to_merc_px, meters_per_pixel, merc_px_to_lonlat,
-    surface_distance_m, MercProjector, MapView,
+    MapView, MercProjector, gate_latlon, initial_bearing_deg, lonlat_to_merc_px, merc_px_to_lonlat,
+    meters_per_pixel, surface_distance_m,
 };
 pub use raster::{
-    rasterize_sweep, rasterize_sweep_from_geometry_pm, rasterize_sweep_into,
-    rasterize_sweep_premultiplied, rasterize_sweep_premultiplied_into, scaled_view, GateGeometry,
-    RadarImage, RowMap,
+    GateGeometry, RadarImage, RowMap, rasterize_sweep, rasterize_sweep_from_geometry_pm,
+    rasterize_sweep_into, rasterize_sweep_premultiplied, rasterize_sweep_premultiplied_into,
+    scaled_view,
 };
-pub use tiles::{tile_range, tile_scale, tile_view_rect, TileKey, TileLayer, TileRange};
-pub use tracks::{compute_tracks, extrapolate, eta_to_point, CellEta, StormTrack};
+pub use tiles::{TileKey, TileLayer, TileRange, tile_range, tile_scale, tile_view_rect};
+pub use tracks::{CellEta, StormTrack, compute_tracks, eta_to_point, extrapolate};

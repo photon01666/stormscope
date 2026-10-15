@@ -8,7 +8,7 @@ use radar_render::MapView;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-/// How many decoded volumes we keep resident for looping. 24 scans ≈ 2 hours
+/// How many decoded volumes are kept resident for looping. 24 scans ≈ 2 hours
 /// of wall-clock radar time — but the *memory budget* below is the binding
 /// limit in practice (a decoded volume runs 150-200 MB), so the ring doesn't
 /// pin ~5 GB of RAM on a machine that has other work to do.
@@ -172,7 +172,7 @@ pub struct AppState {
     /// Endpoints as (lon, lat). `b` fills in on the first drag/click.
     pub measure_a: Option<(f64, f64)>,
     pub measure_b: Option<(f64, f64)>,
-    /// What a drag in flight is moving (endpoint or the bubble itself).
+    /// What a drag in progress is moving (endpoint or the bubble itself).
     pub measure_drag: Option<MeasureDrag>,
     /// Bubble offset in screen px from the A–B midpoint (`None` = default
     /// perch above the line). Set by dragging the bubble.
@@ -305,7 +305,11 @@ impl AppState {
             .filter(|d| (0.0..120.0).contains(d))
             .collect();
         dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = if dts.is_empty() { None } else { Some(dts[dts.len() / 2]) };
+        let median = if dts.is_empty() {
+            None
+        } else {
+            Some(dts[dts.len() / 2])
+        };
         radar_core::vcp::ScanMode::detect(vcp, median)
     }
 
@@ -313,7 +317,7 @@ impl AppState {
     /// -> newest and evicting the oldest when full.
     ///
     /// Volumes are inserted at their time position rather than blindly
-    /// appended: delivery order isn't guaranteed (a backfill of scans we
+    /// appended: delivery order isn't guaranteed (a backfill of scans already
     /// already have on disk races the live poller), so a late or stale scan
     /// must neither be silently dropped nor clobber the playhead. In Live
     /// mode the playhead follows the newest frame; otherwise it stays on the
@@ -336,7 +340,14 @@ impl AppState {
             // view off it.
             self.playhead += 1;
         }
-        self.ring.insert(pos, Frame { volume_start: start, bytes, volume });
+        self.ring.insert(
+            pos,
+            Frame {
+                volume_start: start,
+                bytes,
+                volume,
+            },
+        );
         self.ring_bytes += bytes;
         // Trim: the count cap AND the memory budget. The budget is what
         // actually binds on precip VCPs (150-200 MB/volume), and it is the
@@ -346,7 +357,9 @@ impl AppState {
         while self.ring.len() > RING_CAPACITY
             || (self.ring.len() > MIN_RING_FRAMES && self.ring_bytes > self.ring_budget_bytes)
         {
-            let Some(old) = self.ring.pop_front() else { break };
+            let Some(old) = self.ring.pop_front() else {
+                break;
+            };
             self.ring_bytes = self.ring_bytes.saturating_sub(old.bytes);
             self.playhead = self.playhead.saturating_sub(1);
         }
@@ -462,7 +475,8 @@ mod tests {
     /// Scrubbing back in Archive mode must not be yanked forward when an older
     /// scan backfills in ahead of the playhead.
     #[test]
-    fn archive_mode_keeps_the_selected_frame_when_backfilling() {        let mut s = state();
+    fn archive_mode_keeps_the_selected_frame_when_backfilling() {
+        let mut s = state();
         s.mode = Mode::Archive;
         s.push_volume(vol("KTWX", at(50)));
         s.push_volume(vol("KTWX", at(40)));
@@ -506,7 +520,10 @@ mod tests {
             }],
         });
         let per_frame = volume_bytes(&big);
-        assert!(per_frame >= 1_000_000, "fixture should be ~1 MB, got {per_frame}");
+        assert!(
+            per_frame >= 1_000_000,
+            "fixture should be ~1 MB, got {per_frame}"
+        );
 
         // Budget for ~4 frames, with a floor of MIN_RING_FRAMES (8).
         s.ring_budget_bytes = per_frame * 4;

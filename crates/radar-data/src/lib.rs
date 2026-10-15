@@ -1,6 +1,5 @@
 //! radar-data — S3 fetch/cache/live polling + NWS alerts + site catalog.
 //!
-//! Workstream W2. See PLAN.md.
 
 pub mod alerts;
 pub mod cache;

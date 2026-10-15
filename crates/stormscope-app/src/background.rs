@@ -13,8 +13,8 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
-/// User-Agent for every NOAA/SPC host we talk to (they require a descriptive
-/// UA; include an app name + a way to reach an operator).
+/// User-Agent sent to every NOAA/SPC host (they require a descriptive UA:
+/// app name + a way to reach an operator).
 const USER_AGENT: &str = "stormscope/0.1 (Linux NEXRAD radar viewer)";
 
 /// How far back an archive request reaches when listing a day's volumes.
@@ -23,8 +23,8 @@ const ARCHIVE_MAX_VOLUMES: usize = 24;
 /// How often the SPC outlook is re-fetched. SPC issues outlooks only a few
 /// times per day, so 10 minutes is plenty and costs ~6 requests/hour.
 const OUTLOOK_REFRESH: Duration = Duration::from_secs(600);
-/// NWS alerts re-fetch cadence (api.weather.gov suggests <=1 req/s; we use
-/// one every 5 minutes).
+/// NWS alerts re-fetch cadence (api.weather.gov suggests <=1 req/s; this
+/// uses one every 5 minutes).
 const ALERTS_REFRESH: Duration = Duration::from_secs(300);
 
 /// An `Instant` that has *already* elapsed `d` ago. The monotonic clock can't
@@ -76,7 +76,10 @@ fn list_central_day(
     let (start, end) = central_day_window(date);
     let mut seen = std::collections::HashSet::new();
     let mut out: Vec<radar_data::ArchiveVolumeRef> = Vec::new();
-    for utc_date in [start.date_naive(), (end - chrono::Duration::seconds(1)).date_naive()] {
+    for utc_date in [
+        start.date_naive(),
+        (end - chrono::Duration::seconds(1)).date_naive(),
+    ] {
         for r in source.list_archive(site, utc_date)? {
             if r.volume_start >= start && r.volume_start < end && seen.insert(r.key.clone()) {
                 out.push(r);
@@ -113,7 +116,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
         radar: cached_sizes.0,
         tiles: cached_sizes.1,
     });
-    // Which SPC outlook day the UI is asking for + when we last refreshed it
+    // Which SPC outlook day the UI is asking for + when it was last refreshed
     // (outlooks update only a few times per day).
     let mut outlook_day: u8 = 1;
     // Start both timers pre-expired so the first loop iteration fetches
@@ -156,10 +159,14 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     // demoed) without driving the GUI.
     if let Ok(spec) = std::env::var("STORMSCOPE_BOOTSTRAP_ARCHIVE") {
         let mut parts = spec.split('=');
-        let date = parts.next().and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+        let date = parts
+            .next()
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
         let site = parts.next().unwrap_or(radar_core::DEFAULT_SITE).to_string();
         if let Some(date) = date {
-            let _ = out.send(DataMsg::Status(format!("bootstrap: loading {site} {date}…")));
+            let _ = out.send(DataMsg::Status(format!(
+                "bootstrap: loading {site} {date}…"
+            )));
             watchdog_enabled = false; // browsing a day, not live
             backfill.clear(); // the archive day replaces the queued refill
             archive = open_archive_day(&source, &site, date, &mut current_site, &out);
@@ -181,7 +188,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     let _ = out.send(DataMsg::ClearFrames);
                     current_site = site.clone();
                     start_live(&source, &site, &mut live, &out);
-                    // Refill from what we already have on disk so the bottom
+                    // Refill from what is already on disk so the bottom
                     // timeline can play back this station's data instead of
                     // showing a single frame; `prime_site` also refreshes the
                     // newest scan if the bucket has moved on.
@@ -206,7 +213,11 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     archive = None;
                     watchdog_enabled = false; // browsing a fixed window
                     backfill.clear();
-                    let _ = out.send(DataMsg::ArchiveInfo { total: 0, start: 0, len: 0 });
+                    let _ = out.send(DataMsg::ArchiveInfo {
+                        total: 0,
+                        start: 0,
+                        len: 0,
+                    });
                     load_last_hour(&source, &site, &out);
                 }
                 DataCmd::ArchiveWindowShift(delta) => {
@@ -323,8 +334,8 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
         }
 
         // Archive catch-up watchdog: if the archive bucket already has a
-        // newer scan than we've shown, take it — the app is then only as
-        // slow as the fastest upstream. ~2 S3 list req/min, no rate risk.
+        // newer scan than the newest shown, take it — the app is then only
+        // as slow as the fastest upstream. ~2 S3 list req/min, no rate risk.
         if watchdog_enabled && last_watchdog.elapsed() >= ARCHIVE_CATCHUP_INTERVAL {
             last_watchdog = std::time::Instant::now();
             if let Some(ts) = archive_catchup(&source, &current_site, last_delivered, &out) {
@@ -350,7 +361,10 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             let sizes = cache_sizes(&source);
             if sizes != cached_sizes {
                 cached_sizes = sizes;
-                let _ = out.send(DataMsg::CacheInfo { radar: sizes.0, tiles: sizes.1 });
+                let _ = out.send(DataMsg::CacheInfo {
+                    radar: sizes.0,
+                    tiles: sizes.1,
+                });
             }
         }
     }
@@ -391,13 +405,20 @@ fn open_archive_day(
     let total = vols.len();
     let window_len = ARCHIVE_MAX_VOLUMES.min(total);
     // vols is newest-first; the newest window is the head.
-    let day = ArchiveDay { vols, window_start: 0 };
+    let day = ArchiveDay {
+        vols,
+        window_start: 0,
+    };
     // The day *replaces* whatever was on the ring — without this the live
     // frame still sitting there made every older archive scan look
     // out-of-order and get dropped.
     let _ = out.send(DataMsg::ClearFrames);
     stream_window(source, site, date, &day, window_len, out);
-    let _ = out.send(DataMsg::ArchiveInfo { total, start: 0, len: window_len });
+    let _ = out.send(DataMsg::ArchiveInfo {
+        total,
+        start: 0,
+        len: window_len,
+    });
     Some(day)
 }
 
@@ -415,11 +436,10 @@ fn shift_archive_window(
     }
     let window_len = ARCHIVE_MAX_VOLUMES.min(total);
     let max_start = total - window_len;
-    let new_start = (day.window_start as i32 + delta * window_len as i32).clamp(0, max_start as i32) as usize;
+    let new_start =
+        (day.window_start as i32 + delta * window_len as i32).clamp(0, max_start as i32) as usize;
     if new_start == day.window_start {
-        let _ = out.send(DataMsg::Status(
-            "already at the end of that day".into(),
-        ));
+        let _ = out.send(DataMsg::Status("already at the end of that day".into()));
         return;
     }
     day.window_start = new_start;
@@ -427,7 +447,11 @@ fn shift_archive_window(
     let date = day.vols[0].date;
     let _ = out.send(DataMsg::ClearFrames);
     stream_window(source, &site, date, day, window_len, out);
-    let _ = out.send(DataMsg::ArchiveInfo { total, start: new_start, len: window_len });
+    let _ = out.send(DataMsg::ArchiveInfo {
+        total,
+        start: new_start,
+        len: window_len,
+    });
 }
 
 /// Fetch+emit one window's volumes oldest→newest into the UI ring.
@@ -463,8 +487,8 @@ fn stream_window(
 }
 
 /// Is this volume already in the on-disk cache? Purely a filesystem stat —
-/// no S3 request, which is what makes switching back to a station we have
-/// already seen cost nothing.
+/// no S3 request, which is what makes switching back to an already-seen
+/// station cost nothing.
 fn is_cached(source: &S3Source, r: &radar_data::ArchiveVolumeRef) -> bool {
     source
         .cache()
@@ -501,9 +525,9 @@ fn emit_volume(
 /// puts them back instead of leaving the bottom timeline with one frame:
 ///
 ///  1. the newest scan in the bucket is emitted right away, fetched only when
-///     we don't already have it, so the map is current while the rest fills in;
+///     not already on disk, so the map is current while the rest fills in;
 ///  2. every recent scan already on disk is queued for replay with **no**
-///     downloads, so the timeline can play back the data we already have.
+///     downloads, so the timeline can play back the data on hand.
 ///
 /// The queue is drained a few volumes per loop tick by the caller: decoding
 /// costs ~1 s each, so replaying it inline would stall the next site switch.
@@ -540,7 +564,7 @@ fn prime_site(
         return (None, VecDeque::new());
     }
 
-    // What we already have, newest-first (the listing's own order).
+    // What is already on disk, newest-first (the listing's own order).
     let cached: Vec<&radar_data::ArchiveVolumeRef> =
         vols.iter().filter(|r| is_cached(source, r)).collect();
     let newest = vols[0].volume_start;
@@ -556,7 +580,10 @@ fn prime_site(
         // the backfill starts.
         delivered = emit_volume(source, &vols[0], out);
         if delivered.is_some() {
-            log::info!("live refresh: scan {}", crate::timefmt::fmt_central(&newest));
+            log::info!(
+                "live refresh: scan {}",
+                crate::timefmt::fmt_central(&newest)
+            );
         }
     }
 
@@ -579,7 +606,7 @@ fn prime_site(
 }
 
 /// One polite catch-up check: if the archive bucket has a scan *newer* than
-/// what we've already shown, fetch and emit it now. Combined with the live
+/// the newest shown, fetch and emit it now. Combined with the live
 /// chunk poller, the app is then only as slow as the FASTEST upstream instead
 /// of whichever one it happened to be listening to. Cost: ~2 S3 list
 /// requests per interval — far below any rate limit (and unrelated to the
@@ -602,7 +629,7 @@ fn archive_catchup(
     };
     let newest = vols.first()?.volume_start;
     if Some(newest) <= last_delivered {
-        return None; // we're already current
+        return None; // already current
     }
     match source.fetch_archive(vols.first()?) {
         Ok(v) => {
@@ -700,7 +727,9 @@ fn drain_live(
     live: &mut Option<(Receiver<radar_core::Volume>, radar_data::RealtimePoller)>,
     out: &Sender<DataMsg>,
 ) -> Option<chrono::DateTime<Utc>> {
-    let Some((rx, _poller)) = live else { return None };
+    let Some((rx, _poller)) = live else {
+        return None;
+    };
     let mut newest: Option<chrono::DateTime<Utc>> = None;
     loop {
         match rx.try_recv() {
@@ -756,7 +785,10 @@ fn refresh_outlook(outlooks: &Option<OutlookSource>, day: u8, out: &Sender<DataM
                 .issue
                 .map(|t| crate::timefmt::fmt_central(&t))
                 .unwrap_or_else(|| "?".into());
-            log::info!("outlook day {day}: {} areas, issued {issued}", o.features.len());
+            log::info!(
+                "outlook day {day}: {} areas, issued {issued}",
+                o.features.len()
+            );
             let _ = out.send(DataMsg::Outlook(o));
         }
         Err(e) => {
@@ -783,7 +815,10 @@ mod tests {
         // CDT (UTC-5): a Central day spans 05:00Z..05:00Z.
         let date = NaiveDate::from_ymd_opt(2026, 10, 13).unwrap();
         let (start, end) = central_day_window(date);
-        assert_eq!(start, Utc.from_utc_datetime(&date.and_hms_opt(5, 0, 0).unwrap()));
+        assert_eq!(
+            start,
+            Utc.from_utc_datetime(&date.and_hms_opt(5, 0, 0).unwrap())
+        );
         assert_eq!(
             end,
             Utc.from_utc_datetime(&date.succ_opt().unwrap().and_hms_opt(5, 0, 0).unwrap())
@@ -797,11 +832,13 @@ mod tests {
         // CST (UTC-6): winter days span 06:00Z..06:00Z.
         let winter = NaiveDate::from_ymd_opt(2026, 12, 10).unwrap();
         let (wstart, wend) = central_day_window(winter);
-        assert_eq!(wstart, Utc.from_utc_datetime(&winter.and_hms_opt(6, 0, 0).unwrap()));
+        assert_eq!(
+            wstart,
+            Utc.from_utc_datetime(&winter.and_hms_opt(6, 0, 0).unwrap())
+        );
         assert_eq!(
             wend,
             Utc.from_utc_datetime(&winter.succ_opt().unwrap().and_hms_opt(6, 0, 0).unwrap())
         );
     }
 }
-

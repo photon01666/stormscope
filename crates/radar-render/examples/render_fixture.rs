@@ -10,7 +10,7 @@
 //! ```
 
 use radar_core::{Moment, MomentCalibration, MomentData, Sweep};
-use radar_render::{rasterize_sweep_into, MapView};
+use radar_render::{MapView, rasterize_sweep_into};
 
 const RADAR_LAT: f64 = 35.3331;
 const RADAR_LON: f64 = -97.2778;
@@ -91,7 +91,11 @@ fn build_sweep() -> Sweep {
         moments: vec![
             MomentData {
                 kind: Moment::Reflectivity,
-                calibration: MomentCalibration { scale: 2.0, offset: 66.0, threshold: 0.0 },
+                calibration: MomentCalibration {
+                    scale: 2.0,
+                    offset: 66.0,
+                    threshold: 0.0,
+                },
                 range_start_m: RANGE_START_M,
                 gate_size_m: GATE_SIZE_M,
                 gate_count: GATES,
@@ -100,7 +104,11 @@ fn build_sweep() -> Sweep {
             },
             MomentData {
                 kind: Moment::Velocity,
-                calibration: MomentCalibration { scale: 1.0, offset: 128.0, threshold: 0.0 },
+                calibration: MomentCalibration {
+                    scale: 1.0,
+                    offset: 128.0,
+                    threshold: 0.0,
+                },
                 range_start_m: RANGE_START_M,
                 gate_size_m: GATE_SIZE_M,
                 gate_count: GATES,
@@ -130,8 +138,26 @@ fn main() -> anyhow::Result<()> {
 
     // Layers: reflectivity first, then the velocity couplet on top, both
     // alpha-composited into the same buffer (no reallocation).
-    rasterize_sweep_into(&sweep, Moment::Reflectivity, &view, RADAR_LAT, RADAR_LON, 0.9, f32::NEG_INFINITY, &mut buf);
-    rasterize_sweep_into(&sweep, Moment::Velocity, &view, RADAR_LAT, RADAR_LON, 0.8, f32::NEG_INFINITY, &mut buf);
+    rasterize_sweep_into(
+        &sweep,
+        Moment::Reflectivity,
+        &view,
+        RADAR_LAT,
+        RADAR_LON,
+        0.9,
+        f32::NEG_INFINITY,
+        &mut buf,
+    );
+    rasterize_sweep_into(
+        &sweep,
+        Moment::Velocity,
+        &view,
+        RADAR_LAT,
+        RADAR_LON,
+        0.8,
+        f32::NEG_INFINITY,
+        &mut buf,
+    );
 
     // White cross marking the radar site (the view center).
     let (cx, cy) = (w / 2, h / 2);

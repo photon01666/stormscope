@@ -90,7 +90,7 @@ expensive raster work happens only when something actually changes:
   full-resolution pass when the gesture stops.
 - Splats are premultiplied, division-free, into a persistent buffer uploaded
   through one reused GPU texture.
-- Measured on the development box (Intel Arc A310, 2540×1329 logical): heavy
+- Measured on the development machine (Intel Arc A310, 2540×1329 viewport): heavy
   echo-dense motion frames ~10 ms, geometry rebuilds once per scan shape.
 - Memory: the animation ring has a resident-memory budget (oldest-first
   eviction, ≥ 8 frames retained), the tile texture cache is bounded, and the

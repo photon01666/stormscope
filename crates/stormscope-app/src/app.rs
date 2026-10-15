@@ -18,11 +18,18 @@ pub enum DataMsg {
     ClearFrames,
     /// Archive window position: `total` scans in the day, `[start, start+len)`
     /// currently loaded (indices into newest-first order).
-    ArchiveInfo { total: usize, start: usize, len: usize },
+    ArchiveInfo {
+        total: usize,
+        start: usize,
+        len: usize,
+    },
     /// On-disk cache sizes in bytes, per section: `radar` is every downloaded
     /// volume (`l2/`), `tiles` the basemap cache (`tiles/`). The coordinator
     /// re-sends this about once a second so Settings stays live.
-    CacheInfo { radar: u64, tiles: u64 },
+    CacheInfo {
+        radar: u64,
+        tiles: u64,
+    },
 }
 
 /// Commands UI -> background data threads.
@@ -58,9 +65,9 @@ pub struct StormApp {
     pub tx: Sender<DataCmd>,
     pub rx: Receiver<DataMsg>,
     pub data: Arc<Mutex<SharedData>>,
-    /// eframe's wgpu (Vulkan) render state — the render workstream attaches
-    /// its polar-warp pipeline to this single GPU device/queue. `None` only
-    /// if the wgpu feature isn't active (it is: see Cargo.toml).
+    /// eframe's wgpu (Vulkan) render state: any custom GPU work (pipelines
+    /// drawing the radar overlay, etc.) shares this single device/queue.
+    /// `None` only if the wgpu feature isn't active (it is: see Cargo.toml).
     pub render_state: Option<egui_wgpu::RenderState>,
     /// Basemap tile layer (fetches + caches Carto/OSM tiles, paints under
     /// every other map layer). Fetches happen on background threads.
@@ -162,8 +169,8 @@ impl StormApp {
         let (tx_ui, rx_data): (Sender<DataMsg>, Receiver<DataMsg>) = std::sync::mpsc::channel();
         let (tx_data, rx_ui): (Sender<DataCmd>, Receiver<DataCmd>) = std::sync::mpsc::channel();
 
-        // Background data thread. Real fetch/decode wired in once the
-        // data/decode workstreams land; until then it just serves status.
+        // Background data thread: fetches, decodes and polls; results are
+        // delivered to the UI over the message channel below.
         std::thread::Builder::new()
             .name("data".into())
             .spawn(move || crate::background::run(rx_ui, tx_ui))
@@ -171,7 +178,9 @@ impl StormApp {
 
         let data = Arc::new(Mutex::new(SharedData {
             sites: radar_core::sites::SITES.iter().collect(),
-            tilts: vec![0.5, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.1, 6.4, 8.0, 10.0, 12.0, 19.5],
+            tilts: vec![
+                0.5, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.1, 6.4, 8.0, 10.0, 12.0, 19.5,
+            ],
         }));
 
         let state = AppState::default();
@@ -227,9 +236,7 @@ impl StormApp {
         let mut fonts = egui::FontDefinitions::default();
         // Prefer a mono font for readouts if present on the system.
         for candidate in ["DejaVuSansMono", "LiberationMono", "monospace"] {
-            if let Some(font) =
-                find_system_font(candidate)
-            {
+            if let Some(font) = find_system_font(candidate) {
                 fonts
                     .families
                     .entry(egui::FontFamily::Monospace)

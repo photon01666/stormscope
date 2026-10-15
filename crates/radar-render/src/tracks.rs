@@ -66,8 +66,7 @@ fn build_grid(sweep: &Sweep, radar_lat: f64, radar_lon: f64) -> Option<Vec<f32>>
     }
     let n = grid_n();
     let mut grid = vec![f32::MIN; n * n];
-    let elev = if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0
-    {
+    let elev = if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
         sweep.elevation_measured_deg
     } else {
         sweep.elevation_deg
@@ -84,7 +83,9 @@ fn build_grid(sweep: &Sweep, radar_lat: f64, radar_lon: f64) -> Option<Vec<f32>>
             continue;
         }
         for gate in (0..md.gate_count).step_by(5) {
-            let Some(v) = md.value(ray, gate) else { continue };
+            let Some(v) = md.value(ray, gate) else {
+                continue;
+            };
             if v < TRACK_DBZ {
                 continue;
             }
@@ -339,9 +340,7 @@ mod tests {
         Volume {
             meta: radar_core::VolumeMeta {
                 site_id: "KTEST".into(),
-                volume_start: Utc
-                    .with_ymd_and_hms(2026, 10, 12, 12, 0, 0)
-                    .unwrap()
+                volume_start: Utc.with_ymd_and_hms(2026, 10, 12, 12, 0, 0).unwrap()
                     + Duration::minutes(minutes_from_epoch),
                 vcp: Some(12),
                 sequence_number: None,

@@ -1,5 +1,5 @@
 //! Disk cache for downloaded volumes (and shared tile cache location).
-//! Root: ~/.cache/stormscope (XDG_CACHE_HOME aware). (W2)
+//! Root: ~/.cache/stormscope (XDG_CACHE_HOME aware).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,7 +18,9 @@ impl DiskCache {
     pub fn default_root() -> PathBuf {
         std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".cache"))
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".cache")
+            })
             .join("stormscope")
     }
 
@@ -63,9 +65,9 @@ impl DiskCache {
 
     /// Read cached bytes; `Ok(None)` on a miss.
     pub fn read(&self, rel: &str) -> std::io::Result<Option<Vec<u8>>> {
-        let path = self
-            .path_for(rel)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad cache key"))?;
+        let path = self.path_for(rel).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad cache key")
+        })?;
         match std::fs::read(&path) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -76,12 +78,12 @@ impl DiskCache {
     /// Atomically store bytes (write to a temp file in the same directory,
     /// then rename). Returns the resulting path.
     pub fn write(&self, rel: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
-        let path = self
-            .path_for(rel)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad cache key"))?;
-        let dir = path
-            .parent()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent dir"))?;
+        let path = self.path_for(rel).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad cache key")
+        })?;
+        let dir = path.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent dir")
+        })?;
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join(format!(
             ".{}.{}.tmp",
@@ -147,7 +149,7 @@ impl DiskCache {
                 Err(e) => return Err(e),
             }
         }
-        // Deepest-first so parents become empty before we try to remove them
+        // Deepest-first so parents become empty before removal is attempted
         // (`remove_dir` only succeeds on an empty directory).
         let mut dirs = self.dirs_under(dir)?;
         dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
@@ -207,7 +209,9 @@ impl DiskCache {
                     );
                     total -= size;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => total = total.saturating_sub(size),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    total = total.saturating_sub(size)
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -331,7 +335,8 @@ mod tests {
         let old = cache.path_for("old.bin").unwrap();
         let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
         let f = std::fs::File::options().write(true).open(&old).unwrap();
-        f.set_times(std::fs::FileTimes::new().set_modified(past)).unwrap();
+        f.set_times(std::fs::FileTimes::new().set_modified(past))
+            .unwrap();
         cache.write("new.bin", &[2u8; 20]).unwrap();
         assert!(cache.total_bytes().unwrap() >= 40);
         cache.sweep().unwrap();

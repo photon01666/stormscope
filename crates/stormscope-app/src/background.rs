@@ -800,7 +800,8 @@ fn refresh_forecast(
     out: &Sender<DataMsg>,
 ) {
     let Some(f) = forecasts else { return };
-    match f.for_point(lat, lon) {
+    let (forecast, observation) = f.snapshot(lat, lon);
+    match forecast {
         Ok(fc) => {
             let _ = out.send(DataMsg::Forecast(fc));
         }
@@ -808,6 +809,14 @@ fn refresh_forecast(
             log::warn!("forecast fetch failed: {e:#}");
             let _ = out.send(DataMsg::Error(format!("forecast: {e:#}")));
         }
+    }
+    // Current conditions are a bonus: not every point has a close station.
+    match observation {
+        Some(Ok(o)) => {
+            let _ = out.send(DataMsg::Observation(o));
+        }
+        Some(Err(e)) => log::debug!("observation fetch failed: {e:#}"),
+        None => {}
     }
 }
 

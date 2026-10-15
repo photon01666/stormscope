@@ -43,7 +43,7 @@ log; entries start at the first public release.
 - The per-row **Details** button works (the row's click region used to sit
   above it in egui's hit order and swallow its clicks).
 
-**NWS forecast**
+**NWS forecast and current conditions**
 - New *Forecast* pill to the right of the alerts badge in the top-center row.
   It opens the NWS gridpoint forecast (`api.weather.gov` `points` → gridpoint
   forecast) for the selected station's area — one click, no setup.
@@ -55,6 +55,14 @@ log; entries start at the first public release.
 - Periods render as day/night sections (temperature, short forecast, wind)
   with the detailed NOAA narrative inside; the header shows the issuing
   office, grid and update time.
+- Current conditions for the same point, from the nearest reporting station
+  (`/points` → station list → latest observation): text description,
+  temperature, dewpoint, humidity, wind with compass direction and gusts,
+  pressure, visibility and last-hour precipitation in US units, plus the
+  observation time and its age — ASOS/AWOS stations report roughly hourly, so
+  the age matters. Weather Underground's API is paywalled (no free tier since
+  the IBM/TWC takeover), so this uses the free NWS observations instead.
+  Observation failures are non-fatal: not every point has a close station.
 
 ## v1.0.10 — 2026-10-15
 

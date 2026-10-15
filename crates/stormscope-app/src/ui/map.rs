@@ -1076,7 +1076,7 @@ fn update_marker_etas(app: &mut StormApp) {
 }
 
 /// 16-wind compass point for a heading in degrees.
-fn compass16(deg: f64) -> &'static str {
+pub(super) fn compass16(deg: f64) -> &'static str {
     const PTS: [&str; 16] = [
         "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW",
         "NW", "NNW",

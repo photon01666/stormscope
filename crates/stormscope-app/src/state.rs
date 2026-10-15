@@ -177,6 +177,9 @@ pub struct AppState {
 
     // NWS forecast (station by default, or a point picked on the map).
     pub forecast: Option<radar_core::forecast::Forecast>,
+    /// Current conditions from the nearest reporting station (same point as
+    /// the forecast above).
+    pub observation: Option<radar_core::forecast::Observation>,
     pub forecast_open: bool,
     /// Armed by the window's "select on map" control: the next map click
     /// becomes the forecast point.
@@ -290,6 +293,7 @@ impl Default for AppState {
             alerts_focus_at: 0.0,
             alert_detail: None,
             forecast: None,
+            observation: None,
             forecast_open: false,
             forecast_pick_mode: false,
             forecast_point: None,

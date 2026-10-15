@@ -78,6 +78,19 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
             }
             ui.separator();
 
+            // --- Current conditions -------------------------------------
+            match app.state.observation.as_ref() {
+                Some(o) => current_conditions_ui(ui, o),
+                None => {
+                    ui.label(
+                        egui::RichText::new("Current conditions: loading…")
+                            .weak()
+                            .small(),
+                    );
+                }
+            }
+            ui.separator();
+
             match app.state.forecast.as_ref() {
                 None => {
                     ui.label(
@@ -196,10 +209,98 @@ pub(super) fn request_forecast_if_stale(app: &mut StormApp) {
     {
         return;
     }
+    // Target changed: drop what is on screen rather than showing the old
+    // point's numbers under the new point's label.
+    if let Some((plat, plon)) = app.state.forecast_requested {
+        if (plat - lat).abs() > 1e-6 || (plon - lon).abs() > 1e-6 {
+            app.state.forecast = None;
+            app.state.observation = None;
+        }
+    }
     app.state.forecast_requested = Some((lat, lon));
     app.state.forecast_site = match picked {
         Some(_) => "pinned".to_string(),
         None => app.state.site_id.clone(),
     };
     let _ = app.tx.send(crate::app::DataCmd::LoadForecast(lat, lon));
+}
+
+/// One line of "72°F · Light Rain · dew 61°F · …" for the current conditions,
+/// converted to the US units the rest of the app uses.
+fn current_conditions_ui(ui: &mut egui::Ui, o: &radar_core::forecast::Observation) {
+    fn f(c: Option<f32>) -> Option<f32> {
+        c.map(|v| v * 9.0 / 5.0 + 32.0)
+    }
+    let station = if o.station_name.is_empty() {
+        o.station_id.clone()
+    } else {
+        format!("{} · {}", o.station_id, o.station_name)
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.strong("Current conditions");
+        ui.label(egui::RichText::new(station).weak().small());
+    });
+
+    let mut parts: Vec<String> = Vec::new();
+    match f(o.temperature_c) {
+        Some(t) => parts.push(format!("{t:.0}°F")),
+        None => parts.push("—°F".into()),
+    }
+    if !o.text.is_empty() {
+        parts.push(o.text.clone());
+    }
+    if let Some(d) = f(o.dewpoint_c) {
+        parts.push(format!("dew {d:.0}°F"));
+    }
+    if let Some(h) = o.humidity_pct {
+        parts.push(format!("RH {h:.0}%"));
+    }
+    if let Some(sp) = o.wind_speed_kmh {
+        let mph = sp * 0.621371;
+        let dir = o
+            .wind_direction_deg
+            .map(|d| format!(" {}", super::map::compass16(d as f64)))
+            .unwrap_or_default();
+        let gust = o
+            .wind_gust_kmh
+            .map(|g| format!(" gust {:.0}", g * 0.621371))
+            .unwrap_or_default();
+        parts.push(format!("wind{dir} {mph:.0} mph{gust}"));
+    }
+    if let Some(p) = o.pressure_pa {
+        parts.push(format!("{:.2} inHg", p / 3386.389));
+    }
+    if let Some(v) = o.visibility_m {
+        parts.push(format!("vis {:.1} mi", v / 1609.344));
+    }
+    if let Some(mm) = o.precip_last_hour_mm {
+        if mm > 0.0 {
+            parts.push(format!("{:.2} in/hr", mm / 25.4));
+        }
+    }
+    if let Some(hi) = f(o.heat_index_c) {
+        parts.push(format!("heat index {hi:.0}°F"));
+    }
+    if let Some(wc) = f(o.wind_chill_c) {
+        parts.push(format!("wind chill {wc:.0}°F"));
+    }
+    ui.label(egui::RichText::new(parts.join(" · ")));
+
+    if let Some(ts) = o.timestamp {
+        let age = chrono::Utc::now() - ts;
+        let mins = age.num_minutes().max(0);
+        let age_text = if mins < 60 {
+            format!("{mins} min ago")
+        } else {
+            format!("{} h {} min ago", mins / 60, mins % 60)
+        };
+        ui.label(
+            egui::RichText::new(format!(
+                "observed {} ({age_text}) · source api.weather.gov",
+                crate::timefmt::fmt_central(&ts)
+            ))
+            .weak()
+            .small(),
+        );
+    }
 }

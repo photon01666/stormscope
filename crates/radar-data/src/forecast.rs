@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
-use radar_core::forecast::{Forecast, ForecastPeriod};
+use radar_core::forecast::{Forecast, ForecastPeriod, Observation};
 
 /// `api.weather.gov` coordinate lookup.
 const POINTS_URL: &str = "https://api.weather.gov/points";
@@ -43,21 +43,61 @@ impl ForecastSource {
 
     /// Forecast for a point: resolves the grid, then fetches its periods.
     pub fn for_point(&self, lat: f64, lon: f64) -> Result<Forecast> {
-        let points: serde_json::Value =
-            self.get_json(&format!("{POINTS_URL}/{lat:.4},{lon:.4}"))?;
+        let points = self.points(lat, lon)?;
         let forecast_url = points
             .pointer("/properties/forecast")
             .and_then(|v| v.as_str())
             .context("points response had no forecast URL (point outside NWS coverage?)")?;
         let fc: serde_json::Value = self.get_json(forecast_url)?;
-        // The forecast office is the path segment before the grid numbers.
-        let office = forecast_url
-            .split("/gridpoints/")
-            .nth(1)
-            .and_then(|rest| rest.split('/').next())
-            .unwrap_or("")
-            .to_string();
-        Ok(forecast_from_json(&points, &fc, &office))
+        Ok(forecast_from_json(&points, &fc, &office_from(forecast_url)))
+    }
+
+    /// Current conditions at the nearest reporting station.
+    pub fn observation_for_point(&self, lat: f64, lon: f64) -> Result<Observation> {
+        let points = self.points(lat, lon)?;
+        let obs_url = points
+            .pointer("/properties/observationStations")
+            .and_then(|v| v.as_str())
+            .context("points response listed no observation stations")?;
+        self.observation_from_stations_url(obs_url)
+    }
+
+    /// Both in one go, sharing the gridpoint lookup: the forecast, and the
+    /// current conditions when a nearby station reports them. Observation
+    /// failures are non-fatal (many points sit between stations).
+    pub fn snapshot(&self, lat: f64, lon: f64) -> (Result<Forecast>, Option<Result<Observation>>) {
+        let points = match self.points(lat, lon) {
+            Ok(p) => p,
+            Err(e) => return (Err(e), None),
+        };
+        let forecast = (|| {
+            let url = points
+                .pointer("/properties/forecast")
+                .and_then(|v| v.as_str())
+                .context("points response had no forecast URL")?;
+            Ok(forecast_from_json(
+                &points,
+                &self.get_json(url)?,
+                &office_from(url),
+            ))
+        })();
+        let observation = points
+            .pointer("/properties/observationStations")
+            .and_then(|v| v.as_str())
+            .map(|obs_url| self.observation_from_stations_url(obs_url));
+        (forecast, observation)
+    }
+
+    fn observation_from_stations_url(&self, obs_url: &str) -> Result<Observation> {
+        let stations = self.get_json(obs_url)?;
+        Ok(observation_for_station(&stations, &mut |url: &str| {
+            self.get_json(url)
+        })?)
+    }
+
+    /// The `/points/{lat},{lon}` lookup both responses hang off.
+    fn points(&self, lat: f64, lon: f64) -> Result<serde_json::Value> {
+        self.get_json(&format!("{POINTS_URL}/{lat:.4},{lon:.4}"))
     }
 
     fn get_json(&self, url: &str) -> Result<serde_json::Value> {
@@ -150,6 +190,81 @@ pub(crate) fn forecast_from_json(
     }
 }
 
+/// Forecast office from a gridpoint URL (the path segment before the grid).
+fn office_from(forecast_url: &str) -> String {
+    forecast_url
+        .split("/gridpoints/")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Pick the first station out of a `/points/{lat},{lon}`-listed station
+/// collection and fetch its latest observation. Separated from the network
+/// so tests can drive it with canned JSON.
+fn observation_for_station(
+    stations: &serde_json::Value,
+    fetch: &mut dyn FnMut(&str) -> Result<serde_json::Value>,
+) -> Result<Observation> {
+    let station_url = stations
+        .pointer("/features/0/id")
+        .and_then(|v| v.as_str())
+        .context("station list was empty")?;
+    let station_name = stations
+        .pointer("/features/0/properties/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let station_id = stations
+        .pointer("/features/0/properties/stationIdentifier")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| station_url.rsplit('/').next().unwrap_or(""))
+        .to_string();
+    let latest = fetch(&format!("{station_url}/observations/latest"))?;
+    Ok(observation_from_json(&latest, &station_id, &station_name))
+}
+
+/// Build an [`Observation`] from a `/stations/{id}/observations/latest`
+/// response: every measurement arrives as `{"value": .., "unitCode": ..}` or
+/// `null`, so each one is optional.
+pub(crate) fn observation_from_json(
+    latest: &serde_json::Value,
+    station_id: &str,
+    station_name: &str,
+) -> Observation {
+    let p = latest.pointer("/properties");
+    let num = |key: &str| -> Option<f32> {
+        p.and_then(|p| p.pointer(&format!("/{key}/value")))
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+    };
+    Observation {
+        station_id: station_id.to_string(),
+        station_name: station_name.to_string(),
+        timestamp: p
+            .and_then(|p| p.pointer("/timestamp"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_time),
+        text: p
+            .and_then(|p| p.pointer("/textDescription"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        temperature_c: num("temperature"),
+        dewpoint_c: num("dewpoint"),
+        wind_speed_kmh: num("windSpeed"),
+        wind_direction_deg: num("windDirection"),
+        wind_gust_kmh: num("windGust"),
+        humidity_pct: num("relativeHumidity"),
+        pressure_pa: num("barometricPressure"),
+        visibility_m: num("visibility"),
+        precip_last_hour_mm: num("precipitationLastHour"),
+        heat_index_c: num("heatIndex"),
+        wind_chill_c: num("windChill"),
+    }
+}
+
 fn parse_time(s: &str) -> Option<DateTime<Utc>> {
     if s.is_empty() {
         return None;
@@ -211,6 +326,73 @@ mod tests {
         assert!(p.is_daytime);
         assert!(p.detailed.contains("high near 78"));
         assert!(!f.periods[1].is_daytime);
+    }
+
+    /// Current conditions: the station lookup picks the first station and the
+    /// latest observation's optional measurements survive nulls and units.
+    #[test]
+    fn parses_current_conditions_from_a_station() {
+        let stations = serde_json::json!({
+            "features": [{
+                "id": "https://api.weather.gov/stations/KTOP",
+                "properties": { "stationIdentifier": "KTOP", "name": "Topeka, Philip Billard Municipal Airport" }
+            }]
+        });
+        let latest = serde_json::json!({
+            "properties": {
+                "timestamp": "2026-10-15T21:53:00+00:00",
+                "textDescription": "Light Rain",
+                "temperature": { "value": 18.3, "unitCode": "wmoUnit:degC" },
+                "dewpoint": { "value": 16.1, "unitCode": "wmoUnit:degC" },
+                "windSpeed": { "value": 22.2, "unitCode": "wmoUnit:km_h-1" },
+                "windDirection": { "value": 140, "unitCode": "wmoUnit:degree_(angle)" },
+                "windGust": { "value": null, "unitCode": "wmoUnit:km_h-1" },
+                "relativeHumidity": { "value": 88.0, "unitCode": "wmoUnit:percent" },
+                "barometricPressure": { "value": 100820.0, "unitCode": "wmoUnit:Pa" },
+                "visibility": { "value": 16093.44, "unitCode": "wmoUnit:m" },
+                "precipitationLastHour": { "value": 2.5, "unitCode": "wmoUnit:mm" },
+                "heatIndex": { "value": null, "unitCode": "wmoUnit:degC" },
+                "windChill": { "value": null, "unitCode": "wmoUnit:degC" }
+            }
+        });
+        let calls = std::cell::RefCell::new(Vec::new());
+        let obs = observation_for_station(&stations, &mut |url: &str| {
+            calls.borrow_mut().push(url.to_string());
+            Ok(latest.clone())
+        })
+        .expect("observation");
+        assert_eq!(obs.station_id, "KTOP");
+        assert!(obs.station_name.contains("Topeka"));
+        assert_eq!(obs.text, "Light Rain");
+        assert_eq!(obs.temperature_c, Some(18.3));
+        assert_eq!(obs.dewpoint_c, Some(16.1));
+        assert_eq!(obs.wind_speed_kmh, Some(22.2));
+        assert_eq!(obs.wind_direction_deg, Some(140.0));
+        assert_eq!(obs.wind_gust_kmh, None, "null measurement stays None");
+        assert_eq!(obs.precip_last_hour_mm, Some(2.5));
+        assert!(obs.timestamp.is_some());
+        assert_eq!(
+            calls.borrow()[0],
+            "https://api.weather.gov/stations/KTOP/observations/latest"
+        );
+    }
+
+    /// No stations listed (or an empty collection) is an error, not a panic,
+    /// and a station that reports nothing still yields an observation shell.
+    #[test]
+    fn current_conditions_degrade_gracefully() {
+        let empty = serde_json::json!({ "features": [] });
+        let mut never = |_: &str| -> Result<serde_json::Value> { unreachable!() };
+        assert!(observation_for_station(&empty, &mut never).is_err());
+
+        let stations = serde_json::json!({
+            "features": [{ "id": "https://api.weather.gov/stations/KABC",
+                           "properties": { "stationIdentifier": "KABC" } }]
+        });
+        let bare = serde_json::json!({ "properties": {} });
+        let obs = observation_for_station(&stations, &mut |_| Ok(bare.clone())).unwrap();
+        assert_eq!(obs.station_id, "KABC");
+        assert!(obs.text.is_empty() && obs.temperature_c.is_none() && obs.timestamp.is_none());
     }
 
     /// Missing pieces degrade instead of panicking: no place name, no

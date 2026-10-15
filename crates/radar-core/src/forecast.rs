@@ -45,3 +45,32 @@ impl Forecast {
         self.periods.first()
     }
 }
+
+/// A current surface observation (the nearest NWS station's latest report).
+///
+/// Values are in the units the API reports (SI: °C, km/h, Pa, m); the UI
+/// converts for display. `None` means the station did not report that field.
+#[derive(Clone, Debug)]
+pub struct Observation {
+    /// Station id, e.g. "KTOP".
+    pub station_id: String,
+    /// Station name, e.g. "Topeka, Philip Billard Municipal Airport".
+    pub station_name: String,
+    /// Observation time (UTC).
+    pub timestamp: Option<DateTime<Utc>>,
+    /// Short text, e.g. "Light Rain", "Overcast".
+    pub text: String,
+    pub temperature_c: Option<f32>,
+    pub dewpoint_c: Option<f32>,
+    pub wind_speed_kmh: Option<f32>,
+    /// Direction the wind blows *from*, degrees.
+    pub wind_direction_deg: Option<f32>,
+    pub wind_gust_kmh: Option<f32>,
+    pub humidity_pct: Option<f32>,
+    pub pressure_pa: Option<f32>,
+    pub visibility_m: Option<f32>,
+    /// Precipitation over the last hour, mm.
+    pub precip_last_hour_mm: Option<f32>,
+    pub heat_index_c: Option<f32>,
+    pub wind_chill_c: Option<f32>,
+}

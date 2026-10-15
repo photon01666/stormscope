@@ -15,6 +15,8 @@ pub enum DataMsg {
     AllAlerts(Vec<radar_core::warnings::Warning>),
     /// NWS gridpoint forecast for a requested point.
     Forecast(radar_core::forecast::Forecast),
+    /// Latest observation from the nearest reporting station.
+    Observation(radar_core::forecast::Observation),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
     Status(String),
@@ -267,6 +269,17 @@ impl StormApp {
                 DataMsg::Volume(v) => self.state.push_volume(v),
                 DataMsg::Alerts(a) => self.state.alerts = a,
                 DataMsg::AllAlerts(a) => self.state.all_alerts = a,
+                DataMsg::Observation(o) => {
+                    log::debug!(
+                        "observation {} ({}) at {:?}: {:.1}C {}",
+                        o.station_id,
+                        o.station_name,
+                        o.timestamp,
+                        o.temperature_c.unwrap_or(f32::NAN),
+                        o.text
+                    );
+                    self.state.observation = Some(o);
+                }
                 DataMsg::Forecast(f) => {
                     log::debug!(
                         "forecast for {} ({} {}): {} periods",

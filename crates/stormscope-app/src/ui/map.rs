@@ -121,31 +121,53 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     if let Some((site, _)) = best {
                         app.select_site(site.id);
                     } else {
-                        // 4) Inside a warning polygon: open its NOAA text and
-                        // light the polygon up (site dots win above: they are
-                        // small, deliberate targets).
+                        // 4) A warning polygon under the click — inside it, or
+                        // on its outline (8 px of reach, so a polygon drawn
+                        // under another one stays clickable where they
+                        // overlap). Opens its NOAA text and lights it up (site
+                        // dots win above: they are small, deliberate targets).
+                        // Clicking the same spot again steps to the next
+                        // warning in the stack.
                         let (lon, lat) = view.view_px_to_lonlat(cx, cy);
-                        let hit = super::alerts::warning_at(&app.state.alerts, lon, lat);
-                        if let Some(w) = hit {
+                        let at = egui::pos2(cx as f32, cy as f32);
+                        let stack = super::alerts::warning_stack_at(
+                            &app.state.alerts,
+                            lon,
+                            lat,
+                            |lo, la| view.lonlat_to_view_px(lo, la),
+                            cx,
+                            cy,
+                            WARNING_EDGE_PX,
+                        );
+                        if !stack.is_empty() {
+                            let ids: Vec<String> = stack.iter().map(|w| w.id.clone()).collect();
+                            let idx = cycle_pick(app.map_alert_cycle.as_ref(), at, &ids);
+                            let w = stack[idx];
                             app.state.alert_detail = Some(w.id.clone());
                             app.state.alerts_focus = Some(w.id.clone());
                             app.state.alerts_focus_at = ui.input(|i| i.time);
-                        } else if app.state.show_outlook {
-                            // Clicking an SPC outline opens that day's
-                            // forecaster discussion.
-                            let hit = app.state.outlook.as_ref().and_then(|o| {
-                                outlook_border_at(o, &view, lon, lat, OUTLOOK_BORDER_PX)
-                                    .map(|f| f.dn)
-                            });
-                            if let Some(dn) = hit {
-                                app.state.outlook_detail_open = true;
-                                app.state.outlook_detail_dn = Some(dn);
-                                let day = app.state.outlook_day;
-                                if app.state.outlook_discussion_requested != Some(day) {
-                                    app.state.outlook_discussion_requested = Some(day);
-                                    let _ = app
-                                        .tx
-                                        .send(crate::app::DataCmd::LoadOutlookDiscussion(day));
+                            app.map_alert_cycle = Some((at, ids, idx));
+                        } else {
+                            // Clicked off the warnings: the next click on a
+                            // stack starts from the top of it again.
+                            app.map_alert_cycle = None;
+                            if app.state.show_outlook {
+                                // Clicking an SPC outline opens that day's
+                                // forecaster discussion.
+                                let hit = app.state.outlook.as_ref().and_then(|o| {
+                                    outlook_border_at(o, &view, lon, lat, OUTLOOK_BORDER_PX)
+                                        .map(|f| f.dn)
+                                });
+                                if let Some(dn) = hit {
+                                    app.state.outlook_detail_open = true;
+                                    app.state.outlook_detail_dn = Some(dn);
+                                    let day = app.state.outlook_day;
+                                    if app.state.outlook_discussion_requested != Some(day) {
+                                        app.state.outlook_discussion_requested = Some(day);
+                                        let _ = app
+                                            .tx
+                                            .send(crate::app::DataCmd::LoadOutlookDiscussion(day));
+                                    }
                                 }
                             }
                         }
@@ -191,26 +213,56 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         }
     }
 
-    // --- Warning polygon under the pointer --------------------------------
+    // --- Warning polygons under the pointer -------------------------------
     // Hovering a warning on the map gives the same glow + label as hovering
     // its row in the alerts browser, so a polygon can be identified by
-    // pointing at it. Only when the map itself is hovered (panel overlays are
-    // higher layers, so this goes quiet while the pointer is on them).
-    let map_hover = if app.state.show_alerts {
-        response.hover_pos().and_then(|p| {
-            let (cx, cy) = viewport_pos(rect, p);
-            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
-            super::alerts::warning_at(&app.state.alerts, lon, lat).map(|w| w.id.clone())
-        })
+    // pointing at it. Warnings stack — a tornado warning inside the
+    // severe-thunderstorm polygon carrying it — so what comes back is an
+    // ordered *stack*: the outline nearest the pointer first, then the
+    // containing polygons smallest first. Every member glows and is named;
+    // the first one is the click target, and clicking the same spot again
+    // steps to the next. Only when the map itself is hovered (panel overlays
+    // are higher layers, so this goes quiet while the pointer is on them).
+    let map_pointer = response.hover_pos();
+    let mut map_stack: Vec<String> = if app.state.show_alerts && !response.dragged() {
+        map_pointer
+            .map(|p| {
+                let (cx, cy) = viewport_pos(rect, p);
+                let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+                super::alerts::warning_stack_at(
+                    &app.state.alerts,
+                    lon,
+                    lat,
+                    |lo, la| view.lonlat_to_view_px(lo, la),
+                    cx,
+                    cy,
+                    WARNING_EDGE_PX,
+                )
+                .into_iter()
+                .map(|w| w.id.clone())
+                .collect()
+            })
+            .unwrap_or_default()
     } else {
-        None
+        Vec::new()
     };
-    if map_hover != app.state.alerts_map_hover {
+    // The click's choice leads while the pointer rests there: after stepping
+    // to the next warning in a stack, the highlight and the tooltip should
+    // agree with the details that opened.
+    if let (Some(p), Some((at, ids, idx))) = (map_pointer, app.map_alert_cycle.as_ref()) {
+        if ids.as_slice() == map_stack.as_slice()
+            && at.distance(p) <= STACK_CLICK_PX
+            && *idx < map_stack.len()
+        {
+            map_stack.rotate_left(*idx);
+        }
+    }
+    if map_stack.first() != app.state.alerts_map_stack.first() {
         // New warning (or none): restart the tooltip dwell clock.
-        app.state.alerts_map_hover = map_hover;
         app.state.alerts_map_hover_at = ui.input(|i| i.time);
     }
-    if app.state.alerts_map_hover.is_some() && !response.dragged() {
+    app.state.alerts_map_stack = map_stack;
+    if !app.state.alerts_map_stack.is_empty() && !response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
@@ -218,7 +270,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // warning is the more specific reading of the same spot). The risk areas
     // cover most of the map, so the emphasis, the tooltip and the click all
     // key off the border.
-    let outlook_hover = if app.state.alerts_map_hover.is_none() && app.state.show_outlook {
+    let outlook_hover = if app.state.alerts_map_stack.is_empty() && app.state.show_outlook {
         response.hover_pos().and_then(|p| {
             let (cx, cy) = viewport_pos(rect, p);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
@@ -934,12 +986,14 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
         let color = super::alerts::warning_color(w);
 
         // Glow strength: 1.0 while the row is hovered in the alerts browser,
-        // 0.8 while the polygon itself is hovered on the map (a touch
-        // gentler — pointing at the map should hint, not shout), and a flash
-        // that settles into a steady highlight for the alert the browser last
-        // jumped to (so the clicked one stays identifiable).
+        // 0.8 for the warning the map pointer is on (a touch gentler —
+        // pointing at the map should hint, not shout), 0.35 for the rest of a
+        // stack the pointer is standing on (so overlapping warnings all light
+        // up while the one a click opens is unmistakable), and a flash that
+        // settles into a steady highlight for the alert last jumped to (so
+        // the clicked one stays identifiable).
         let hovered_list = app.state.alerts_hover.as_deref() == Some(w.id.as_str());
-        let hovered_map = app.state.alerts_map_hover.as_deref() == Some(w.id.as_str());
+        let stack_pos = app.state.alerts_map_stack.iter().position(|id| id == &w.id);
         let focus_fade = if app.state.alerts_focus.as_deref() == Some(w.id.as_str()) {
             let age = (now - app.state.alerts_focus_at).max(0.0);
             Some((1.0 - age / 3.0).clamp(0.0, 1.0))
@@ -948,8 +1002,8 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
         };
         let glow: f32 = if hovered_list {
             1.0
-        } else if hovered_map {
-            0.8
+        } else if let Some(pos) = stack_pos {
+            if pos == 0 { 0.8 } else { 0.35 }
         } else {
             focus_fade.map_or(0.0, |f| 0.35 + 0.65 * f) as f32
         };
@@ -983,16 +1037,22 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
                 pts.clone(),
                 egui::Stroke::new(2.0 + 1.5 * intensity, color),
             ));
+            // The fill stays well under the outline's weight: overlapping
+            // warnings multiply their washes, and a heavy tint over the radar
+            // hides the thing the map is for. The border carries the color.
             painter.add(egui::Shape::convex_polygon(
                 pts,
-                color.gamma_multiply(0.12 + 0.30 * intensity),
+                color.gamma_multiply(0.05 + 0.17 * intensity),
                 egui::Stroke::NONE,
             ));
         }
 
-        // Name the warning on the map while it is lit up: the point of the
-        // hover/click hint is to say *which* polygon this row is.
-        if glow > 0.0 {
+        // Name the warning on the map only while the pointer is on it (the
+        // map directly, or its row in the alerts browser): the label answers
+        // "which polygon is this?". A clicked alert keeps its afterglow
+        // without leaving a name floating over the map once the pointer has
+        // moved on.
+        if hovered_list || stack_pos.is_some() {
             if let Some((lat, lon)) = w.centroid() {
                 let (vx, vy) = view.lonlat_to_view_px(lon, lat);
                 let at = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
@@ -1602,23 +1662,37 @@ fn draw_min_dbz_bar(ctx: &egui::Context, map_rect: egui::Rect, app: &mut StormAp
     }
 }
 
-/// Tooltip for the warning polygon under the pointer, shown once the pointer
-/// has rested on it for a second (a passing pointer should not pop text).
+/// Tooltip for the warning polygons under the pointer, shown once the pointer
+/// has rested on them for a second (a passing pointer should not pop text).
 ///
-/// Contents are the brief form: event, issuer, expiry, distance, affected
-/// area and the opening line of the NOAA text — enough to say what it is
-/// without opening the detail popup.
+/// Contents are the brief form of the leading warning — event, issuer, expiry,
+/// distance, affected area and the opening line of the NOAA text — plus, when
+/// several warnings are stacked at that spot, the names of the ones behind it,
+/// since those are exactly the ones a click can reach next.
 fn warning_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormApp) {
-    let Some(id) = app.state.alerts_map_hover.as_deref() else {
+    let Some(id) = app.state.alerts_map_stack.first() else {
         return;
     };
     let dwell = ui.input(|i| i.time) - app.state.alerts_map_hover_at;
     if dwell < 1.0 {
         return;
     }
-    let Some(w) = app.state.alerts.iter().find(|w| w.id == id) else {
+    let Some(w) = app.state.alerts.iter().find(|w| &w.id == id) else {
         return;
     };
+    let behind: Vec<&str> = app
+        .state
+        .alerts_map_stack
+        .iter()
+        .skip(1)
+        .filter_map(|id| {
+            app.state
+                .alerts
+                .iter()
+                .find(|w| &w.id == id)
+                .map(|w| w.event.as_str())
+        })
+        .collect();
     let (site_lat, site_lon) = radar_core::sites::site(&app.state.site_id)
         .map(|s| (s.latitude, s.longitude))
         .unwrap_or((35.3331, -97.2778));
@@ -1630,10 +1704,21 @@ fn warning_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormAp
             // as the sidebar and the windows.
             super::apply_text_scale(ui, app.sidebar_scale.max(1.0));
             super::alerts::brief_alert_ui(ui, w, site_lat, site_lon);
+            if !behind.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("stacked here as well: {}", behind.join(", ")))
+                        .weak()
+                        .small(),
+                );
+            }
             ui.label(
-                egui::RichText::new("click for the full NOAA text")
-                    .weak()
-                    .small(),
+                egui::RichText::new(if behind.is_empty() {
+                    "click for the full NOAA text"
+                } else {
+                    "click for the full NOAA text · click again for the next one"
+                })
+                .weak()
+                .small(),
             );
         });
 }
@@ -1701,6 +1786,41 @@ pub(super) fn point_segment_distance(px: f64, py: f64, ax: f64, ay: f64, bx: f64
     }
     let t = (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0);
     (px - (ax + t * dx)).hypot(py - (ay + t * dy))
+}
+
+/// How close (viewport px) the pointer must be to a warning polygon's outline
+/// for the hover and the click to treat it as aimed at that polygon: the same
+/// 8 px reach the SPC outlines use (`OUTLOOK_BORDER_PX`), so "what lights up is
+/// what a click opens" holds for both. It is what keeps a warning drawn under
+/// another one reachable where their borders cross.
+pub(super) const WARNING_EDGE_PX: f64 = 8.0;
+
+/// How close (px) two clicks must be to count as "the same spot" when walking
+/// a stack of overlapping warnings.
+const STACK_CLICK_PX: f32 = 6.0;
+
+/// Which member of the warning stack under the pointer a click selects.
+///
+/// The first click at a spot takes the most clickable member (see
+/// `warning_stack_at`); clicking the same spot again steps to the next one, so
+/// every polygon in a stack can be opened even where they fully cover each
+/// other. Clicking anywhere else starts over, and so does a stack that has
+/// changed under the pointer — a new warning arriving must not reshuffle what
+/// the next click opens.
+fn cycle_pick(
+    prev: Option<&(egui::Pos2, Vec<String>, usize)>,
+    pos: egui::Pos2,
+    ids: &[String],
+) -> usize {
+    if ids.is_empty() {
+        return 0;
+    }
+    match prev {
+        Some((at, prev_ids, idx)) if at.distance(pos) <= STACK_CLICK_PX && prev_ids == ids => {
+            (idx + 1) % ids.len()
+        }
+        _ => 0,
+    }
 }
 
 /// Tooltip for the SPC outline under the pointer: what that risk level means
@@ -2078,6 +2198,35 @@ mod tests {
         assert!((point_segment_distance(13.0, 4.0, 0.0, 0.0, 10.0, 0.0) - 5.0).abs() < 1e-9);
         // Degenerate segment.
         assert!((point_segment_distance(3.0, 4.0, 0.0, 0.0, 0.0, 0.0) - 5.0).abs() < 1e-9);
+    }
+
+    /// Clicking a stack of overlapping warnings: the first click takes the
+    /// most clickable one, the next click on the same spot steps to the one
+    /// behind it and wraps, and a click anywhere else — or a stack that has
+    /// changed — starts from the top again.
+    #[test]
+    fn warning_stack_clicks_walk_the_stack() {
+        let ids: Vec<String> = ["small", "big"].iter().map(|s| s.to_string()).collect();
+        let at = egui::pos2(100.0, 50.0);
+        assert_eq!(cycle_pick(None, at, &ids), 0, "first click: most clickable");
+        let first = Some((at, ids.clone(), 0));
+        assert_eq!(cycle_pick(first.as_ref(), at, &ids), 1, "same spot: next");
+        let second = Some((at, ids.clone(), 1));
+        assert_eq!(cycle_pick(second.as_ref(), at, &ids), 0, "wraps around");
+        // A few pixels of jitter are still "the same spot".
+        assert_eq!(cycle_pick(first.as_ref(), egui::pos2(103.0, 52.0), &ids), 1);
+        // Elsewhere, or with the stack changed, start over.
+        assert_eq!(
+            cycle_pick(first.as_ref(), egui::pos2(300.0, 200.0), &ids),
+            0
+        );
+        let replaced: Vec<String> = vec!["new".to_string()];
+        assert_eq!(cycle_pick(first.as_ref(), at, &replaced), 0);
+        assert_eq!(
+            cycle_pick(first.as_ref(), at, &[]),
+            0,
+            "empty stack is safe"
+        );
     }
 
     /// The geo point under the anchor must stay under the anchor after

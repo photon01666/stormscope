@@ -28,6 +28,24 @@ log; entries start at the first public release.
   poll sees them, and a zone-based warning (no polygon, so no centroid) can
   now flash the badge too, which the proximity filter could never do.
 
+**Overlapping warnings**
+- Two warnings on the same ground no longer hide each other. The map hit test
+  returns an ordered stack instead of a single polygon: a polygon outline
+  within 8 px of the pointer comes first (nearest edge wins), then the
+  containing polygons smallest first. The warning drawn *underneath* is
+  therefore reachable wherever its border runs under the other one — the case
+  that used to be untouchable.
+- Every warning in a stack glows and is named while the pointer is on it, and
+  the leading one glows at full hovering strength, because that is the one a
+  click opens. Clicking the same spot again steps to the next warning in the
+  stack (wrapping around) and the tooltip names what else is stacked there;
+  clicking anywhere else starts over.
+- Polygon fills are much lighter (5–22% toward the outline's color, was
+  12–42%), so overlapping warnings no longer multiply into an opaque wash over
+  the radar — the border carries the color. Event labels now appear only while
+  the pointer is on a polygon: a clicked alert keeps its afterglow without
+  leaving a name floating on the map.
+
 **Alerts browser**
 - New popup listing active NWS alerts, opened from the sidebar or by clicking
   the alert count in the status bar.

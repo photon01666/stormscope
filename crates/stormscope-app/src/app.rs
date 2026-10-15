@@ -138,6 +138,10 @@ pub struct StormApp {
     /// Which top-center badge pill the pointer is over (brightens its
     /// border instead of drawing the hover ring).
     pub top_badge_hovered: Option<crate::state::BadgeKind>,
+    /// The last warning click on the map: where it landed, the stack it hit
+    /// (alert ids, in the order they were offered) and which member was
+    /// chosen — so clicking the same spot again steps to the next one.
+    pub map_alert_cycle: Option<(egui::Pos2, Vec<String>, usize)>,
     /// Throttle for the debug-level GPU texture accounting log (memory
     /// pressure in this app shows up as resident textures/GPU memory).
     pub tex_stats_at: std::time::Instant,
@@ -230,6 +234,7 @@ impl StormApp {
             min_dbz_bar_rect: None,
             min_dbz_scroll_acc: 0.0,
             top_badge_hovered: None,
+            map_alert_cycle: None,
             confirm_clear: None,
             tex_stats_at: std::time::Instant::now(),
             last_trim: std::time::Instant::now(),

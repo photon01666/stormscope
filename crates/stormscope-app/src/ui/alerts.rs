@@ -182,14 +182,89 @@ pub(super) fn ring_contains(ring: &[(f64, f64)], lon: f64, lat: f64) -> bool {
     inside
 }
 
-/// The warning polygon under a map point, if any. Later entries win: they are
-/// drawn last, so they are visually on top.
-pub(super) fn warning_at(alerts: &[Warning], lon: f64, lat: f64) -> Option<&Warning> {
-    alerts.iter().rev().find(|w| {
-        w.polygon
-            .as_ref()
-            .is_some_and(|rings| rings.first().is_some_and(|r| ring_contains(r, lon, lat)))
-    })
+/// Every warning polygon the pointer can be said to be "on", most clickable
+/// first. Warnings routinely overlap — a tornado warning nested inside the
+/// severe-thunderstorm polygon that carried it — and no single-polygon test
+/// can serve a mouse that wants to reach *each* of them, so this returns the
+/// whole stack, ordered by two rules:
+///
+/// 1. A polygon *outline* within `edge_px` of the pointer beats anything that
+///    merely contains it, nearest edge first. Aiming at an edge is
+///    unambiguous, and it is what keeps a polygon drawn *under* another one
+///    reachable where their borders cross — the case where containment alone
+///    always names the wrong one. (The pointer may also sit just *outside*
+///    that outline; a few pixels of slop is what a mouse needs.)
+/// 2. Otherwise the containing polygons, smallest first: the more specific
+///    reading of a point inside several areas.
+///
+/// `project` maps lon/lat to view pixels for the edge test; `lon`/`lat` and
+/// `px`/`py` are the same pointer in the two frames of reference. Clicking the
+/// same spot again walks the rest of the stack (see `ui::map::cycle_pick`).
+pub(super) fn warning_stack_at<'a>(
+    alerts: &'a [Warning],
+    lon: f64,
+    lat: f64,
+    project: impl Fn(f64, f64) -> (f64, f64),
+    px: f64,
+    py: f64,
+    edge_px: f64,
+) -> Vec<&'a Warning> {
+    // (warning, distance to the nearest edge, area) for the edges, and
+    // (warning, area) for the containment fallback.
+    let mut edges: Vec<(&Warning, f64, f64)> = Vec::new();
+    let mut insides: Vec<(&Warning, f64)> = Vec::new();
+    for w in alerts {
+        let Some(rings) = &w.polygon else { continue };
+        let mut nearest = f64::INFINITY;
+        for ring in rings {
+            if ring.len() < 3 {
+                continue;
+            }
+            for i in 0..ring.len() {
+                let a = ring[i];
+                let b = ring[(i + 1) % ring.len()];
+                let (ax, ay) = project(a.0, a.1);
+                let (bx, by) = project(b.0, b.1);
+                nearest = nearest.min(super::map::point_segment_distance(px, py, ax, ay, bx, by));
+            }
+        }
+        let area = rings.first().map_or(f64::INFINITY, |r| ring_area(r));
+        if nearest <= edge_px {
+            edges.push((w, nearest, area));
+        } else if rings.first().is_some_and(|r| ring_contains(r, lon, lat)) {
+            insides.push((w, area));
+        }
+    }
+    // Nearest edge wins; ties (and equal areas) fall back to the id so the
+    // order a click walks is stable from frame to frame.
+    let by_area = |a: f64, b: f64| a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal);
+    edges.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| by_area(a.2, b.2))
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    insides.sort_by(|a, b| by_area(a.1, b.1).then_with(|| a.0.id.cmp(&b.0.id)));
+    edges
+        .into_iter()
+        .map(|(w, _, _)| w)
+        .chain(insides.into_iter().map(|(w, _)| w))
+        .collect()
+}
+
+/// Shoelace area of a lon/lat ring, in square degrees — only ever used to
+/// compare two polygons, so the units do not matter.
+pub(super) fn ring_area(ring: &[(f64, f64)]) -> f64 {
+    if ring.len() < 3 {
+        return f64::INFINITY;
+    }
+    let mut sum = 0.0;
+    for i in 0..ring.len() {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % ring.len()];
+        sum += x1 * y2 - x2 * y1;
+    }
+    (sum / 2.0).abs().max(f64::MIN_POSITIVE)
 }
 
 fn site_of(app: &StormApp) -> (f64, f64) {
@@ -812,26 +887,79 @@ mod tests {
         assert!(below.contains(egui::pos2(360.0, 70.0)));
     }
 
-    /// Map-click hit testing: a click inside a polygon finds its alert, the
-    /// topmost (last drawn) one wins, and zone-only alerts are never hit.
+    /// Overlapping warnings, the case that has to work: a small warning
+    /// sitting across the big one's northern border. Deep inside both, the
+    /// smallest wins (the more specific reading of the point); on the big
+    /// one's outline — including where that outline runs *under* the small
+    /// polygon — the edge wins, so the covered warning is still reachable;
+    /// and every candidate is offered, in stack order.
+    #[test]
+    fn warning_stack_orders_edges_before_containment() {
+        let boxed = |id: &str, clat: f64, half: f64| {
+            let mut w = warn(id, "Severe Thunderstorm Warning", clat, -97.0, true);
+            w.polygon = Some(vec![vec![
+                (-97.0 - half, clat - half),
+                (-97.0 + half, clat - half),
+                (-97.0 + half, clat + half),
+                (-97.0 - half, clat + half),
+            ]]);
+            w
+        };
+        // Big: 34.6..35.4 lat. Small: 35.37..35.47 — its lower part is inside
+        // the big box, and the big box's top edge crosses it.
+        let big = boxed("big", 35.0, 0.4);
+        let small = boxed("small", 35.42, 0.05);
+        let ident = |lo: f64, la: f64| (lo, la);
+        let stack = |p_lon: f64, p_lat: f64| {
+            warning_stack_at(
+                &[small.clone(), big.clone()], // deliberately not draw order
+                p_lon,
+                p_lat,
+                ident,
+                p_lon,
+                p_lat,
+                0.01,
+            )
+            .into_iter()
+            .map(|w| w.id.clone())
+            .collect::<Vec<String>>()
+        };
+        // Inside both, clear of every edge: smallest first.
+        assert_eq!(stack(-97.0, 35.385), vec!["small", "big"]);
+        // On the big one's edge, where it passes under the small polygon:
+        // the edge wins — this used to be unreachable.
+        assert_eq!(stack(-97.0, 35.395), vec!["big", "small"]);
+        // On the small one's own edge, the small one leads.
+        assert_eq!(stack(-97.0, 35.375), vec!["small", "big"]);
+        // Inside the big one only.
+        assert_eq!(stack(-97.0, 35.0), vec!["big"]);
+        // Outside both, beyond the edge reach of the big one's border.
+        assert!(stack(-97.0, 34.0).is_empty());
+    }
+
+    /// Map-click hit testing: a click inside a polygon finds its alert, a
+    /// click a hair outside its outline still counts, and zone-only alerts are
+    /// never hit (their row in the browser is how you reach them).
     #[test]
     fn warning_hit_testing_on_the_map() {
         let a = warn("a", "Tornado Warning", 35.4, -97.3, true); // +/-0.1 deg box
-        let b = warn("b", "Flash Flood Warning", 35.4, -97.3, true);
-        assert_eq!(warning_at(&[a.clone()], -97.3, 35.4).unwrap().id, "a");
-        assert!(
-            warning_at(&[a.clone()], -97.0, 35.6).is_none(),
-            "outside the box"
+        // Identity projection, so the pointer is given in degrees as well and
+        // the 0.02 reach stays readable (a fifth of the box's side).
+        let hit = |alerts: &[Warning], lon: f64, lat: f64| {
+            warning_stack_at(alerts, lon, lat, |lo, la| (lo, la), lon, lat, 0.02)
+                .into_iter()
+                .map(|w| w.id.clone())
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(hit(&[a.clone()], -97.3, 35.4), vec!["a"], "inside");
+        assert_eq!(
+            hit(&[a.clone()], -97.3, 35.51),
+            vec!["a"],
+            "just outside the outline is still that polygon"
         );
-        assert!(
-            warning_at(&[a.clone(), b], -97.3, 35.4).unwrap().id == "b",
-            "last drawn polygon is on top"
-        );
+        assert!(hit(&[a.clone()], -97.0, 35.6).is_empty(), "well outside");
         let zone = warn("z", "Heat Advisory", 35.4, -97.3, false);
-        assert!(
-            warning_at(&[zone], -97.3, 35.4).is_none(),
-            "no polygon, no hit"
-        );
+        assert!(hit(&[zone], -97.3, 35.4).is_empty(), "no polygon, no hit");
     }
 
     /// Alerts badge: only watches/warnings count, warnings outrank watches,

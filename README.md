@@ -47,7 +47,9 @@ To grab one: open stormscope, hover the left edge so the sidebar shows, then
   just the selected station's area on the other, with a search filter.
   Hovering a list row — or the polygon on the map itself — glows and labels
   that warning, and a second's rest on a polygon pops a brief description
-  under the pointer;
+  under the pointer. Overlapping warnings all light up and are named, reachable
+  by their outlines even where one is drawn under the other, and clicking the
+  same spot again steps through the stack;
   clicking jumps to it — loading the station that covers it when the alert is
   outside the selected one's range; click a polygon (or the row's Details
   button) for the full NOAA description and safety instruction.

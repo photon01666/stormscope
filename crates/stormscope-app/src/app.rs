@@ -107,6 +107,9 @@ pub struct StormApp {
     /// coords). The map's wheel-zoom skips while the pointer is inside it, so
     /// a scroll there adjusts the filter instead of zooming the map.
     pub min_dbz_bar_rect: Option<egui::Rect>,
+    /// Sub-notch wheel residue (points) for the Min-dBZ bar, so touchpad
+    /// scrolls accumulate into whole steps instead of being dropped.
+    pub min_dbz_scroll_acc: f32,
     /// Cache section awaiting the user's "yes" in the clear-cache dialog.
     /// Set by the Settings menu, cleared when the dialog is dismissed.
     pub confirm_clear: Option<ClearTarget>,
@@ -198,6 +201,7 @@ impl StormApp {
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
             min_dbz_bar_rect: None,
+            min_dbz_scroll_acc: 0.0,
             confirm_clear: None,
             tex_stats_at: std::time::Instant::now(),
             last_trim: std::time::Instant::now(),

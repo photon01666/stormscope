@@ -1213,6 +1213,33 @@ fn fmt_data_age(total_secs: i64) -> String {
     }
 }
 
+/// Notches (steps) of wheel input in `events`, consuming them and any
+/// pointer-unit debris (`acc`, in points) as it goes.
+///
+/// Working from the raw events — not egui's `smooth_scroll_delta` — is what
+/// makes one notch equal one step: egui spreads a notch across frames for
+/// smooth scrolling, so any threshold on the smoothed value drops most
+/// notches and the wheel feels like it needs several flicks per tick.
+fn consume_wheel_steps(events: &mut Vec<egui::Event>, acc: &mut f32) -> f32 {
+    let mut steps = 0.0f32;
+    events.retain(|e| {
+        if let egui::Event::MouseWheel { unit, delta, .. } = e {
+            match unit {
+                egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => steps += delta.y,
+                // Point-unit devices (touchpads) deliver fractions of a
+                // notch; accumulate until they cover one (~50 points).
+                egui::MouseWheelUnit::Point => *acc += delta.y,
+            }
+            false // consumed: nothing else (the map) should see the wheel
+        } else {
+            true
+        }
+    });
+    let extra = (*acc / 50.0).trunc();
+    *acc -= extra * 50.0;
+    steps + extra
+}
+
 /// Floating "Min dBZ (REF)" quick-adjust bar pinned to the bottom center of
 /// the map: the same filter as the sidebar control, where the eye is while
 /// watching echoes. Shown only for the REF-family moments it actually
@@ -1262,21 +1289,21 @@ fn draw_min_dbz_bar(ctx: &egui::Context, map_rect: egui::Rect, app: &mut StormAp
     let rect = area.response.rect;
     app.min_dbz_bar_rect = Some(rect);
 
-    // Wheel over the bar = adjust the filter (5 dB per notch), instead of
-    // zooming the map underneath — the map's own zoom bails out while the
-    // pointer is inside this rect.
+    // Wheel over the bar = adjust the filter (5 dB per notch), consuming the
+    // wheel events so the map underneath cannot zoom. Driven from the raw
+    // events for one-notch-one-step crispness (see `consume_wheel_steps`).
     let hovering = ctx.pointer_hover_pos().map_or(false, |p| rect.contains(p));
     if hovering {
-        let scroll = ctx.input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            // One wheel notch is ~50 points in egui's smooth scroll delta.
-            let notches = (scroll / 50.0).round();
-            if notches != 0.0 {
-                app.state.min_dbz =
-                    (app.state.min_dbz + 5.0 * notches).clamp(0.0, 75.0);
-            }
-            // Consume it so nothing else (e.g. a scrollable ancestor) reacts.
+        let mut acc = app.min_dbz_scroll_acc;
+        let steps = ctx.input_mut(|i| consume_wheel_steps(&mut i.events, &mut acc));
+        if steps != 0.0 || acc != app.min_dbz_scroll_acc {
+            // Kill the smoothed residual the consumed event would otherwise
+            // leave for the map's zoom to pick up.
             ctx.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+        }
+        app.min_dbz_scroll_acc = acc;
+        if steps != 0.0 {
+            app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);
         }
     }
 }
@@ -1665,8 +1692,55 @@ mod tests {
     }
 
     #[test]
-    fn miles_readout_uses_statute_miles() {
-        // 1 degree of latitude ≈ 69.1 mi; long hauls drop the decimal.
+    fn wheel_notches_map_to_steps_one_for_one() {
+        use egui::{Event, MouseWheelUnit, Vec2};
+        let mut acc = 0.0f32;
+        // One line notch = exactly one step (the "have to scroll a few times"
+        // bug was a smoothed-delta threshold that dropped most notches).
+        let mut ev = vec![Event::MouseWheel {
+            unit: MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, 1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        }];
+        assert_eq!(consume_wheel_steps(&mut ev, &mut acc), 1.0);
+        assert!(ev.is_empty(), "wheel events must be consumed");
+        // Up is negative.
+        let mut ev = vec![Event::MouseWheel {
+            unit: MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, -2.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        }];
+        assert_eq!(consume_wheel_steps(&mut ev, &mut acc), -2.0);
+        // Touchpad points accumulate: 30 + 30 points = one step, 10 left over.
+        let mk = |pts: f32| {
+            vec![Event::MouseWheel {
+                unit: MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, pts),
+                phase: egui::TouchPhase::Move,
+                modifiers: Default::default(),
+            }]
+        };
+        let mut ev = mk(30.0);
+        assert_eq!(consume_wheel_steps(&mut ev, &mut acc), 0.0);
+        let mut ev = mk(30.0);
+        assert_eq!(consume_wheel_steps(&mut ev, &mut acc), 1.0);
+        assert!((acc - 10.0).abs() < 1e-3, "residue kept for next time: {acc}");
+        // Non-wheel events pass through untouched.
+        let mut ev = vec![Event::Key {
+            key: egui::Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }];
+        assert_eq!(consume_wheel_steps(&mut ev, &mut acc), 0.0);
+        assert_eq!(ev.len(), 1);
+    }
+
+    #[test]
+    fn miles_readout_uses_statute_miles() {        // 1 degree of latitude ≈ 69.1 mi; long hauls drop the decimal.
         assert_eq!(format_miles(111_194.9 / 1609.344), "69.1 mi");
         assert_eq!(format_miles(150.0), "150 mi");
     }

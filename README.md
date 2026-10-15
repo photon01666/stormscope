@@ -48,6 +48,9 @@ To grab one: open stormscope, hover the left edge so the sidebar shows, then
   clicking jumps to it — loading the station that covers it when the alert is
   outside the selected one's range; click a polygon (or the row's Details
   button) for the full NOAA description and safety instruction.
+- The top-of-map alerts pill flashes in the issued color (tornado / severe
+  thunderstorm / flash flood, watches dimmed) when one of those watches or
+  warnings is in force near the selected station.
 - NWS gridpoint forecast from the *Forecast* pill next to the alerts badge:
   the selected station's area by default, or any point you click on the map
   ("Pick on map…"), with day/night periods and the full NOAA narrative.

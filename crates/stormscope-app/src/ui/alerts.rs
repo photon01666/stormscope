@@ -60,9 +60,11 @@ fn matches_filter(w: &Warning, needle: &str) -> bool {
         .any(|f| f.to_lowercase().contains(&needle))
 }
 
-/// Priority for "watch or greater" alerts, most severe first. `None` means
-/// the alert is not something worth flashing a badge about (advisories,
-/// statements, outlooks).
+/// Priority for the watch/warning families the app flashes for, most severe
+/// first. `None` means "do not flash": that covers event names outside the
+/// storm families the map itself colors (river `Flood Warning`, marine and
+/// wind warnings, freeze/red-flag products, advisories, statements) as well
+/// as anything that is neither a watch nor a warning.
 ///
 /// Deliberately event-name based rather than severity/urgency based: NWS
 /// watches and warnings are the two families people act on, and their names
@@ -73,9 +75,9 @@ fn significant_priority(w: &Warning) -> Option<u8> {
     if !is_watch && !is_warning {
         return None;
     }
-    // Total order, no ties: warnings always outrank watches, and within a
-    // class the family order is tornado > severe > flood > other.
-    let class = if is_warning { 4 } else { 2 };
+    // The three storm families the radar overlay colors. A plain river
+    // "Flood Warning" is not one of them: it is not radar-driven, and
+    // flashing for it looked like a bug (the badge pulsing white).
     let family = if w.is_tornado() {
         3
     } else if w.is_severe_thunderstorm() {
@@ -83,14 +85,18 @@ fn significant_priority(w: &Warning) -> Option<u8> {
     } else if w.is_flash_flood() {
         1
     } else {
-        0
+        return None;
     };
+    // Total order, no ties: warnings always outrank watches.
+    let class = if is_warning { 4 } else { 2 };
     Some(class * 2 + family)
 }
 
 /// Color the top-of-map alerts badge flashes for a watch/warning: the family
 /// color (matching the map polygons), dimmed for watches so a watch reads as
-/// less urgent than the corresponding warning.
+/// less urgent than the corresponding warning. Only the three storm families
+/// reach this (see `significant_priority`); the neutral fallback exists so
+/// the helper stays total.
 pub(super) fn pulse_color(w: &Warning) -> egui::Color32 {
     let base = if w.is_tornado() {
         egui::Color32::from_rgb(255, 60, 120)
@@ -824,6 +830,24 @@ mod tests {
         assert!(p("Tornado Watch").unwrap() > p("Flash Flood Watch").unwrap());
         assert!(p("Wind Advisory").is_none());
         assert!(p("Special Weather Statement").is_none());
+        // Not storm families: no flash, so the badge never pulses white.
+        assert!(
+            p("Flood Warning").is_none(),
+            "river flooding is not a storm warning"
+        );
+        assert!(p("Flood Watch").is_none());
+        assert!(p("High Wind Warning").is_none());
+        assert!(p("Freeze Warning").is_none());
+        assert!(p("Special Marine Warning").is_none());
+        assert!(p("Red Flag Warning").is_none());
+        // The storm families do flash, watch or warning.
+        assert!(p("Flash Flood Warning").is_some());
+        assert!(p("Flash Flood Watch").is_some());
+        assert!(p("Tornado Watch").is_some());
+        assert!(
+            p("Tornado Emergency").is_none(),
+            "no Watch/Warning in the name"
+        );
 
         // The nearest significant alert wins; advisories and far alerts do not.
         let site = (35.3331, -97.2778);

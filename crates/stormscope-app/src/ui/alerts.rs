@@ -69,7 +69,7 @@ fn matches_filter(w: &Warning, needle: &str) -> bool {
 /// Deliberately event-name based rather than severity/urgency based: NWS
 /// watches and warnings are the two families people act on, and their names
 /// say which they are.
-fn significant_priority(w: &Warning) -> Option<u8> {
+pub(super) fn significant_priority(w: &Warning) -> Option<u8> {
     let is_watch = w.event.contains("Watch");
     let is_warning = w.event.contains("Warning");
     if !is_watch && !is_warning {

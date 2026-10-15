@@ -1305,16 +1305,34 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     };
     // Copy out what the badge needs (event name + color): the app is mutated
     // further down for the pill's click handling.
-    let significant: Option<(String, egui::Color32)> = radar_core::sites::site(&app.state.site_id)
-        .and_then(|s| {
-            super::alerts::significant_near(
-                &app.state.alerts,
-                s.latitude,
-                s.longitude,
-                crate::state::STATION_ALERT_RADIUS_KM,
-            )
-        })
-        .map(|w| (w.event.clone(), super::alerts::pulse_color(w)));
+    //
+    // Two sources of "worth flashing": the fast lane (the API says the alert
+    // applies to the station — this is the only way a zone-based alert, which
+    // has no polygon and therefore no centroid, can flash) and the wider
+    // sweep filtered by proximity. Most severe across both wins.
+    let significant: Option<(String, egui::Color32)> = {
+        let fast_best = app
+            .state
+            .alerts_fast
+            .iter()
+            .filter_map(|w| super::alerts::significant_priority(w).map(|p| (p, w)))
+            .max_by_key(|(p, _)| *p);
+        let slow_best = radar_core::sites::site(&app.state.site_id)
+            .and_then(|s| {
+                super::alerts::significant_near(
+                    &app.state.alerts,
+                    s.latitude,
+                    s.longitude,
+                    crate::state::STATION_ALERT_RADIUS_KM,
+                )
+            })
+            .and_then(|w| super::alerts::significant_priority(w).map(|p| (p, w)));
+        [fast_best, slow_best]
+            .into_iter()
+            .flatten()
+            .max_by_key(|(p, _)| *p)
+            .map(|(_, w)| (w.event.clone(), super::alerts::pulse_color(w)))
+    };
     let alerts_color = significant
         .as_ref()
         .map_or(egui::Color32::from_white_alpha(220), |(_, c)| *c);

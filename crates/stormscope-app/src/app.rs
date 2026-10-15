@@ -11,6 +11,8 @@ pub enum DataMsg {
     Volume(Arc<radar_core::Volume>),
     /// Alerts near the selected site (drawn on the map).
     Alerts(Vec<radar_core::warnings::Warning>),
+    /// Alerts that apply exactly to the selected station (fast lane).
+    AlertsFast(Vec<radar_core::warnings::Warning>),
     /// Every active alert nationwide (alerts browser only).
     AllAlerts(Vec<radar_core::warnings::Warning>),
     /// NWS gridpoint forecast for a requested point.
@@ -271,7 +273,20 @@ impl StormApp {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 DataMsg::Volume(v) => self.state.push_volume(v),
-                DataMsg::Alerts(a) => self.state.alerts = a,
+                DataMsg::Alerts(a) => {
+                    self.state.alerts_slow = a;
+                    self.state.alerts = crate::state::merge_alerts(
+                        &self.state.alerts_slow,
+                        &self.state.alerts_fast,
+                    );
+                }
+                DataMsg::AlertsFast(a) => {
+                    self.state.alerts_fast = a;
+                    self.state.alerts = crate::state::merge_alerts(
+                        &self.state.alerts_slow,
+                        &self.state.alerts_fast,
+                    );
+                }
                 DataMsg::AllAlerts(a) => self.state.all_alerts = a,
                 DataMsg::Observation(o) => {
                     // Freshness is stamped by the forecast message that shares

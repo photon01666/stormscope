@@ -27,6 +27,12 @@ const OUTLOOK_REFRESH: Duration = Duration::from_secs(600);
 /// uses one every 5 minutes).
 const ALERTS_REFRESH: Duration = Duration::from_secs(300);
 
+/// The fast lane: alerts that contain the selected station, fetched with the
+/// API's server-side point filter — a few hundred bytes per request, so a
+/// minute's cadence costs ~10 KB/hour while cutting warning latency from five
+/// minutes to one.
+const ALERTS_FAST_REFRESH: Duration = Duration::from_secs(60);
+
 /// An `Instant` that has *already* elapsed `d` ago. The monotonic clock can't
 /// go before boot, so fall back to `now()` (fires the tick immediately anyway).
 fn already_elapsed(d: Duration) -> std::time::Instant {
@@ -124,6 +130,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     // alerts + outlook immediately — startup never blocks on the network.
     let mut last_outlook = already_elapsed(OUTLOOK_REFRESH);
     let mut last_alerts = already_elapsed(ALERTS_REFRESH);
+    let mut last_alerts_fast = already_elapsed(ALERTS_FAST_REFRESH);
     // Cache sizes for the Settings menu: recomputed every couple of seconds
     // (a full directory walk is far too expensive to run per 250 ms tick).
     let mut last_cache_report = already_elapsed(CACHE_INFO_REFRESH);
@@ -364,6 +371,10 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
 
         // Timed refreshes (not user-driven): keep alerts + the SPC outlook
         // current without hammering anything.
+        if last_alerts_fast.elapsed() >= ALERTS_FAST_REFRESH {
+            last_alerts_fast = std::time::Instant::now();
+            refresh_alerts_at_station(&alerts, &current_site, &out);
+        }
         if last_alerts.elapsed() >= ALERTS_REFRESH {
             last_alerts = std::time::Instant::now();
             refresh_alerts(&alerts, &current_site, &out);
@@ -776,6 +787,23 @@ fn drain_live(
 /// Re-fetch active NWS alerts around the current site and emit them. Zones
 /// are looked up from the site catalog instead of a hardcoded point (the old
 /// default evaluated alerts around Norman, OK no matter where the user was).
+/// The minute-cadence check for alerts that apply to the station itself.
+/// Errors are logged at debug: a failed fast poll costs nothing and the slow
+/// sweep will still run.
+fn refresh_alerts_at_station(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg>) {
+    let Some(a) = alerts else { return };
+    let Some(site) = radar_core::sites::site(site) else {
+        return;
+    };
+    match a.active_at_point(site.latitude, site.longitude) {
+        Ok(w) => {
+            log::debug!("{} alerts apply to {}", w.len(), site.id);
+            let _ = out.send(DataMsg::AlertsFast(w));
+        }
+        Err(e) => log::debug!("station alert check failed: {e:#}"),
+    }
+}
+
 fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg>) {
     let Some(a) = alerts else { return };
     let (lat, lon) = radar_core::sites::site(site)

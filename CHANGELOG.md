@@ -3,7 +3,7 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
-## v1.1.0 — 2026-10-15
+## v1.1.5 — 2026-10-15
 
 **SPC outlooks**
 - Risk categories now carry their NWS wording: the sidebar legend lists each
@@ -17,6 +17,16 @@ log; entries start at the first public release.
   emphasis, the tooltip and the click share one 8 px reach — so the risk areas
   covering most of the map never pop text while the pointer is merely inside
   one.
+
+**Warning latency**
+- Watches and warnings now reach the screen within about a minute of
+  issuance. The five-minute sweep around the station (a 3.1 MB nationwide
+  listing, filtered locally) stays as the broad set, and a new *fast lane*
+  asks the API for alerts that apply to the station itself (`?point=`, a few
+  hundred bytes) every 60 seconds — roughly 10 KB/hour. New warnings appear
+  in the map polygons, the browser list and the badge flash as soon as that
+  poll sees them, and a zone-based warning (no polygon, so no centroid) can
+  now flash the badge too, which the proximity filter could never do.
 
 **Alerts browser**
 - New popup listing active NWS alerts, opened from the sidebar or by clicking

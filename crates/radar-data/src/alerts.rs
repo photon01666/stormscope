@@ -45,6 +45,27 @@ impl AlertSource {
         Ok(alerts_near_in(&self.fetch_active()?, lat, lon, radius_km))
     }
 
+    /// Active alerts that apply to an exact point — a few hundred *bytes* of
+    /// JSON rather than the megabyte-scale nationwide listing, because the
+    /// API filters server-side (`?point=`). This is the fast lane (see the
+    /// coordinator's poll): alerts whose polygon or zone contains the station
+    /// are exactly the ones worth flashing a badge about.
+    pub fn active_at_point(&self, lat: f64, lon: f64) -> Result<Vec<Warning>> {
+        let point = format!("{lat:.4},{lon:.4}");
+        let resp = self
+            .client
+            .get(ALERTS_URL)
+            .query(&[("status", "actual"), ("point", point.as_str())])
+            .header("Accept", "application/geo+json")
+            .send()?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("api.weather.gov alerts endpoint returned HTTP {status}");
+        }
+        let fc: serde_json::Value = resp.json()?;
+        Ok(alerts_all_in(&fc))
+    }
+
     /// Every active alert nationwide (several hundred on a busy day), newest
     /// sort order applied. Feeds the alerts browser; the map still draws only
     /// the near-station subset.
@@ -367,6 +388,33 @@ mod tests {
 
     /// Geometry-less alerts have no placeable centroid (the station tab and
     /// the map-focus action both rely on this being None, not a fake point).
+    /// The point query returns the same FeatureCollection shape, so the same
+    /// parser handles it; a zone-only alert (no geometry) is kept, because
+    /// "this alert applies here" is the API's answer, not something we infer
+    /// from a centroid.
+    #[test]
+    fn parses_point_alerts_including_zone_only_ones() {
+        let fc: serde_json::Value = serde_json::from_str(
+            r##"{"type":"FeatureCollection","features":[
+                {"type":"Feature","properties":{"id":"urn:oid:p1","event":"Tornado Warning",
+                  "severity":"Extreme","urgency":"Immediate","areaDesc":"Pottawatomie, KS",
+                  "expires":"2026-10-11T19:30:00-06:00"},
+                 "geometry":{"type":"Polygon","coordinates":[[
+                   [-96.6,39.1],[-96.1,39.1],[-96.1,39.4],[-96.6,39.4],[-96.6,39.1]]]}},
+                {"type":"Feature","properties":{"id":"urn:oid:p2","event":"Flood Watch",
+                  "severity":"Moderate","areaDesc":"Shawnee, KS",
+                  "expires":"2026-10-12T07:00:00-06:00"},
+                 "geometry":null}]}"##,
+        )
+        .unwrap();
+        let alerts = alerts_all_in(&fc);
+        assert_eq!(alerts.len(), 2);
+        assert!(alerts[0].is_tornado());
+        assert!(alerts[0].centroid().is_some());
+        assert!(alerts[1].centroid().is_none(), "zone alert has no polygon");
+        assert_eq!(alerts[1].area, "Shawnee, KS");
+    }
+
     #[test]
     fn zone_alerts_have_no_centroid() {
         let fc: serde_json::Value = serde_json::from_str(

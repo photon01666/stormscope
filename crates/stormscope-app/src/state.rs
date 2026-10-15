@@ -90,6 +90,21 @@ pub enum AlertsTab {
     Station,
 }
 
+/// Union of the sweep set and the point set, deduped by alert id (the sweep
+/// entry stays when both have it, so ordering by severity is preserved).
+pub fn merge_alerts(
+    slow: &[radar_core::warnings::Warning],
+    fast: &[radar_core::warnings::Warning],
+) -> Vec<radar_core::warnings::Warning> {
+    let mut out: Vec<radar_core::warnings::Warning> = slow.to_vec();
+    for w in fast {
+        if !out.iter().any(|s| s.id == w.id) {
+            out.push(w.clone());
+        }
+    }
+    out
+}
+
 /// Radius (km) within which an alert counts as "at" the selected station:
 /// the same radius the near-site fetch uses, i.e. the radar's practical
 /// warning area.
@@ -148,8 +163,16 @@ pub struct AppState {
     pub ring_budget_bytes: usize,
 
     // Alerts
-    /// Alerts near the selected site (what the map draws).
+    /// Every alert the app draws and lists: the 400 km sweep merged with the
+    /// fast-lane point set below (`rebuild_alerts`).
     pub alerts: Vec<radar_core::warnings::Warning>,
+    /// The slower 400 km sweep around the station (newest fetch).
+    pub alerts_slow: Vec<radar_core::warnings::Warning>,
+    /// Alerts the API says apply *exactly to the station*, polled every
+    /// minute (a few hundred bytes per fetch). New warnings show up here
+    /// first, so the badge flashes and the polygons appear within a minute of
+    /// issuance, while the wider sweep catches up on its own cadence.
+    pub alerts_fast: Vec<radar_core::warnings::Warning>,
     /// Every active alert nationwide, for the alerts browser.
     pub all_alerts: Vec<radar_core::warnings::Warning>,
     pub show_alerts: bool,
@@ -296,6 +319,8 @@ impl Default for AppState {
             ring_bytes: 0,
             ring_budget_bytes: RING_BUDGET_BYTES,
             alerts: Vec::new(),
+            alerts_slow: Vec::new(),
+            alerts_fast: Vec::new(),
             all_alerts: Vec::new(),
             show_alerts: true,
             alerts_popup_open: false,
@@ -573,6 +598,34 @@ mod tests {
         s.push_volume(vol("UNKNOWN", at(30)));
         assert_eq!(s.ring.len(), 2);
         assert_eq!(s.newest_start(), Some(at(30)));
+    }
+
+    /// The station sets are merged for display: the sweep set keeps its
+    /// order, and fast-lane alerts the sweep has not caught up with yet are
+    /// appended once (never duplicated when both have them).
+    #[test]
+    fn merged_alerts_dedupe_by_id() {
+        let alert = |id: &str, event: &str| radar_core::warnings::Warning {
+            id: id.into(),
+            event: event.into(),
+            severity: "Severe".into(),
+            urgency: "Expected".into(),
+            expires: Utc::now(),
+            office: "OUN".into(),
+            headline: String::new(),
+            description: String::new(),
+            instruction: String::new(),
+            area: String::new(),
+            polygon: None,
+        };
+        let slow = vec![alert("a", "Tornado Watch"), alert("b", "Flood Warning")];
+        let fast = vec![
+            alert("b", "Flood Warning"),   // also in the sweep: deduped
+            alert("c", "Tornado Warning"), // new, just issued
+        ];
+        let merged = merge_alerts(&slow, &fast);
+        let ids: Vec<&str> = merged.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
     }
 
     /// Scrubbing back in Archive mode must not be yanked forward when an older

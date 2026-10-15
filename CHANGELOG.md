@@ -87,6 +87,15 @@ log; entries start at the first public release.
 - Periods render as day/night sections (temperature, short forecast, wind)
   with the detailed NOAA narrative inside; the header shows the issuing
   office, grid and update time.
+- The forecast and current conditions refresh themselves every 15 minutes
+  while the window is open (four small requests per cycle: gridpoint lookup,
+  forecast, station list, latest observation) with a "Refresh now" button for
+  impatience. The NWS API is open data — its own documentation says "free to
+  use for any purpose" with "reasonable rate limits ... a generous amount for
+  typical use", and that requests directly from clients are not likely to
+  reach them — so this cadence is comfortably within the terms. Upstream,
+  observations report about hourly and gridpoint forecasts update several
+  times an hour, so 15 minutes keeps up without pointless traffic.
 - Current conditions for the same point, from the nearest reporting station
   (`/points` → station list → latest observation): text description,
   temperature, dewpoint, humidity, wind with compass direction and gusts,

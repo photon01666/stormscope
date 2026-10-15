@@ -56,7 +56,8 @@ To grab one: open stormscope, hover the left edge so the sidebar shows, then
   warnings is in force near the selected station.
 - NWS gridpoint forecast from the *Forecast* pill next to the alerts badge:
   the selected station's area by default, or any point you click on the map
-  ("Pick on map…"), with day/night periods and the full NOAA narrative.
+  ("Pick on map…"), with day/night periods, the full NOAA narrative, current
+  station conditions, and a 15-minute auto-refresh while the window is open.
 - Storm tracks: cell-motion arrows, dashed 30-minute nowcasts, mph labels.
 - Per-marker arrival ETAs ("storm reaches this pin in ~14 min") derived from
   smoothed cell motion; velocity estimates blend scan-to-scan so they

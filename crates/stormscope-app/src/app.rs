@@ -274,6 +274,11 @@ impl StormApp {
                 DataMsg::Alerts(a) => self.state.alerts = a,
                 DataMsg::AllAlerts(a) => self.state.all_alerts = a,
                 DataMsg::Observation(o) => {
+                    // Freshness is stamped by the forecast message that shares
+                    // the same request; keep the older stamp if one is set.
+                    self.state
+                        .forecast_fetched_at
+                        .get_or_insert_with(std::time::Instant::now);
                     log::debug!(
                         "observation {} ({}) at {:?}: {:.1}C {}",
                         o.station_id,
@@ -293,6 +298,10 @@ impl StormApp {
                         f.periods.len()
                     );
                     self.state.forecast = Some(f);
+                    self.state.forecast_fetched_at = Some(std::time::Instant::now());
+                    // The request is done: without this the dedupe stamp would
+                    // block the 15-minute refresh forever.
+                    self.state.forecast_requested = None;
                 }
                 DataMsg::OutlookDiscussion(day, text) => {
                     log::debug!("outlook day {day} discussion: {} bytes", text.len());

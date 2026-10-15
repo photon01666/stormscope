@@ -196,6 +196,9 @@ pub struct AppState {
     pub forecast_site: String,
     /// Coordinates already requested (dedupes sends while one is in flight).
     pub forecast_requested: Option<(f64, f64)>,
+    /// When the forecast/observation currently on screen was fetched, for the
+    /// auto-refresh cadence.
+    pub forecast_fetched_at: Option<std::time::Instant>,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
@@ -313,6 +316,7 @@ impl Default for AppState {
             forecast_point: None,
             forecast_site: String::new(),
             forecast_requested: None,
+            forecast_fetched_at: None,
             show_tracks: true,
             outlook: None,
             // On by default with the outline-only look (fill 0.0): the risk

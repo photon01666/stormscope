@@ -7,18 +7,37 @@
 
 use crate::app::StormApp;
 
+/// How long the forecast and current conditions stay fresh before the window
+/// refetches them. The NWS API is open data with unpublished "generous"
+/// limits and asks clients to be reasonable; four small requests every 15
+/// minutes while the window is open is far inside that. Upstream, gridpoint
+/// forecasts update several times an hour and ASOS observations report about
+/// hourly, so this cadence keeps up without hammering.
+pub(super) const FORECAST_REFRESH_SECS: f64 = 15.0 * 60.0;
+
+/// Should the data on screen be refetched? Either the target moved (station
+/// switch or a new picked point) or what is loaded has aged past the cadence.
+pub(super) fn forecast_needs_refresh(
+    loaded_age_secs: Option<f64>,
+    target_matches: bool,
+    has_data: bool,
+) -> bool {
+    if !has_data || !target_matches {
+        return true;
+    }
+    loaded_age_secs.is_none_or(|age| age >= FORECAST_REFRESH_SECS)
+}
+
 /// The window (no-op while closed).
 pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
     if !app.state.forecast_open {
         return;
     }
-    // Following the station and the station changed (or nothing loaded yet):
-    // refetch. A picked point is left alone.
-    if app.state.forecast_point.is_none()
-        && (app.state.forecast_site != app.state.site_id || app.state.forecast.is_none())
-    {
-        request_forecast_if_stale(app);
-    }
+    // Refetch when the station changed, when the point was repicked, or when
+    // what is on screen has aged past the cadence — and keep a slow repaint
+    // coming so that timer can fire while nothing else animates.
+    ctx.request_repaint_after(std::time::Duration::from_secs(30));
+    request_forecast_if_stale(app);
 
     let scale = app.sidebar_scale.max(1.0);
     let size = super::popup_size(ctx, scale, 580.0, 520.0);
@@ -69,9 +88,15 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
                             .weak()
                             .small(),
                     );
-                    if ui.small_button("Refresh").clicked() {
-                        refetch = true;
-                    }
+                }
+                if ui
+                    .small_button("Refresh now")
+                    .on_hover_text("Fetch the latest forecast and observation")
+                    .clicked()
+                {
+                    app.state.forecast_requested = None;
+                    app.state.forecast_fetched_at = None;
+                    refetch = true;
                 }
             });
             if app.state.forecast_pick_mode {
@@ -207,12 +232,17 @@ pub(super) fn request_forecast_if_stale(app: &mut StormApp) {
     if already {
         return;
     }
-    // In station mode a loaded forecast for this station counts as fresh.
-    // (A picked point is only refreshed when the user asks, so it is exempt.)
-    if picked.is_none()
-        && app.state.forecast.is_some()
-        && app.state.forecast_site == app.state.site_id
-    {
+    // A loaded forecast for this target counts as fresh — unless it has aged
+    // past the refresh cadence.
+    let age = app
+        .state
+        .forecast_fetched_at
+        .map(|t| t.elapsed().as_secs_f64());
+    if !forecast_needs_refresh(
+        age,
+        picked.is_some() || app.state.forecast_site == app.state.site_id,
+        app.state.forecast.is_some(),
+    ) {
         return;
     }
     // Target changed: drop what is on screen rather than showing the old
@@ -302,11 +332,39 @@ fn current_conditions_ui(ui: &mut egui::Ui, o: &radar_core::forecast::Observatio
         };
         ui.label(
             egui::RichText::new(format!(
-                "observed {} ({age_text}) · source api.weather.gov",
+                "observed {} ({age_text}) · source api.weather.gov · auto-refreshes every 15 min",
                 crate::timefmt::fmt_central(&ts)
             ))
             .weak()
             .small(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cadence rule: refetch when the target moved, when nothing is
+    /// loaded, or when the data aged past 15 minutes — not otherwise (the
+    /// window asks on every frame).
+    #[test]
+    fn refresh_cadence_follows_the_target_and_the_clock() {
+        assert!(forecast_needs_refresh(None, true, false), "nothing loaded");
+        assert!(
+            forecast_needs_refresh(Some(1.0), false, true),
+            "target moved"
+        );
+        assert!(!forecast_needs_refresh(Some(60.0), true, true), "fresh");
+        assert!(!forecast_needs_refresh(Some(14.0 * 60.0), true, true));
+        assert!(
+            forecast_needs_refresh(Some(FORECAST_REFRESH_SECS), true, true),
+            "cadence elapsed"
+        );
+        assert!(forecast_needs_refresh(Some(40.0 * 60.0), true, true));
+        assert!(
+            forecast_needs_refresh(None, true, true),
+            "no stamp counts as stale"
         );
     }
 }

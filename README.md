@@ -42,7 +42,9 @@ To grab one: open stormscope, hover the left edge so the sidebar shows, then
 - NWS warnings (tornado / severe thunderstorm / flash flood) drawn as colored
   polygons, plus an alerts browser: every active alert nationwide on one tab,
   just the selected station's area on the other, with a search filter.
-  Hovering a list row glows the matching polygon (and labels it on the map);
+  Hovering a list row — or the polygon on the map itself — glows and labels
+  that warning, and a second's rest on a polygon pops a brief description
+  under the pointer;
   clicking jumps to it — loading the station that covers it when the alert is
   outside the selected one's range; click a polygon (or the row's Details
   button) for the full NOAA description and safety instruction.

@@ -293,8 +293,16 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                 .show(ui, |ui| {
                     for w in rows.iter().take(MAX_ROWS) {
                         let dist = distance_km(w, site_lat, site_lon);
-                        let (is_hovered, is_clicked, wants_details) =
-                            alert_row(ui, w, warning_color(w), dist, site_id, scale);
+                        let (is_hovered, is_clicked, wants_details) = alert_row(
+                            ui,
+                            w,
+                            warning_color(w),
+                            dist,
+                            site_id,
+                            site_lat,
+                            site_lon,
+                            scale,
+                        );
                         if is_hovered {
                             hover = Some(w.id.clone());
                         }
@@ -452,6 +460,52 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
     }
 }
 
+/// The first sentence of a text blob, truncated for a tooltip.
+pub(super) fn first_sentence(text: &str, max_chars: usize) -> String {
+    let t = text.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let end = t.find(['.', '!', '?', '\n']).map_or(t.len(), |i| i + 1);
+    let sentence = t[..end].trim();
+    if sentence.chars().count() > max_chars {
+        let cut: String = sentence.chars().take(max_chars).collect();
+        format!("{cut}…")
+    } else {
+        sentence.to_string()
+    }
+}
+
+/// Tooltip contents: what this alert *is*, in a glance — event, who issued
+/// it, how long it runs, where, and the opening line of the NOAA text.
+pub(super) fn brief_alert_ui(ui: &mut egui::Ui, w: &Warning, site_lat: f64, site_lon: f64) {
+    ui.horizontal(|ui| {
+        ui.colored_label(warning_color(w), "●");
+        ui.strong(&w.event);
+    });
+    let mut meta = Vec::new();
+    if !w.office.is_empty() {
+        meta.push(format!("NWS {}", w.office));
+    }
+    if !w.severity.is_empty() {
+        meta.push(w.severity.clone());
+    }
+    meta.push(format!("until {}", crate::timefmt::fmt_central(&w.expires)));
+    if let Some(d) = distance_km(w, site_lat, site_lon) {
+        meta.push(format!("{d:.0} km away"));
+    }
+    ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+    if !w.area.is_empty() {
+        ui.label(egui::RichText::new(&w.area).weak().small());
+    }
+    let gist = first_sentence(&w.description, 150);
+    if !gist.is_empty() {
+        ui.label(egui::RichText::new(gist).small());
+    } else if !w.headline.is_empty() {
+        ui.label(egui::RichText::new(&w.headline).small());
+    }
+}
+
 /// The clickable parts of an alert row: everything except the rectangle of
 /// the Details button (left strip and area underneath it).
 pub(super) fn row_regions(row: egui::Rect, button: egui::Rect) -> (egui::Rect, egui::Rect) {
@@ -469,6 +523,8 @@ fn alert_row(
     color: egui::Color32,
     distance_km: Option<f64>,
     site_id: &str,
+    site_latitude: f64,
+    site_longitude: f64,
     scale: f32,
 ) -> (bool, bool, bool) {
     let mut details = false;
@@ -572,7 +628,14 @@ fn alert_row(
         hovered |= r.hovered();
         raw_clicked |= r.clicked();
         if has_polygon {
-            let _ = r.on_hover_text("Click to center the map on this alert");
+            r.on_hover_ui(|ui| {
+                brief_alert_ui(ui, w, site_latitude, site_longitude);
+                ui.label(
+                    egui::RichText::new("click to center the map on this alert")
+                        .weak()
+                        .small(),
+                );
+            });
         }
     }
     // A click on the Details button must not also count as a row click.
@@ -680,6 +743,30 @@ mod tests {
         // Zone alerts cannot be located at all.
         let zone = warn("zone", "Heat Advisory", 39.1, -94.58, false);
         assert!(station_for_alert(&zone, "KTWX", STATION_ALERT_RADIUS_KM).is_none());
+    }
+
+    /// The brief tooltip text is the opening sentence, trimmed to fit.
+    #[test]
+    fn brief_description_uses_the_opening_sentence() {
+        assert_eq!(
+            first_sentence(
+                "At 7:00 PM, a tornado was located near Newcastle. Moving NE.",
+                150
+            ),
+            "At 7:00 PM, a tornado was located near Newcastle."
+        );
+        // No terminator: the whole (trimmed) text.
+        assert_eq!(first_sentence("  Short notice  ", 150), "Short notice");
+        // Long sentences are cut on a char boundary with an ellipsis.
+        let long = "A".repeat(400);
+        let cut = first_sentence(&long, 150);
+        assert_eq!(cut.chars().count(), 151); // 150 + the ellipsis
+        assert!(cut.ends_with('…'));
+        // Empty text stays empty (the caller falls back to the headline).
+        assert!(first_sentence("   ", 150).is_empty());
+        // Multi-byte safety: cutting "°C" style text must not panic.
+        let utf8 = format!("{}°°°", "x".repeat(148));
+        assert!(first_sentence(&utf8, 150).chars().count() <= 151);
     }
 
     /// The row's clickable regions must cover the row except the Details

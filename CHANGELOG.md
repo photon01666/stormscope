@@ -16,9 +16,14 @@ log; entries start at the first public release.
   time, distance from the site, and the affected-area text. Zone-only alerts
   are labeled because they have no polygon to center on.
 - Clicking a row centers the map on that alert (zoom unchanged) and flashes
-  the polygon briefly, then leaves it highlighted; hovering a row glows its
-  polygon live and labels it with the event name on the map, so a list entry
-  can always be matched to the shape on screen.
+  the polygon briefly, then leaves it highlighted. Hovering a row glows its
+  polygon live and labels it with the event name on the map; pointing at a
+  polygon on the map itself gives the same glow + label (slightly gentler)
+  with a pointer cursor, so a warning can be identified either way round.
+  Resting on a polygon for a second pops a brief tooltip under the pointer —
+  event, issuing office, expiry, distance, affected area and the opening
+  sentence of the NOAA text — and the list rows show that same brief card on
+  hover.
 - Full NOAA/CAP text: every alert carries `description` (and `instruction`
   where NOAA provides it — safety guidance such as "TAKE COVER NOW"). The
   browser's **Details** button, and clicking a warning polygon on the map,

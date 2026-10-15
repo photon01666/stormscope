@@ -152,6 +152,12 @@ pub struct AppState {
     /// Alert id under the pointer in the alerts browser: the map glows that
     /// polygon so a list row can be matched to the warning on screen.
     pub alerts_hover: Option<String>,
+    /// Alert id under the pointer *on the map*: same glow, so pointing at a
+    /// warning shows what it is without opening anything.
+    pub alerts_map_hover: Option<String>,
+    /// egui time when the current map hover began, for the tooltip's
+    /// dwell delay (a passing pointer should not pop text).
+    pub alerts_map_hover_at: f64,
     /// Alert id the browser last jumped to, and when (egui time, seconds):
     /// the map flashes it, then settles into a steady highlight.
     pub alerts_focus: Option<String>,
@@ -255,6 +261,8 @@ impl Default for AppState {
             alerts_tab: AlertsTab::Station,
             alerts_filter: String::new(),
             alerts_hover: None,
+            alerts_map_hover: None,
+            alerts_map_hover_at: 0.0,
             alerts_focus: None,
             alerts_focus_at: 0.0,
             alert_detail: None,

@@ -160,6 +160,29 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         }
     }
 
+    // --- Warning polygon under the pointer --------------------------------
+    // Hovering a warning on the map gives the same glow + label as hovering
+    // its row in the alerts browser, so a polygon can be identified by
+    // pointing at it. Only when the map itself is hovered (panel overlays are
+    // higher layers, so this goes quiet while the pointer is on them).
+    let map_hover = if app.state.show_alerts {
+        response.hover_pos().and_then(|p| {
+            let (cx, cy) = viewport_pos(rect, p);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            super::alerts::warning_at(&app.state.alerts, lon, lat).map(|w| w.id.clone())
+        })
+    } else {
+        None
+    };
+    if map_hover != app.state.alerts_map_hover {
+        // New warning (or none): restart the tooltip dwell clock.
+        app.state.alerts_map_hover = map_hover;
+        app.state.alerts_map_hover_at = ui.input(|i| i.time);
+    }
+    if app.state.alerts_map_hover.is_some() && !response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
     // --- Layer 1: basemap tiles ------------------------------------------
     // `TileLayer::paint` uses `ui.cursor().min` as the viewport origin, so
     // give it a child Ui pinned to the map rect. The rect it returns is the
@@ -409,6 +432,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // --- Top-center badge row: scan mode, scan age, alerts ---------------
     draw_top_badges(ui, &painter, tile_resp.rect, app);
+
+    // Brief "what is this" tooltip after resting on a warning for a second.
+    warning_hover_tooltip(ui, &response, app);
 
     // --- Min dBZ quick-adjust bar at bottom-center --------------------------
     draw_min_dbz_bar(ui.ctx(), tile_resp.rect, app);
@@ -847,17 +873,22 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
         let color = super::alerts::warning_color(w);
 
         // Glow strength: 1.0 while the row is hovered in the alerts browser,
-        // and a flash that settles into a steady highlight for the alert the
-        // browser last jumped to (so the clicked one stays identifiable).
-        let hovered = app.state.alerts_hover.as_deref() == Some(w.id.as_str());
+        // 0.8 while the polygon itself is hovered on the map (a touch
+        // gentler — pointing at the map should hint, not shout), and a flash
+        // that settles into a steady highlight for the alert the browser last
+        // jumped to (so the clicked one stays identifiable).
+        let hovered_list = app.state.alerts_hover.as_deref() == Some(w.id.as_str());
+        let hovered_map = app.state.alerts_map_hover.as_deref() == Some(w.id.as_str());
         let focus_fade = if app.state.alerts_focus.as_deref() == Some(w.id.as_str()) {
             let age = (now - app.state.alerts_focus_at).max(0.0);
             Some((1.0 - age / 3.0).clamp(0.0, 1.0))
         } else {
             None
         };
-        let glow: f32 = if hovered {
+        let glow: f32 = if hovered_list {
             1.0
+        } else if hovered_map {
+            0.8
         } else {
             focus_fade.map_or(0.0, |f| 0.35 + 0.65 * f) as f32
         };
@@ -1433,6 +1464,38 @@ fn draw_min_dbz_bar(ctx: &egui::Context, map_rect: egui::Rect, app: &mut StormAp
             app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);
         }
     }
+}
+
+/// Tooltip for the warning polygon under the pointer, shown once the pointer
+/// has rested on it for a second (a passing pointer should not pop text).
+///
+/// Contents are the brief form: event, issuer, expiry, distance, affected
+/// area and the opening line of the NOAA text — enough to say what it is
+/// without opening the detail popup.
+fn warning_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormApp) {
+    let Some(id) = app.state.alerts_map_hover.as_deref() else {
+        return;
+    };
+    let dwell = ui.input(|i| i.time) - app.state.alerts_map_hover_at;
+    if dwell < 1.0 {
+        return;
+    }
+    let Some(w) = app.state.alerts.iter().find(|w| w.id == id) else {
+        return;
+    };
+    let (site_lat, site_lon) = radar_core::sites::site(&app.state.site_id)
+        .map(|s| (s.latitude, s.longitude))
+        .unwrap_or((35.3331, -97.2778));
+    egui::containers::Tooltip::for_widget(response)
+        .at_pointer()
+        .show(|ui| {
+            super::alerts::brief_alert_ui(ui, w, site_lat, site_lon);
+            ui.label(
+                egui::RichText::new("click for the full NOAA text")
+                    .weak()
+                    .small(),
+            );
+        });
 }
 
 /// RadarScope-style measurement: A–B line, endpoint pins, and the draggable

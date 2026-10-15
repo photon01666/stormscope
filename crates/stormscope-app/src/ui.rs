@@ -548,6 +548,35 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                         .weak()
                         .small(),
                 );
+                if let Some(expire) = o.expire {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "valid until {}",
+                            crate::timefmt::fmt_central(&expire)
+                        ))
+                        .weak()
+                        .small(),
+                    );
+                }
+                // Legend: one row per risk category present, most severe
+                // first, with the NWS wording for what that level means.
+                ui.add_space(2.0);
+                let mut features: Vec<&radar_core::outlooks::OutlookFeature> =
+                    o.features.iter().collect();
+                features.sort_by_key(|f| std::cmp::Reverse(f.risk_level().unwrap_or(0)));
+                for f in features {
+                    ui.horizontal(|ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                        ui.painter().rect_filled(
+                            rect,
+                            2.0,
+                            egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
+                        );
+                        ui.label(egui::RichText::new(f.headline()).strong());
+                    });
+                    ui.label(egui::RichText::new(f.description()).weak().small());
+                }
             }
             _ => {
                 ui.label(

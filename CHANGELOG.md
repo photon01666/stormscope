@@ -5,6 +5,15 @@ log; entries start at the first public release.
 
 ## v1.1.0 — 2026-10-15
 
+**SPC outlooks**
+- Risk categories now carry their NWS wording: the sidebar legend lists each
+  category present (most severe first, in SPC's own colors) with what it
+  means — "Enhanced Risk (3/5) — Numerous severe storms possible." — plus the
+  valid-until window. Resting on an outlook polygon for a second pops the
+  same explanation under the pointer and draws that category's outline
+  bolder, so it is obvious which band the pointer is in (warnings win the
+  hover when both overlap).
+
 **Alerts browser**
 - New popup listing active NWS alerts, opened from the sidebar or by clicking
   the alert count in the status bar.

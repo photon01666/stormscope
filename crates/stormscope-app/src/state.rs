@@ -164,6 +164,11 @@ pub struct AppState {
     /// Alert id under the pointer *on the map*: same glow, so pointing at a
     /// warning shows what it is without opening anything.
     pub alerts_map_hover: Option<String>,
+    /// SPC risk category (`DN`) under the map pointer, for the outline
+    /// emphasis and the "what does this level mean" tooltip.
+    pub outlook_hover: Option<u16>,
+    /// egui time the current outlook hover began (tooltip dwell).
+    pub outlook_hover_at: f64,
     /// egui time when the current map hover began, for the tooltip's
     /// dwell delay (a passing pointer should not pop text).
     pub alerts_map_hover_at: f64,
@@ -288,6 +293,8 @@ impl Default for AppState {
             alerts_filter: String::new(),
             alerts_hover: None,
             alerts_map_hover: None,
+            outlook_hover: None,
+            outlook_hover_at: 0.0,
             alerts_map_hover_at: 0.0,
             alerts_focus: None,
             alerts_focus_at: 0.0,

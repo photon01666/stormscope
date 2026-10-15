@@ -196,6 +196,26 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
+    // SPC risk area under the pointer — only when no warning is (a warning is
+    // the more specific reading of the same spot).
+    let outlook_hover = if app.state.alerts_map_hover.is_none() && app.state.show_outlook {
+        response.hover_pos().and_then(|p| {
+            let (cx, cy) = viewport_pos(rect, p);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            app.state
+                .outlook
+                .as_ref()
+                .and_then(|o| outlook_at(o, lon, lat))
+                .map(|f| f.dn)
+        })
+    } else {
+        None
+    };
+    if outlook_hover != app.state.outlook_hover {
+        app.state.outlook_hover = outlook_hover;
+        app.state.outlook_hover_at = ui.input(|i| i.time);
+    }
+
     // --- Layer 1: basemap tiles ------------------------------------------
     // `TileLayer::paint` uses `ui.cursor().min` as the viewport origin, so
     // give it a child Ui pinned to the map rect. The rect it returns is the
@@ -446,8 +466,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Top-center badge row: scan mode, scan age, alerts ---------------
     draw_top_badges(ui, &painter, tile_resp.rect, app);
 
-    // Brief "what is this" tooltip after resting on a warning for a second.
+    // Brief "what is this" tooltips after resting for a second: warnings
+    // first, then the SPC risk area underneath.
     warning_hover_tooltip(ui, &response, app);
+    outlook_hover_tooltip(ui, &response, app);
 
     // --- Min dBZ quick-adjust bar at bottom-center --------------------------
     draw_min_dbz_bar(ui.ctx(), tile_resp.rect, app);
@@ -802,11 +824,15 @@ fn draw_outlooks(
                     painter.add(egui::Shape::mesh(mesh));
                 }
             } else {
+                // The hovered category draws bolder so pointing at the map
+                // tells you which band you are in.
+                let hovered = app.state.outlook_hover == Some(f.dn);
+                let width = if hovered { 3.5 } else { 1.6 };
                 for pts in &rings {
                     if pts.len() >= 3 {
                         painter.add(egui::Shape::closed_line(
                             pts.clone(),
-                            egui::Stroke::new(1.6, stroke),
+                            egui::Stroke::new(width, stroke),
                         ));
                     }
                 }
@@ -1572,6 +1598,64 @@ fn warning_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormAp
         });
 }
 
+/// The most severe SPC risk feature containing a point (features are nested,
+/// so the highest category wins).
+pub(super) fn outlook_at<'a>(
+    o: &'a radar_core::outlooks::Outlook,
+    lon: f64,
+    lat: f64,
+) -> Option<&'a radar_core::outlooks::OutlookFeature> {
+    o.features
+        .iter()
+        .filter(|f| f.risk_level().is_some() || f.dn == 2)
+        .filter(|f| {
+            f.polygons.iter().any(|poly| {
+                poly.first()
+                    .is_some_and(|ring| super::alerts::ring_contains(ring, lon, lat))
+            })
+        })
+        .max_by_key(|f| f.risk_level().unwrap_or(0))
+}
+
+/// Tooltip for the SPC risk area under the pointer: what the category means,
+/// in the NWS's wording, after the same one-second dwell the warnings use.
+fn outlook_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormApp) {
+    let Some(dn) = app.state.outlook_hover else {
+        return;
+    };
+    if ui.input(|i| i.time) - app.state.outlook_hover_at < 1.0 {
+        return;
+    }
+    let Some(o) = app.state.outlook.as_ref() else {
+        return;
+    };
+    let Some(f) = o.features.iter().find(|f| f.dn == dn) else {
+        return;
+    };
+    let color = egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]);
+    egui::containers::Tooltip::for_widget(response)
+        .at_pointer()
+        .show(|ui| {
+            super::apply_text_scale(ui, app.sidebar_scale.max(1.0));
+            ui.horizontal(|ui| {
+                ui.colored_label(color, "●");
+                ui.strong(f.headline());
+            });
+            ui.label(egui::RichText::new(f.description()).small());
+            let mut meta = vec![format!("SPC Day {} categorical outlook", o.day)];
+            if !o.forecaster.is_empty() {
+                meta.push(o.forecaster.clone());
+            }
+            if let Some(expire) = o.expire {
+                meta.push(format!(
+                    "valid until {}",
+                    crate::timefmt::fmt_central(&expire)
+                ));
+            }
+            ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+        });
+}
+
 /// RadarScope-style measurement: A–B line, endpoint pins, and the draggable
 /// blue bubble with the miles readout (tap to expand km + bearing).
 /// Topmost tool layer so pins stay grabbable over markers.
@@ -1838,6 +1922,55 @@ mod tests {
             width_px: 1200.0,
             height_px: 800.0,
         }
+    }
+
+    /// Nested SPC risk areas: a point inside the ENH polygon is also inside
+    /// SLGT/TSTM, and the most severe category must win.
+    #[test]
+    fn outlook_hit_test_picks_the_severest_nested_category() {
+        use radar_core::outlooks::{Outlook, OutlookFeature};
+        // Concentric rectangles: `scale` shrinks both axes around the centre
+        // (-97, 35) so the categories nest like real SPC outlooks.
+        let ring = |scale: f64| {
+            let shrink = |v: f64, c: f64| c + (v - c) * scale;
+            vec![vec![vec![
+                (shrink(-98.0, -97.0), shrink(34.0, 35.0)),
+                (shrink(-96.0, -97.0), shrink(34.0, 35.0)),
+                (shrink(-96.0, -97.0), shrink(36.0, 35.0)),
+                (shrink(-98.0, -97.0), shrink(36.0, 35.0)),
+            ]]]
+        };
+        let feature = |label: &str, dn: u16, scale: f64| OutlookFeature {
+            dn,
+            label: label.into(),
+            name: format!("{label} Risk"),
+            stroke: [255, 255, 255],
+            fill: [0, 0, 0],
+            polygons: ring(scale),
+        };
+        let o = Outlook {
+            day: 1,
+            issue: None,
+            valid: None,
+            expire: None,
+            forecaster: "SPC".into(),
+            features: vec![
+                feature("TSTM", 2, 1.0), // widest
+                feature("SLGT", 4, 0.7), // nested
+                feature("ENH", 5, 0.4),  // innermost
+            ],
+        };
+        // Inside all three (the ENH band spans -97.4..-96.6 x 34.6..35.4).
+        let hit = outlook_at(&o, -97.3, 35.1).expect("inside");
+        assert_eq!(hit.label, "ENH");
+        // Between the ENH edge and the SLGT edge -> SLGT.
+        let hit = outlook_at(&o, -97.55, 35.1).expect("inside SLGT");
+        assert_eq!(hit.label, "SLGT");
+        // Inside TSTM only (outside SLGT's 34.3..35.7 / -97.7..-96.3 box).
+        let hit = outlook_at(&o, -97.9, 34.2).expect("inside TSTM");
+        assert_eq!(hit.label, "TSTM");
+        // Outside every area.
+        assert!(outlook_at(&o, -90.0, 40.0).is_none());
     }
 
     /// The geo point under the anchor must stay under the anchor after

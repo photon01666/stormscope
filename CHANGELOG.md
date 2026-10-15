@@ -3,6 +3,20 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.1.0 — 2026-10-15
+
+**Alerts browser**
+- New popup listing active NWS alerts, opened from the sidebar or by clicking
+  the alert count in the status bar.
+- Two tabs: every active alert nationwide, or only those whose polygon lies
+  within 400 km of the selected radar site (the same radius the map's alert
+  fetch uses).
+- Search box matching event, affected area, issuing office and headline;
+  rows show severity color (matching the map polygons), WFO, expiry in local
+  time, distance from the site, and the affected-area text. Zone-only alerts
+  are labeled because they have no polygon to center on.
+- Clicking a row centers the map on that alert (zoom unchanged).
+
 ## v1.0.10 — 2026-10-15
 
 First release.

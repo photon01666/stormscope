@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 /// Messages from background data threads -> UI.
 pub enum DataMsg {
     Volume(Arc<radar_core::Volume>),
+    /// Alerts near the selected site (drawn on the map).
     Alerts(Vec<radar_core::warnings::Warning>),
+    /// Every active alert nationwide (alerts browser only).
+    AllAlerts(Vec<radar_core::warnings::Warning>),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
     Status(String),
@@ -255,6 +258,7 @@ impl StormApp {
             match msg {
                 DataMsg::Volume(v) => self.state.push_volume(v),
                 DataMsg::Alerts(a) => self.state.alerts = a,
+                DataMsg::AllAlerts(a) => self.state.all_alerts = a,
                 DataMsg::Outlook(o) => {
                     let label = o
                         .issue

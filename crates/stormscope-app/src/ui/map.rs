@@ -829,15 +829,7 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
     }
     for w in &app.state.alerts {
         let Some(rings) = &w.polygon else { continue };
-        let color = if w.is_tornado() {
-            egui::Color32::from_rgb(255, 60, 120)
-        } else if w.is_severe_thunderstorm() {
-            egui::Color32::from_rgb(255, 220, 60)
-        } else if w.is_flash_flood() {
-            egui::Color32::from_rgb(80, 255, 120)
-        } else {
-            egui::Color32::from_white_alpha(140)
-        };
+        let color = super::alerts::warning_color(w);
         for ring in rings {
             if ring.len() < 3 {
                 continue;

@@ -762,7 +762,7 @@ fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg
     let (lat, lon) = radar_core::sites::site(site)
         .map(|s| (s.latitude, s.longitude))
         .unwrap_or((35.3331, -97.2778));
-    match a.active_near(lat, lon, 400.0) {
+    match a.active_near(lat, lon, crate::state::STATION_ALERT_RADIUS_KM) {
         Ok(w) => {
             let n = w.len();
             let _ = out.send(DataMsg::Alerts(w));
@@ -772,6 +772,15 @@ fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg
             log::warn!("alerts fetch failed: {e:#}");
             let _ = out.send(DataMsg::Error(format!("alerts: {e:#}")));
         }
+    }
+    // The alerts browser also wants the nationwide picture. Same request
+    // cadence, one extra listing per 5 minutes.
+    match a.active_all() {
+        Ok(w) => {
+            log::debug!("{} active alerts nationwide", w.len());
+            let _ = out.send(DataMsg::AllAlerts(w));
+        }
+        Err(e) => log::warn!("nationwide alerts fetch failed: {e:#}"),
     }
 }
 

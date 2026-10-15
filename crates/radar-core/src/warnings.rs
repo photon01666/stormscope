@@ -21,6 +21,8 @@ pub struct Warning {
     pub office: String,
     /// Short headline text for tooltips/list.
     pub headline: String,
+    /// Affected counties/areas as reported, e.g. "Cleveland, OK; McClain, OK".
+    pub area: String,
     /// Polygon rings as (lon, lat) pairs; None for zone-based alerts.
     /// First ring is the exterior; typically only one ring from LSR/FFW
     /// polygons.
@@ -28,6 +30,20 @@ pub struct Warning {
 }
 
 impl Warning {
+    /// Mean position of the exterior ring, if the alert has a polygon.
+    /// Used for map focus and distance-to-radar filtering.
+    pub fn centroid(&self) -> Option<(f64, f64)> {
+        let ring = self.polygon.as_ref()?.first()?;
+        if ring.is_empty() {
+            return None;
+        }
+        let n = ring.len() as f64;
+        let (sum_lon, sum_lat) = ring.iter().fold((0.0f64, 0.0f64), |(sl, sa), (lon, lat)| {
+            (sl + lon, sa + lat)
+        });
+        Some((sum_lat / n, sum_lon / n))
+    }
+
     /// Convenience: is this a high-priority warning (tornado/severe T-storm
     /// with tornado tag/flash flood)? Used for UI coloring priority.
     pub fn is_tornado(&self) -> bool {

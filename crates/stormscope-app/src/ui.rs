@@ -4,6 +4,7 @@ use crate::app::StormApp;
 use crate::state::Mode;
 use radar_core::Moment;
 
+mod alerts;
 mod map;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the
@@ -42,6 +43,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // Floating auto-hide sidebar, drawn over the map.
     sidebar_overlay(ui.ctx(), app, middle);
+
+    // Alerts browser (its own floating window).
+    alerts::alerts_popup(ui.ctx(), app);
 
     // "Really clear …?" confirmation, drawn over everything. Rendered after
     // the panels so it isn't clipped by them; the Settings menu closes
@@ -260,7 +264,13 @@ fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
             ui.label(format!("+{}m", lat.num_minutes()));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(format!("{} alerts", app.state.alerts.len()));
+            if ui
+                .small_button(format!("⚠ {} alerts", app.state.alerts.len()))
+                .on_hover_text("Open the alerts browser")
+                .clicked()
+            {
+                app.state.alerts_popup_open = true;
+            }
             ui.label(app.state.status_text.clone());
         });
     });
@@ -490,6 +500,13 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.add_space(6.0);
     ui.checkbox(&mut app.state.show_alerts, "Show warnings");
     ui.checkbox(&mut app.state.show_tracks, "Show storm tracks");
+    if ui
+        .button(format!("⚠ Alerts ({})", app.state.alerts.len()))
+        .on_hover_text("Browse active alerts: all US, or just this station")
+        .clicked()
+    {
+        app.state.alerts_popup_open = !app.state.alerts_popup_open;
+    }
 
     // --- SPC convective outlook overlay ------------------------------------
     ui.add_space(6.0);

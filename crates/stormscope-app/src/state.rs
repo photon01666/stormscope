@@ -72,6 +72,20 @@ pub enum LoopState {
     Paused,
 }
 
+/// Which set the alerts browser is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertsTab {
+    /// Every active alert nationwide.
+    All,
+    /// Only alerts whose polygon lies near the selected radar site.
+    Station,
+}
+
+/// Radius (km) within which an alert counts as "at" the selected station:
+/// the same radius the near-site fetch uses, i.e. the radar's practical
+/// warning area.
+pub const STATION_ALERT_RADIUS_KM: f64 = 400.0;
+
 /// One end of the measure-tool line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeasureEnd {
@@ -125,8 +139,16 @@ pub struct AppState {
     pub ring_budget_bytes: usize,
 
     // Alerts
+    /// Alerts near the selected site (what the map draws).
     pub alerts: Vec<radar_core::warnings::Warning>,
+    /// Every active alert nationwide, for the alerts browser.
+    pub all_alerts: Vec<radar_core::warnings::Warning>,
     pub show_alerts: bool,
+    /// Alerts browser visibility and which tab is showing.
+    pub alerts_popup_open: bool,
+    pub alerts_tab: AlertsTab,
+    /// Search box contents for the alerts browser.
+    pub alerts_filter: String,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
@@ -217,7 +239,11 @@ impl Default for AppState {
             ring_bytes: 0,
             ring_budget_bytes: RING_BUDGET_BYTES,
             alerts: Vec::new(),
+            all_alerts: Vec::new(),
             show_alerts: true,
+            alerts_popup_open: false,
+            alerts_tab: AlertsTab::Station,
+            alerts_filter: String::new(),
             show_tracks: true,
             outlook: None,
             // On by default with the outline-only look (fill 0.0): the risk

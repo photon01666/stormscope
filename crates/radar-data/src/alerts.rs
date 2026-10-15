@@ -42,6 +42,18 @@ impl AlertSource {
     /// Active alerts whose polygon centroid is within `radius_km` of
     /// (lat, lon). Zone-only alerts (no polygon geometry) are skipped here.
     pub fn active_near(&self, lat: f64, lon: f64, radius_km: f64) -> Result<Vec<Warning>> {
+        Ok(alerts_near_in(&self.fetch_active()?, lat, lon, radius_km))
+    }
+
+    /// Every active alert nationwide (several hundred on a busy day), newest
+    /// sort order applied. Feeds the alerts browser; the map still draws only
+    /// the near-station subset.
+    pub fn active_all(&self) -> Result<Vec<Warning>> {
+        Ok(alerts_all_in(&self.fetch_active()?))
+    }
+
+    /// GET the nationwide active-alerts FeatureCollection.
+    fn fetch_active(&self) -> Result<serde_json::Value> {
         let resp = self
             .client
             .get(ALERTS_URL)
@@ -52,39 +64,50 @@ impl AlertSource {
         if !status.is_success() {
             bail!("api.weather.gov alerts endpoint returned HTTP {status}");
         }
-        let fc: serde_json::Value = resp.json()?;
-        Ok(alerts_near_in(&fc, lat, lon, radius_km))
+        Ok(resp.json()?)
     }
 }
 
-/// Parse a `FeatureCollection` of NWS alerts and keep those whose polygon
-/// centroid lies within `radius_km` of (lat, lon). Separated from the network
-/// call so unit tests can run on a canned fixture.
-pub(crate) fn alerts_near_in(
-    fc: &serde_json::Value,
-    lat: f64,
-    lon: f64,
-    radius_km: f64,
-) -> Vec<Warning> {
+/// Parse a `FeatureCollection` of NWS alerts into [`Warning`]s, most urgent
+/// first. Separated from the network call so unit tests can run on a canned
+/// fixture.
+pub(crate) fn alerts_all_in(fc: &serde_json::Value) -> Vec<Warning> {
     let mut out = Vec::new();
     let Some(features) = fc.get("features").and_then(|f| f.as_array()) else {
         return out;
     };
     for feature in features {
         if let Some(w) = parse_feature(feature) {
-            let Some(rings) = w.polygon.as_ref() else {
-                continue;
-            };
-            let Some(ring) = rings.first() else { continue };
-            let (clat, clon) = ring_centroid(ring);
-            if haversine_km(lat, lon, clat, clon) <= radius_km {
-                out.push(w);
-            }
+            out.push(w);
         }
     }
-    // Most urgent first for stable UI ordering.
-    out.sort_by(|a, b| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)));
+    sort_urgent_first(&mut out);
     out
+}
+
+/// Keep the alerts whose polygon centroid lies within `radius_km` of
+/// (lat, lon). Zone-only alerts (no polygon) cannot be placed, so they are
+/// excluded.
+pub(crate) fn alerts_near_in(
+    fc: &serde_json::Value,
+    lat: f64,
+    lon: f64,
+    radius_km: f64,
+) -> Vec<Warning> {
+    let mut out: Vec<Warning> = alerts_all_in(fc)
+        .into_iter()
+        .filter(|w| {
+            w.centroid()
+                .is_some_and(|(clat, clon)| haversine_km(lat, lon, clat, clon) <= radius_km)
+        })
+        .collect();
+    sort_urgent_first(&mut out);
+    out
+}
+
+/// Most urgent first for stable UI ordering.
+fn sort_urgent_first(alerts: &mut [Warning]) {
+    alerts.sort_by(|a, b| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)));
 }
 
 fn severity_rank(s: &str) -> u8 {
@@ -131,6 +154,7 @@ fn parse_feature(feature: &serde_json::Value) -> Option<Warning> {
         expires,
         office: issuing_office(props),
         headline: s("headline"),
+        area: s("areaDesc"),
         polygon: geometry_rings(feature.get("geometry")),
     })
 }
@@ -229,15 +253,6 @@ fn ring_from_json(polygon_coords: &serde_json::Value) -> Option<Vec<(f64, f64)>>
 /// Average of ring vertices — good enough as a filter centroid for the
 /// mostly-convex warning polygons the LSR/FFW pipeline emits. Ring pairs
 /// are `(lon, lat)` per `Warning::polygon`.
-fn ring_centroid(ring: &[(f64, f64)]) -> (f64, f64) {
-    let n = ring.len() as f64;
-    let (mut lat, mut lon) = (0.0, 0.0);
-    for (lo, la) in ring {
-        lat += la;
-        lon += lo;
-    }
-    (lat / n, lon / n)
-}
 
 // Keep the WFO strip logic honest: US WFOs are Kxxx CONUS / Txxx TDWR /
 // PxNN Alaska-ish; the first letter is a region prefix that is dropped for
@@ -271,6 +286,7 @@ mod tests {
                     "expires": "2026-10-11T19:30:00-06:00",
                     "headline": "Tornado Warning issued October 11 at 7:00PM CDT by NWS Norman OK",
                     "senderName": "NWS Norman OK",
+                    "areaDesc": "Cleveland, OK; McClain, OK",
                     "parameters": { "VTEC": ["/O.NEW.KOUN.T.W.0001.261012T0100Z-261012T0130Z/"],
                                     "AWIPSidentifier": ["TOROUN"] }
                   },
@@ -320,6 +336,39 @@ mod tests {
 
         // Zone-only alert (null geometry) never surfaces here.
         assert!(!near.iter().any(|w| w.event == "Heat Advisory"));
+
+        // The nationwide parse keeps everything (including zone-only alerts)
+        // and carries the affected-area text through.
+        let all = alerts_all_in(&fc);
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().any(|w| w.event == "Heat Advisory"));
+        assert!(all.iter().any(|w| w.event == "Flood Advisory"));
+        let t = all.iter().find(|w| w.id == "urn:oid:test.1").unwrap();
+        assert_eq!(t.area, "Cleveland, OK; McClain, OK");
+        assert_eq!(
+            t.centroid().map(|(lat, _)| (lat * 10.0).round()),
+            Some(353.0)
+        );
+        // Most urgent first, so the browser opens on the tornado.
+        assert_eq!(all[0].event, "Tornado Warning");
+    }
+
+    /// Geometry-less alerts have no placeable centroid (the station tab and
+    /// the map-focus action both rely on this being None, not a fake point).
+    #[test]
+    fn zone_alerts_have_no_centroid() {
+        let fc: serde_json::Value = serde_json::from_str(
+            r#"{"type":"FeatureCollection","features":[{
+                 "type":"Feature",
+                 "properties":{"id":"z1","event":"Heat Advisory","severity":"Moderate",
+                               "areaDesc":"Somewhere, OK"},
+                 "geometry":null}]}"#,
+        )
+        .unwrap();
+        let all = alerts_all_in(&fc);
+        assert_eq!(all.len(), 1);
+        assert!(all[0].centroid().is_none());
+        assert_eq!(all[0].area, "Somewhere, OK");
     }
 
     #[test]

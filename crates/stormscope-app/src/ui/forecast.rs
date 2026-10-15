@@ -20,7 +20,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
         request_forecast_if_stale(app);
     }
 
-    let scale = app.sidebar_scale.max(1.0);
+    let scale = app.ui_scale.max(1.0);
     let site_id = app.state.site_id.clone();
     let mut open = app.state.forecast_open;
     let mut refetch = false;
@@ -36,8 +36,6 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
         .default_pos(ctx.content_rect().center())
         .resizable(true)
         .show(ctx, |ui| {
-            super::apply_text_scale(ui, scale);
-
             // Which point this forecast is for.
             ui.horizontal_wrapped(|ui| {
                 let following_station = app.state.forecast_point.is_none();

@@ -29,8 +29,13 @@ log; entries start at the first public release.
   browser's **Details** button, and clicking a warning polygon on the map,
   open a popup with the full text, severity/urgency, affected areas and
   expiry.
-- The alerts window follows the monitor's scale factor, like the sidebar,
-  and the browser/detail windows open centered on screen.
+- The whole UI follows the monitor's scale factor, not just the sidebar and
+  the alerts window: the scale is applied to egui's global style, so panels,
+  windows, menus *and tooltips* grow together (the hover tooltip especially —
+  it lives in its own layer and was unaffected before), and the map's
+  painter-drawn text (site labels, warning/measure/marker labels, the badge
+  row, attribution) is scaled to match. The browser/detail windows open
+  centered on screen.
 - Jumping to an alert far from the selected station (from the All-US tab) also
   loads the station that covers it: radar frames and the near-site alert set
   are per station, so before this the map showed neither the warning polygon

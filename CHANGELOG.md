@@ -42,11 +42,13 @@ log; entries start at the first public release.
   browser's **Details** button, and clicking a warning polygon on the map,
   open a popup with the full text, severity/urgency, affected areas and
   expiry.
-- Popups (alerts, NOAA details, forecast, SPC discussion) size themselves
-  from a screen-clamped budget: scaled for the monitor but never taller than
-  the display, so a long discussion or alert list cannot push a window off
-  the bottom edge. The SPC discussion is laid out as a summary card (level,
-  wording, forecaster, validity) over a framed, height-budgeted text block.
+- Popups (alerts, NOAA details, forecast, SPC discussion) open at a size
+  scaled for the monitor and clamped to the display, so a long discussion or
+  alert list cannot push a window off the bottom edge — and they stay freely
+  resizable: drag a popup taller and its list/text area grows with it (the
+  height cap is the screen, not the opening size). The SPC discussion is laid
+  out as a summary card (level, wording, forecaster, validity) over a framed,
+  scrollable text block.
 - High-resolution scaling follows the monitor for the sidebar, the browser /
   forecast / detail windows *and their tooltips* (tooltip layers do not
   inherit per-panel scaling, so the hover card gets the scale explicitly); the

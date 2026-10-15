@@ -22,6 +22,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
 
     let scale = app.sidebar_scale.max(1.0);
     let size = super::popup_size(ctx, scale, 580.0, 520.0);
+    let max_h = super::popup_max_height(ctx, scale);
     let site_id = app.state.site_id.clone();
     let mut open = app.state.forecast_open;
     let mut refetch = false;
@@ -32,7 +33,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
         .id(egui::Id::new("stormscope.forecast"))
         .open(&mut open)
         .default_size(size)
-        .max_height(size.y)
+        .max_height(max_h)
         .min_width(420.0 * scale)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
@@ -125,7 +126,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
                     }
                     ui.add_space(4.0);
                     egui::ScrollArea::vertical()
-                        .max_height((size.y - 330.0 * scale).max(120.0))
+                        .max_height((ui.available_height() - 12.0 * scale).max(120.0))
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             if fc.periods.is_empty() {

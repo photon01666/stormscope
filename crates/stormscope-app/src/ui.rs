@@ -886,6 +886,10 @@ fn confirm_clear_dialog(ctx: &egui::Context, app: &mut StormApp) {
 /// Scaled popup size, clamped so a popup always fits on screen with room to
 /// spare: without the clamp a content-driven window can grow taller than the
 /// display, which is how the outlook popup ended up hanging off the bottom.
+pub(super) fn popup_max_height(ctx: &egui::Context, scale: f32) -> f32 {
+    (ctx.content_rect().height() - 90.0 * scale).max(240.0)
+}
+
 pub(super) fn popup_size(ctx: &egui::Context, scale: f32, w: f32, h: f32) -> egui::Vec2 {
     let screen = ctx.content_rect().size();
     egui::vec2(
@@ -912,12 +916,13 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
 
     let scale = app.sidebar_scale.max(1.0);
     let size = popup_size(ctx, scale, 640.0, 560.0);
+    let max_h = popup_max_height(ctx, scale);
     let mut open = true;
     egui::Window::new(format!("SPC Day {day} outlook"))
         .id(egui::Id::new("stormscope.outlook.detail"))
         .open(&mut open)
         .default_size(size)
-        .max_height(size.y)
+        .max_height(max_h)
         .min_width(460.0 * scale)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
@@ -974,7 +979,9 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
             );
             // Height budget: the window keeps the size it opened with instead
             // of growing to fit the whole text.
-            let text_height = (size.y - 300.0 * scale).max(140.0);
+            // Grows with the window: dragging the popup taller reveals more
+            // of the discussion instead of leaving dead space.
+            let text_height = (ui.available_height() - 60.0 * scale).max(140.0);
 
             match app.state.outlook_discussion.as_ref() {
                 Some((d, text)) if *d == day => {

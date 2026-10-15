@@ -15,7 +15,16 @@ log; entries start at the first public release.
   rows show severity color (matching the map polygons), WFO, expiry in local
   time, distance from the site, and the affected-area text. Zone-only alerts
   are labeled because they have no polygon to center on.
-- Clicking a row centers the map on that alert (zoom unchanged).
+- Clicking a row centers the map on that alert (zoom unchanged) and flashes
+  the polygon briefly, then leaves it highlighted; hovering a row glows its
+  polygon live and labels it with the event name on the map, so a list entry
+  can always be matched to the shape on screen.
+- Full NOAA/CAP text: every alert carries `description` (and `instruction`
+  where NOAA provides it — safety guidance such as "TAKE COVER NOW"). The
+  browser's **Details** button, and clicking a warning polygon on the map,
+  open a popup with the full text, severity/urgency, affected areas and
+  expiry.
+- The alerts window follows the monitor's scale factor, like the sidebar.
 
 ## v1.0.10 — 2026-10-15
 

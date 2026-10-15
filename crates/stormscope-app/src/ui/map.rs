@@ -107,6 +107,17 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     }
                     if let Some((site, _)) = best {
                         app.select_site(site.id);
+                    } else {
+                        // 4) Inside a warning polygon: open its NOAA text and
+                        // light the polygon up (site dots win above: they are
+                        // small, deliberate targets).
+                        let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+                        let hit = super::alerts::warning_at(&app.state.alerts, lon, lat);
+                        if let Some(w) = hit {
+                            app.state.alert_detail = Some(w.id.clone());
+                            app.state.alerts_focus = Some(w.id.clone());
+                            app.state.alerts_focus_at = ui.input(|i| i.time);
+                        }
                     }
                 }
             }
@@ -827,9 +838,35 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
     if !app.state.show_alerts {
         return;
     }
+    // egui time drives the flash; request_repaint below keeps it animating.
+    let now = painter.ctx().input(|i| i.time);
+    let mut animating = false;
+
     for w in &app.state.alerts {
         let Some(rings) = &w.polygon else { continue };
         let color = super::alerts::warning_color(w);
+
+        // Glow strength: 1.0 while the row is hovered in the alerts browser,
+        // and a flash that settles into a steady highlight for the alert the
+        // browser last jumped to (so the clicked one stays identifiable).
+        let hovered = app.state.alerts_hover.as_deref() == Some(w.id.as_str());
+        let focus_fade = if app.state.alerts_focus.as_deref() == Some(w.id.as_str()) {
+            let age = (now - app.state.alerts_focus_at).max(0.0);
+            Some((1.0 - age / 3.0).clamp(0.0, 1.0))
+        } else {
+            None
+        };
+        let glow: f32 = if hovered {
+            1.0
+        } else {
+            focus_fade.map_or(0.0, |f| 0.35 + 0.65 * f) as f32
+        };
+        let pulse = (0.5 + 0.5 * (now * 5.0).sin()) as f32;
+        let intensity = glow * (0.65 + 0.35 * pulse);
+        if glow > 0.0 {
+            animating = true;
+        }
+
         for ring in rings {
             if ring.len() < 3 {
                 continue;
@@ -841,16 +878,47 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
                     egui::pos2(origin.x + vx as f32, origin.y + vy as f32)
                 })
                 .collect();
+            // Soft outer glow: two widening, fading strokes behind the edge.
+            if glow > 0.0 {
+                for (width, alpha) in [(6.0, 0.30), (11.0, 0.15)] {
+                    painter.add(egui::Shape::closed_line(
+                        pts.clone(),
+                        egui::Stroke::new(width, color.gamma_multiply(alpha * intensity)),
+                    ));
+                }
+            }
             painter.add(egui::Shape::closed_line(
                 pts.clone(),
-                egui::Stroke::new(2.0, color),
+                egui::Stroke::new(2.0 + 1.5 * intensity, color),
             ));
             painter.add(egui::Shape::convex_polygon(
                 pts,
-                color.gamma_multiply(0.12),
+                color.gamma_multiply(0.12 + 0.30 * intensity),
                 egui::Stroke::NONE,
             ));
         }
+
+        // Name the warning on the map while it is lit up: the point of the
+        // hover/click hint is to say *which* polygon this row is.
+        if glow > 0.0 {
+            if let Some((lat, lon)) = w.centroid() {
+                let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+                let at = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+                draw_tag_label(
+                    painter,
+                    at,
+                    egui::Align2::CENTER_CENTER,
+                    &w.event,
+                    egui::FontId::proportional(13.0),
+                    color,
+                );
+            }
+        }
+    }
+
+    if animating {
+        // Keep the pulse (and the focus flash decay) moving.
+        painter.ctx().request_repaint();
     }
 }
 

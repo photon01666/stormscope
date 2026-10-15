@@ -149,6 +149,16 @@ pub struct AppState {
     pub alerts_tab: AlertsTab,
     /// Search box contents for the alerts browser.
     pub alerts_filter: String,
+    /// Alert id under the pointer in the alerts browser: the map glows that
+    /// polygon so a list row can be matched to the warning on screen.
+    pub alerts_hover: Option<String>,
+    /// Alert id the browser last jumped to, and when (egui time, seconds):
+    /// the map flashes it, then settles into a steady highlight.
+    pub alerts_focus: Option<String>,
+    pub alerts_focus_at: f64,
+    /// Alert id whose NOAA detail popup is open (set by the browser's
+    /// Details button or by clicking a warning polygon on the map).
+    pub alert_detail: Option<String>,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
@@ -244,6 +254,10 @@ impl Default for AppState {
             alerts_popup_open: false,
             alerts_tab: AlertsTab::Station,
             alerts_filter: String::new(),
+            alerts_hover: None,
+            alerts_focus: None,
+            alerts_focus_at: 0.0,
+            alert_detail: None,
             show_tracks: true,
             outlook: None,
             // On by default with the outline-only look (fill 0.0): the risk

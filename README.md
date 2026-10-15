@@ -40,9 +40,11 @@ To grab one: open stormscope, hover the left edge so the sidebar shows, then
 **Overlays**
 - SPC Day 1–3 categorical outlooks (fills under the radar, outlines on top).
 - NWS warnings (tornado / severe thunderstorm / flash flood) drawn as colored
-  polygons, plus an alerts browser popup: every active alert nationwide on
-  one tab, just the selected station's area on the other, with a search
-  filter and click-to-center on any alert.
+  polygons, plus an alerts browser: every active alert nationwide on one tab,
+  just the selected station's area on the other, with a search filter.
+  Hovering a list row glows the matching polygon (and labels it on the map);
+  clicking jumps to it; click a polygon (or the row's Details button) for the
+  full NOAA description and safety instruction.
 - Storm tracks: cell-motion arrows, dashed 30-minute nowcasts, mph labels.
 - Per-marker arrival ETAs ("storm reaches this pin in ~14 min") derived from
   smoothed cell motion; velocity estimates blend scan-to-scan so they

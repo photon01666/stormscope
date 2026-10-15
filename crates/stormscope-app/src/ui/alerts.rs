@@ -60,6 +60,35 @@ fn matches_filter(w: &Warning, needle: &str) -> bool {
         .any(|f| f.to_lowercase().contains(&needle))
 }
 
+/// Ray-casting point-in-polygon test against an exterior ring. NWS warning
+/// polygons are single-ring in practice, so holes are ignored.
+pub(super) fn ring_contains(ring: &[(f64, f64)], lon: f64, lat: f64) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (xi, yi) = ring[i];
+        let (xj, yj) = ring[j];
+        if (yi > lat) != (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// The warning polygon under a map point, if any. Later entries win: they are
+/// drawn last, so they are visually on top.
+pub(super) fn warning_at(alerts: &[Warning], lon: f64, lat: f64) -> Option<&Warning> {
+    alerts.iter().rev().find(|w| {
+        w.polygon
+            .as_ref()
+            .is_some_and(|rings| rings.first().is_some_and(|r| ring_contains(r, lon, lat)))
+    })
+}
+
 fn site_of(app: &StormApp) -> (f64, f64) {
     radar_core::sites::site(&app.state.site_id)
         .map(|s| (s.latitude, s.longitude))
@@ -83,16 +112,28 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let all = &state.all_alerts;
     let station: Vec<&Warning> = station_alerts(all, site_lat, site_lon, STATION_ALERT_RADIUS_KM);
 
+    // Match the sidebar's high-res scaling: on a 4K panel the window is
+    // otherwise unreadable.
+    let scale = app.sidebar_scale.max(1.0);
+
     let mut center_on: Option<(f64, f64)> = None;
+    let mut hover: Option<String> = None;
+    let mut clicked: Option<String> = None;
+    let mut detail: Option<String> = None;
     egui::Window::new("Alerts")
         .open(open)
-        .default_size([600.0, 480.0])
-        .min_width(420.0)
+        .default_size([600.0 * scale, 480.0 * scale])
+        .min_width(420.0 * scale)
         .resizable(true)
         .show(ctx, |ui| {
+            super::apply_text_scale(ui, scale);
             ui.horizontal(|ui| {
                 ui.selectable_value(tab, AlertsTab::All, format!("All US ({})", all.len()));
-                ui.selectable_value(tab, AlertsTab::Station, format!("{site_id} only ({})", station.len()));
+                ui.selectable_value(
+                    tab,
+                    AlertsTab::Station,
+                    format!("{site_id} only ({})", station.len()),
+                );
             });
             ui.label(
                 egui::RichText::new(format!(
@@ -152,8 +193,17 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                 .show(ui, |ui| {
                     for w in rows.iter().take(MAX_ROWS) {
                         let dist = distance_km(w, site_lat, site_lon);
-                        if alert_row(ui, w, warning_color(w), dist, site_id) {
+                        let (is_hovered, is_clicked, wants_details) =
+                            alert_row(ui, w, warning_color(w), dist, site_id, scale);
+                        if is_hovered {
+                            hover = Some(w.id.clone());
+                        }
+                        if is_clicked {
+                            clicked = Some(w.id.clone());
                             center_on = w.centroid();
+                        }
+                        if wants_details {
+                            detail = Some(w.id.clone());
                         }
                     }
                 });
@@ -164,16 +214,134 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
         app.state.view.center_lat = lat;
         app.state.view.center_lon = lon;
     }
+    app.state.alerts_hover = hover;
+    if let Some(id) = clicked {
+        // Focus + timestamp: the map flashes this polygon briefly and keeps a
+        // steady highlight afterwards, so the clicked row is identifiable.
+        app.state.alerts_focus = Some(id);
+        app.state.alerts_focus_at = ctx.input(|i| i.time);
+    }
+    if let Some(id) = detail {
+        app.state.alert_detail = Some(id);
+    }
 }
 
-/// One clickable alert row. Returns true when clicked (caller centers the map).
+/// The NOAA detail popup: the full CAP text for one alert. Opened by the
+/// browser's "Details" button or by clicking a warning polygon on the map.
+pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
+    let Some(id) = app.state.alert_detail.clone() else {
+        return;
+    };
+    // Near-site alerts are drawn on the map; nationwide-only alerts (zone
+    // alerts, alerts far away) still have text worth reading.
+    let found = app
+        .state
+        .alerts
+        .iter()
+        .find(|w| w.id == id)
+        .or_else(|| app.state.all_alerts.iter().find(|w| w.id == id))
+        .cloned();
+    let Some(w) = found else {
+        app.state.alert_detail = None;
+        return;
+    };
+
+    let scale = app.sidebar_scale.max(1.0);
+    let mut open = true;
+    egui::Window::new("NOAA alert details")
+        .id(egui::Id::new("stormscope.alert.detail"))
+        .open(&mut open)
+        .default_size([600.0 * scale, 460.0 * scale])
+        .min_width(420.0 * scale)
+        .resizable(true)
+        .show(ctx, |ui| {
+            super::apply_text_scale(ui, scale);
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    warning_color(&w),
+                    egui::RichText::new("●").size(12.0 * scale),
+                );
+                ui.heading(&w.event);
+            });
+            ui.horizontal_wrapped(|ui| {
+                if !w.office.is_empty() {
+                    ui.label(egui::RichText::new(format!("issued by NWS {}", w.office)).weak());
+                }
+                if !w.severity.is_empty() || !w.urgency.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("{} / {}", w.severity, w.urgency)).weak(),
+                    );
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "in effect until {}",
+                        crate::timefmt::fmt_central(&w.expires)
+                    ))
+                    .weak(),
+                );
+            });
+            if !w.area.is_empty() {
+                ui.label(egui::RichText::new(&w.area).weak());
+            }
+            ui.separator();
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(ui.available_height() - 8.0)
+                .show(ui, |ui| {
+                    if !w.instruction.is_empty() {
+                        egui::Frame::NONE
+                            .fill(ui.visuals().extreme_bg_color)
+                            .corner_radius(4.0)
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new("NOAA instruction")
+                                        .strong()
+                                        .small(),
+                                );
+                                ui.label(egui::RichText::new(&w.instruction));
+                            });
+                        ui.add_space(6.0);
+                    }
+                    if w.description.is_empty() {
+                        ui.label(egui::RichText::new(&w.headline).weak());
+                        ui.label(
+                            egui::RichText::new(
+                                "No extended NOAA text for this alert; the headline above is all the API returned.",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                    } else {
+                        for para in w.description.split('\n') {
+                            if para.trim().is_empty() {
+                                ui.add_space(4.0);
+                            } else {
+                                ui.label(para);
+                            }
+                        }
+                    }
+                });
+        });
+
+    if !open {
+        app.state.alert_detail = None;
+    }
+}
+
+/// One clickable alert row. Returns `(hovered, clicked, details)` — the
+/// caller mirrors hover into the map glow, jumps the map on click, and opens
+/// the NOAA detail popup for `details`.
 fn alert_row(
     ui: &mut egui::Ui,
     w: &Warning,
     color: egui::Color32,
     distance_km: Option<f64>,
     site_id: &str,
-) -> bool {
+    scale: f32,
+) -> (bool, bool, bool) {
+    let mut details = false;
     let row_id = egui::Id::new(("stormscope.alert.row", &w.id));
     // Hover state comes from last frame's response, so the highlight can be
     // painted *behind* this frame's content.
@@ -191,7 +359,9 @@ fn alert_row(
         .inner_margin(egui::Margin::symmetric(6, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.colored_label(color, "●");
+                // The severity dot doubles as a map-color legend; on a 4K
+                // panel it needs to keep pace with the scaled text.
+                ui.colored_label(color, egui::RichText::new("●").size(11.0 * scale));
                 ui.strong(&w.event);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
@@ -202,6 +372,13 @@ fn alert_row(
                         .weak()
                         .small(),
                     );
+                    if ui
+                        .small_button("Details")
+                        .on_hover_text("Show the full NOAA text for this alert")
+                        .clicked()
+                    {
+                        details = true;
+                    }
                 });
             });
             ui.horizontal_wrapped(|ui| {
@@ -240,13 +417,14 @@ fn alert_row(
     ui.add_space(2.0);
 
     let response = ui.interact(inner.response.rect, row_id, egui::Sense::click());
+    let hovered = response.hovered();
+    let raw_clicked = response.clicked();
     if has_polygon {
-        response
-            .on_hover_text("Click to center the map on this alert")
-            .clicked()
-    } else {
-        false
+        // Consumes the response; the flags above are already read.
+        let _ = response.on_hover_text("Click to center the map on this alert");
     }
+    // A click on the Details button must not also count as a row click.
+    (hovered, raw_clicked && !details, details)
 }
 
 #[cfg(test)]
@@ -271,6 +449,8 @@ mod tests {
             expires: Utc::now(),
             office: "OUN".into(),
             headline: format!("{event} for somewhere"),
+            description: format!("At 7:00 PM, a {event} was located near Newcastle."),
+            instruction: "TAKE COVER NOW.".into(),
             area: "Cleveland, OK".into(),
             polygon,
         }
@@ -307,6 +487,28 @@ mod tests {
         assert!(matches_filter(&w, "oun"));
         assert!(matches_filter(&w, "somewhere"));
         assert!(!matches_filter(&w, "flood"));
+    }
+
+    /// Map-click hit testing: a click inside a polygon finds its alert, the
+    /// topmost (last drawn) one wins, and zone-only alerts are never hit.
+    #[test]
+    fn warning_hit_testing_on_the_map() {
+        let a = warn("a", "Tornado Warning", 35.4, -97.3, true); // +/-0.1 deg box
+        let b = warn("b", "Flash Flood Warning", 35.4, -97.3, true);
+        assert_eq!(warning_at(&[a.clone()], -97.3, 35.4).unwrap().id, "a");
+        assert!(
+            warning_at(&[a.clone()], -97.0, 35.6).is_none(),
+            "outside the box"
+        );
+        assert!(
+            warning_at(&[a.clone(), b], -97.3, 35.4).unwrap().id == "b",
+            "last drawn polygon is on top"
+        );
+        let zone = warn("z", "Heat Advisory", 35.4, -97.3, false);
+        assert!(
+            warning_at(&[zone], -97.3, 35.4).is_none(),
+            "no polygon, no hit"
+        );
     }
 
     /// Alert colors follow the event family, matching the map polygons.

@@ -21,6 +21,10 @@ pub struct Warning {
     pub office: String,
     /// Short headline text for tooltips/list.
     pub headline: String,
+    /// Full NOAA/CAP description text (multi-paragraph, `\n` separated).
+    pub description: String,
+    /// Public-safety instruction from NOAA ("TAKE COVER NOW…"), often empty.
+    pub instruction: String,
     /// Affected counties/areas as reported, e.g. "Cleveland, OK; McClain, OK".
     pub area: String,
     /// Polygon rings as (lon, lat) pairs; None for zone-based alerts.

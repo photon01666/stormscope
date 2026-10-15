@@ -154,6 +154,8 @@ fn parse_feature(feature: &serde_json::Value) -> Option<Warning> {
         expires,
         office: issuing_office(props),
         headline: s("headline"),
+        description: s("description"),
+        instruction: s("instruction"),
         area: s("areaDesc"),
         polygon: geometry_rings(feature.get("geometry")),
     })
@@ -287,6 +289,8 @@ mod tests {
                     "headline": "Tornado Warning issued October 11 at 7:00PM CDT by NWS Norman OK",
                     "senderName": "NWS Norman OK",
                     "areaDesc": "Cleveland, OK; McClain, OK",
+                    "description": "At 7:00 PM CDT, a confirmed tornado was located near Newcastle, moving northeast at 30 mph.",
+                    "instruction": "TAKE COVER NOW! Move to a basement or an interior room on the lowest floor.",
                     "parameters": { "VTEC": ["/O.NEW.KOUN.T.W.0001.261012T0100Z-261012T0130Z/"],
                                     "AWIPSidentifier": ["TOROUN"] }
                   },
@@ -345,6 +349,14 @@ mod tests {
         assert!(all.iter().any(|w| w.event == "Flood Advisory"));
         let t = all.iter().find(|w| w.id == "urn:oid:test.1").unwrap();
         assert_eq!(t.area, "Cleveland, OK; McClain, OK");
+        assert!(
+            t.description.contains("confirmed tornado"),
+            "NOAA text parsed"
+        );
+        assert!(
+            t.instruction.starts_with("TAKE COVER"),
+            "NOAA instruction parsed"
+        );
         assert_eq!(
             t.centroid().map(|(lat, _)| (lat * 10.0).round()),
             Some(353.0)
@@ -369,6 +381,7 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert!(all[0].centroid().is_none());
         assert_eq!(all[0].area, "Somewhere, OK");
+        assert!(all[0].description.is_empty() && all[0].instruction.is_empty());
     }
 
     #[test]

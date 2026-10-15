@@ -47,6 +47,10 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Alerts browser (its own floating window).
     alerts::alerts_popup(ui.ctx(), app);
 
+    // NOAA detail popup for one alert (browser "Details", or a map click on a
+    // warning polygon).
+    alerts::alert_detail_popup(ui.ctx(), app);
+
     // "Really clear …?" confirmation, drawn over everything. Rendered after
     // the panels so it isn't clipped by them; the Settings menu closes
     // itself before opening this.
@@ -81,11 +85,11 @@ fn hidpi_text_scale(
     (1.0 + (raw - 1.0) * 2.0).clamp(1.0, 2.5)
 }
 
-/// Enlarge sidebar fonts + spacing for the high-res `scale` above. Applied
-/// to the sidebar Area's root Ui each frame (a fresh style copy per frame,
-/// so sizes never compound). Combo/menu popups live in their own layers and
+/// Enlarge fonts + spacing by `scale` (see [`hidpi_text_scale`]). Applied to
+/// a panel/window's root Ui each frame (a fresh style copy per frame, so
+/// sizes never compound). Combo/menu popups live in their own layers and
 /// keep context style.
-fn apply_sidebar_text_scale(ui: &mut egui::Ui, scale: f32) {
+pub(super) fn apply_text_scale(ui: &mut egui::Ui, scale: f32) {
     if (scale - 1.0).abs() < 0.01 {
         return;
     }
@@ -200,7 +204,7 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
         .fade_in(false)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            apply_sidebar_text_scale(ui, scale);
+            apply_text_scale(ui, scale);
             let frame = egui::Frame::side_top_panel(ui.style());
             frame.show(ui, |ui| {
                 ui.set_min_width(panel_w);

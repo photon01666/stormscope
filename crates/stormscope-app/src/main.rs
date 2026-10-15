@@ -27,8 +27,34 @@ fn tune_allocator() {
     }
 }
 
+/** Log a panic to a file before the process dies.
+ *
+ * A GUI app started from a desktop launcher has nowhere to print a panic, and
+ * a window that simply vanishes tells the user (and whoever they report to)
+ * nothing. Writing the message and backtrace to `~/.cache/stormscope/` leaves
+ * evidence; `coredumpctl info stormscope` covers the harder crashes.
+ */
+fn install_panic_log() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let path = radar_data::DiskCache::default_root().join("crash.log");
+        let mut text = format!(
+            "stormscope {} panicked\n{info}\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        let bt = std::backtrace::Backtrace::force_capture();
+        text.push_str(&format!("backtrace:\n{bt}\n"));
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&path, text);
+        default_hook(info);
+    }));
+}
+
 fn main() -> eframe::Result {
     tune_allocator();
+    install_panic_log();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let options = eframe::NativeOptions {

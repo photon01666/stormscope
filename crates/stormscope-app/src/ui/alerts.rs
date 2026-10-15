@@ -216,8 +216,10 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let station: Vec<&Warning> = station_alerts(all, site_lat, site_lon, STATION_ALERT_RADIUS_KM);
 
     // Match the sidebar's high-res scaling: on a 4K panel the window is
-    // otherwise unreadable.
+    // otherwise unreadable. The size is clamped to the screen so a long
+    // alert list cannot push the window off the bottom edge.
     let scale = app.sidebar_scale.max(1.0);
+    let size = super::popup_size(ctx, scale, 620.0, 520.0);
 
     let mut center_on: Option<(f64, f64)> = None;
     let mut hover: Option<String> = None;
@@ -226,7 +228,8 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let mut switch_to: Option<String> = None;
     egui::Window::new("Alerts")
         .open(open)
-        .default_size([600.0 * scale, 480.0 * scale])
+        .default_size(size)
+        .max_height(size.y)
         .min_width(420.0 * scale)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
@@ -295,6 +298,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
             );
 
             egui::ScrollArea::vertical()
+                .max_height((size.y - 230.0 * scale).max(120.0))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     for w in rows.iter().take(MAX_ROWS) {
@@ -381,11 +385,13 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
     };
 
     let scale = app.sidebar_scale.max(1.0);
+    let size = super::popup_size(ctx, scale, 620.0, 500.0);
     let mut open = true;
     egui::Window::new("NOAA alert details")
         .id(egui::Id::new("stormscope.alert.detail"))
         .open(&mut open)
-        .default_size([600.0 * scale, 460.0 * scale])
+        .default_size(size)
+        .max_height(size.y)
         .min_width(420.0 * scale)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
@@ -423,7 +429,7 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .max_height(ui.available_height() - 8.0)
+                .max_height((size.y - 260.0 * scale).max(120.0))
                 .show(ui, |ui| {
                     if !w.instruction.is_empty() {
                         egui::Frame::NONE

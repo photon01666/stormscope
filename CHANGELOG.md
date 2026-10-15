@@ -13,8 +13,10 @@ log; entries start at the first public release.
   clicking an outline opens the full SPC forecaster discussion for the day
   (plain-text product from spc.noaa.gov, WMO header trimmed), headed by the
   clicked risk level's NWS wording, forecaster name and validity window, with
-  a reload button. Deliberately no hover tooltip on the risk areas: their
-  outlines cover most of the map, so one just gets in the way.
+  a reload button. The brief hover tooltip keys off the *border* only — the
+  emphasis, the tooltip and the click share one 8 px reach — so the risk areas
+  covering most of the map never pop text while the pointer is merely inside
+  one.
 
 **Alerts browser**
 - New popup listing active NWS alerts, opened from the sidebar or by clicking
@@ -40,6 +42,11 @@ log; entries start at the first public release.
   browser's **Details** button, and clicking a warning polygon on the map,
   open a popup with the full text, severity/urgency, affected areas and
   expiry.
+- Popups (alerts, NOAA details, forecast, SPC discussion) size themselves
+  from a screen-clamped budget: scaled for the monitor but never taller than
+  the display, so a long discussion or alert list cannot push a window off
+  the bottom edge. The SPC discussion is laid out as a summary card (level,
+  wording, forecaster, validity) over a framed, height-budgeted text block.
 - High-resolution scaling follows the monitor for the sidebar, the browser /
   forecast / detail windows *and their tooltips* (tooltip layers do not
   inherit per-panel scaling, so the hover card gets the scale explicitly); the

@@ -883,6 +883,17 @@ fn confirm_clear_dialog(ctx: &egui::Context, app: &mut StormApp) {
     }
 }
 
+/// Scaled popup size, clamped so a popup always fits on screen with room to
+/// spare: without the clamp a content-driven window can grow taller than the
+/// display, which is how the outlook popup ended up hanging off the bottom.
+pub(super) fn popup_size(ctx: &egui::Context, scale: f32, w: f32, h: f32) -> egui::Vec2 {
+    let screen = ctx.content_rect().size();
+    egui::vec2(
+        (w * scale).min(screen.x - 40.0 * scale),
+        (h * scale).min(screen.y - 90.0 * scale),
+    )
+}
+
 /// SPC forecaster discussion popup, opened by clicking an outlook outline on
 /// the map (or its category in the legend): the clicked risk level's meaning
 /// plus the full text of that day's outlook.
@@ -900,63 +911,95 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
     }
 
     let scale = app.sidebar_scale.max(1.0);
+    let size = popup_size(ctx, scale, 640.0, 560.0);
     let mut open = true;
     egui::Window::new(format!("SPC Day {day} outlook"))
         .id(egui::Id::new("stormscope.outlook.detail"))
         .open(&mut open)
-        .default_size([620.0 * scale, 520.0 * scale])
+        .default_size(size)
+        .max_height(size.y)
         .min_width(460.0 * scale)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
+        .constrain_to(ctx.content_rect())
         .resizable(true)
         .show(ctx, |ui| {
-            // The risk level that was clicked, in the NWS wording.
+            // The risk level that was clicked, as a summary card.
             if let (Some(dn), Some(o)) = (app.state.outlook_detail_dn, app.state.outlook.as_ref()) {
-                if let Some(f) = o.features.iter().find(|f| f.dn == dn) {
-                    ui.horizontal_wrapped(|ui| {
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(12.0 * scale, 12.0 * scale),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().rect_filled(
-                            rect,
-                            2.0,
-                            egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
-                        );
-                        ui.heading(f.headline());
+                ui.label(
+                    egui::RichText::new("What this level means")
+                        .strong()
+                        .small(),
+                );
+                egui::Frame::group(ui.style())
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        if let Some(f) = o.features.iter().find(|f| f.dn == dn) {
+                            ui.horizontal_wrapped(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(12.0 * scale, 12.0 * scale),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(
+                                    rect,
+                                    2.0,
+                                    egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
+                                );
+                                ui.heading(f.headline());
+                            });
+                            ui.label(egui::RichText::new(f.description()));
+                        }
+                        let mut meta = vec![format!("SPC Day {day} Convective Outlook")];
+                        if !o.forecaster.is_empty() {
+                            meta.push(o.forecaster.clone());
+                        }
+                        if let Some(issue) = o.issue {
+                            meta.push(format!("issued {}", crate::timefmt::fmt_central(&issue)));
+                        }
+                        if let Some(expire) = o.expire {
+                            meta.push(format!(
+                                "valid until {}",
+                                crate::timefmt::fmt_central(&expire)
+                            ));
+                        }
+                        ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
                     });
-                    ui.label(egui::RichText::new(f.description()));
-                }
-                let mut meta = vec![format!("SPC Day {day} Convective Outlook")];
-                if !o.forecaster.is_empty() {
-                    meta.push(o.forecaster.clone());
-                }
-                if let Some(issue) = o.issue {
-                    meta.push(format!("issued {}", crate::timefmt::fmt_central(&issue)));
-                }
-                if let Some(expire) = o.expire {
-                    meta.push(format!(
-                        "valid until {}",
-                        crate::timefmt::fmt_central(&expire)
-                    ));
-                }
-                ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
             }
-            ui.separator();
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Forecaster discussion")
+                    .strong()
+                    .small(),
+            );
+            // Height budget: the window keeps the size it opened with instead
+            // of growing to fit the whole text.
+            let text_height = (size.y - 300.0 * scale).max(140.0);
 
             match app.state.outlook_discussion.as_ref() {
                 Some((d, text)) if *d == day => {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
+                    egui::Frame::NONE
+                        .fill(ui.visuals().extreme_bg_color)
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::same(8))
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(text).monospace().size(12.0 * scale));
+                            egui::ScrollArea::vertical()
+                                .max_height(text_height)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(text).monospace().size(12.0 * scale),
+                                    );
+                                });
                         });
                 }
                 _ => {
-                    ui.label(egui::RichText::new("Loading the forecaster discussion…").weak());
+                    ui.allocate_ui(egui::vec2(ui.available_width(), text_height), |ui| {
+                        ui.label(egui::RichText::new("Loading the forecaster discussion…").weak());
+                    });
                 }
             }
-            ui.separator();
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
                 if ui
                     .button("Reload text")

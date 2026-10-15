@@ -64,9 +64,9 @@ To grab one: open stormscope, hover the left edge so the sidebar shows, then
   bearing.
 
 **UI / platform**
-- Auto-hiding controls sidebar that slides in on left-edge hover, with a pin.
-  The whole UI (panels, windows, tooltips, map labels) scales on
-  high-resolution monitors without fighting the OS scale factor.
+- Auto-hiding controls sidebar that slides in on left-edge hover, with a
+  pin; the sidebar, its windows and their tooltips scale on high-resolution
+  monitors without fighting the OS scale factor.
 - Dark basemap synthesized from the light OSM/Wikimedia tiles (hue-preserving
   inversion), on-disk tile cache, dBZ-filtered look tuned for echoes.
 - Native Wayland (no XWayland round-trip) with X11 fallback; Vulkan via wgpu.

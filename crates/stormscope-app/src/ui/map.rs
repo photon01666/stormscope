@@ -441,7 +441,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // --- Attribution (required by OSM/Wikimedia tile usage policies) ------
     let show_spc = app.state.show_outlook && app.state.outlook.is_some();
-    draw_attribution(&painter, tile_resp.rect, show_spc, app.ui_scale.max(1.0));
+    draw_attribution(&painter, tile_resp.rect, show_spc);
 
     // --- Top-center badge row: scan mode, scan age, alerts ---------------
     draw_top_badges(ui, &painter, tile_resp.rect, app);
@@ -723,11 +723,10 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
         // so it stays legible over radar echoes.
         let city = site.name.split(',').next().unwrap_or(site.name).trim();
         let text = format!("{} {}", site.id, city);
-        let scale = app.ui_scale.max(1.0);
         let font = if selected {
-            egui::FontId::proportional(13.0 * scale)
+            egui::FontId::proportional(13.0)
         } else {
-            egui::FontId::proportional(11.5 * scale)
+            egui::FontId::proportional(11.5)
         };
         let fg = if selected {
             egui::Color32::from_rgb(150, 210, 255)
@@ -741,7 +740,6 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
             &text,
             font,
             fg,
-            scale,
         );
     }
 }
@@ -756,15 +754,14 @@ fn draw_tag_label(
     text: &str,
     font: egui::FontId,
     fg: egui::Color32,
-    scale: f32,
 ) {
     let galley = painter.layout_no_wrap(text.to_string(), font, fg);
     if galley.is_empty() {
         return;
     }
     let rect = anchor.anchor_size(at, galley.size());
-    let bg = rect.expand2(egui::vec2(4.0, 2.5) * scale);
-    painter.rect_filled(bg, 4.0 * scale, egui::Color32::from_black_alpha(195));
+    let bg = rect.expand2(egui::vec2(4.0, 2.5));
+    painter.rect_filled(bg, 4.0, egui::Color32::from_black_alpha(195));
     painter.galley(rect.min, galley, fg);
 }
 
@@ -956,9 +953,8 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
                     at,
                     egui::Align2::CENTER_CENTER,
                     &w.event,
-                    egui::FontId::proportional(13.0 * app.ui_scale.max(1.0)),
+                    egui::FontId::proportional(13.0),
                     color,
-                    app.ui_scale.max(1.0),
                 );
             }
         }
@@ -1154,7 +1150,7 @@ fn draw_tracks(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app:
         let mph = (t.speed_kmh * 0.621371).round() as i64;
         let text = format!("{mph} mph");
         let at = egui::pos2(pos.x + 6.0, pos.y + 6.0);
-        let font = egui::FontId::proportional(11.0 * app.ui_scale.max(1.0));
+        let font = egui::FontId::proportional(11.0);
         painter.text(
             at + egui::vec2(1.0, 1.0),
             egui::Align2::LEFT_TOP,
@@ -1297,7 +1293,7 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
             .request_repaint_after(std::time::Duration::from_millis(120));
     }
 
-    let font = egui::FontId::proportional(15.0 * app.ui_scale.max(1.0));
+    let font = egui::FontId::proportional(15.0);
     let galleys: Vec<_> = badges
         .iter()
         .map(|b| {
@@ -1305,9 +1301,8 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
                 .fonts_mut(|f| f.layout_no_wrap(b.text.clone(), font.clone(), b.color))
         })
         .collect();
-    let ui_scale = app.ui_scale.max(1.0);
-    let pad = egui::vec2(24.0, 12.0) * ui_scale;
-    let gap = 8.0 * ui_scale;
+    let pad = egui::vec2(24.0, 12.0);
+    let gap = 8.0;
     let total_w: f32 =
         galleys.iter().map(|g| g.size().x + pad.x).sum::<f32>() + gap * (galleys.len() - 1) as f32;
     let top = rect.min.y + 8.0;
@@ -1320,12 +1315,12 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
             egui::vec2(size.x + pad.x, size.y + pad.y),
         );
         let hovered = app.top_badge_hovered == Some(badge.kind);
-        painter.rect_filled(bg, 7.0 * ui_scale, egui::Color32::from_black_alpha(200));
+        painter.rect_filled(bg, 7.0, egui::Color32::from_black_alpha(200));
         if badge.pulse {
             // Flash: a glow ring whose width and opacity follow the phase.
             painter.rect_stroke(
                 bg.expand(1.0 + 2.0 * flash),
-                9.0 * ui_scale,
+                9.0,
                 egui::Stroke::new(2.0, badge.color.gamma_multiply(0.35 + 0.5 * flash)),
                 egui::StrokeKind::Outside,
             );
@@ -1333,7 +1328,7 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
         if !hovered {
             painter.rect_stroke(
                 bg,
-                7.0 * ui_scale,
+                7.0,
                 egui::Stroke::new(
                     if badge.pulse { 1.8 } else { 1.0 },
                     badge.color.gamma_multiply(0.5),
@@ -1564,6 +1559,10 @@ fn warning_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormAp
     egui::containers::Tooltip::for_widget(response)
         .at_pointer()
         .show(|ui| {
+            // Tooltips live in their own layer, so they do not inherit the
+            // per-panel scaling; give the text the same monitor-aware scale
+            // as the sidebar and the windows.
+            super::apply_text_scale(ui, app.sidebar_scale.max(1.0));
             super::alerts::brief_alert_ui(ui, w, site_lat, site_lon);
             ui.label(
                 egui::RichText::new("click for the full NOAA text")
@@ -1610,22 +1609,21 @@ fn draw_measure(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
     // Blue bubble at the midpoint (+ user drag offset).
     let meters = radar_render::surface_distance_m(a.0, a.1, b.0, b.1);
     let brg = radar_render::initial_bearing_deg(a.0, a.1, b.0, b.1);
-    let bubble_scale = app.ui_scale.max(1.0);
     let mut lines: Vec<(String, egui::FontId, egui::Color32)> = vec![(
         format_miles(meters / 1609.344),
-        egui::FontId::proportional(16.0 * bubble_scale),
+        egui::FontId::proportional(16.0),
         egui::Color32::WHITE,
     )];
     if app.state.measure_expanded {
         lines.push((
             format!("{:.1} km · brg {brg:03.0}°", meters / 1000.0),
-            egui::FontId::proportional(12.0 * bubble_scale),
+            egui::FontId::proportional(12.0),
             egui::Color32::from_rgb(215, 235, 255),
         ));
     }
     let mid = egui::pos2((pa.x + pb.x) / 2.0, (pa.y + pb.y) / 2.0);
     let (ox, oy) = app.state.measure_label_offset.unwrap_or(BUBBLE_HOME);
-    let rect = draw_bubble(painter, mid + egui::vec2(ox, oy), &lines, bubble_scale);
+    let rect = draw_bubble(painter, mid + egui::vec2(ox, oy), &lines);
     app.state.measure_bubble_rect = Some(rect);
 }
 
@@ -1658,7 +1656,6 @@ fn draw_bubble(
     painter: &egui::Painter,
     center: egui::Pos2,
     lines: &[(String, egui::FontId, egui::Color32)],
-    scale: f32,
 ) -> egui::Rect {
     let galleys: Vec<_> = lines
         .iter()
@@ -1666,12 +1663,12 @@ fn draw_bubble(
         .collect();
     let w = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max);
     let h: f32 = galleys.iter().map(|g| g.size().y).sum();
-    let pad = egui::vec2(12.0, 8.0) * scale;
+    let pad = egui::vec2(12.0, 8.0);
     let rect = egui::Rect::from_center_size(center, egui::vec2(w, h) + pad * 2.0);
-    painter.rect_filled(rect, 10.0 * scale, egui::Color32::from_rgb(10, 132, 255));
+    painter.rect_filled(rect, 10.0, egui::Color32::from_rgb(10, 132, 255));
     painter.rect_stroke(
         rect,
-        10.0 * scale,
+        10.0,
         egui::Stroke::new(1.5, egui::Color32::from_rgb(6, 82, 160)),
         egui::StrokeKind::Outside,
     );
@@ -1717,9 +1714,8 @@ fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
             egui::pos2(pos.x + 14.0, pos.y - 8.0),
             egui::Align2::LEFT_TOP,
             &label,
-            egui::FontId::proportional(14.0 * app.ui_scale.max(1.0)),
+            egui::FontId::proportional(14.0),
             amber,
-            app.ui_scale.max(1.0),
         );
     }
 }
@@ -1806,13 +1802,13 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
     }
 }
 
-fn draw_attribution(painter: &egui::Painter, rect: egui::Rect, spc: bool, scale: f32) {
+fn draw_attribution(painter: &egui::Painter, rect: egui::Rect, spc: bool) {
     let text = if spc {
         "© OpenStreetMap contributors · SPC/NWS outlook"
     } else {
         "© OpenStreetMap contributors"
     };
-    let font = egui::FontId::proportional(10.0 * scale);
+    let font = egui::FontId::proportional(10.0);
     let pos = egui::pos2(rect.right() - 6.0, rect.bottom() - 4.0);
     painter.text(
         pos,

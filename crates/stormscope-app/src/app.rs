@@ -139,16 +139,10 @@ pub struct StormApp {
     /// Driven each frame from pointer position + `sidebar_pinned`; the slide
     /// animation itself is handled by egui's animation manager.
     pub sidebar_open: bool,
-    /// App-wide UI scale for high-resolution monitors (1.0 = none):
-    /// multiplies the global style (fonts, spacing, tooltips, panels) and the
-    /// map's painter-drawn text. Recomputed each frame from the monitor's
-    /// physical height.
-    pub ui_scale: f32,
-    /// The unscaled style captured on the first frame, so rescaling always
-    /// starts from the base instead of compounding.
-    pub base_style: Option<egui::Style>,
-    /// Scale currently baked into the global style (skip redundant work).
-    pub ui_scale_applied: f32,
+    /// High-res auto-scale currently applied to the sidebar (1.0 = none).
+    /// Recomputed each frame from the monitor's physical height in
+    /// `sidebar_overlay`; shown as a footer note while active.
+    pub sidebar_scale: f32,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -232,9 +226,7 @@ impl StormApp {
             tex_stats_at: std::time::Instant::now(),
             last_trim: std::time::Instant::now(),
             sidebar_open: false,
-            ui_scale: 1.0,
-            base_style: None,
-            ui_scale_applied: 0.0,
+            sidebar_scale: 1.0,
         }
     }
 

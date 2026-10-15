@@ -20,9 +20,6 @@ const SIDEBAR_CLOSE_SLOP: f32 = 32.0;
 const SIDEBAR_ANIM_SECS: f32 = 0.18;
 
 pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
-    // Monitor-aware UI scale (global style + the map's painter text).
-    apply_ui_scale(ui.ctx(), app);
-
     // Top status bar.
     egui::Panel::top("status").show(ui, |ui| {
         status_bar(ui, app);
@@ -92,10 +89,15 @@ fn hidpi_text_scale(
     (1.0 + (raw - 1.0) * 2.0).clamp(1.0, 2.5)
 }
 
-/// Enlarge a style's fonts and metrics by `scale` (see [`hidpi_text_scale`]).
-/// Pure, so `apply_ui_scale` can rebuild from a captured base every time the
-/// monitor scale changes instead of compounding.
-pub(super) fn scale_style(style: &mut egui::Style, scale: f32) {
+/// Enlarge fonts + spacing by `scale` (see [`hidpi_text_scale`]). Applied to
+/// a panel/window's root Ui each frame (a fresh style copy per frame, so
+/// sizes never compound). Combo/menu popups live in their own layers and
+/// keep context style.
+pub(super) fn apply_text_scale(ui: &mut egui::Ui, scale: f32) {
+    if (scale - 1.0).abs() < 0.01 {
+        return;
+    }
+    let style = ui.style_mut();
     for font in style.text_styles.values_mut() {
         font.size = (font.size * scale).clamp(9.0, 64.0);
     }
@@ -105,34 +107,6 @@ pub(super) fn scale_style(style: &mut egui::Style, scale: f32) {
     style.spacing.slider_width *= scale;
     style.spacing.combo_width *= scale;
     style.spacing.text_edit_width *= scale;
-    style.spacing.tooltip_width *= scale;
-    style.spacing.interact_size *= scale;
-}
-
-/// Compute the monitor-driven scale and bake it into the *global* style, so
-/// every panel, window, menu and tooltip inherits it — including tooltips,
-/// which live in their own layer and were unaffected by the old per-panel
-/// scaling. The map's painter-drawn text reads `app.ui_scale` directly.
-pub(super) fn apply_ui_scale(ctx: &egui::Context, app: &mut StormApp) {
-    let ppp = ctx.pixels_per_point();
-    let (mon_h, nppp) = ctx.input(|i| {
-        (
-            i.viewport().monitor_size.map(|s| s.y),
-            i.viewport().native_pixels_per_point,
-        )
-    });
-    let scale = hidpi_text_scale(mon_h, nppp, ppp, ctx.content_rect().height());
-    app.ui_scale = scale;
-    if (scale - app.ui_scale_applied).abs() < 0.01 {
-        return;
-    }
-    let base = app
-        .base_style
-        .get_or_insert_with(|| (*ctx.global_style()).clone());
-    let mut scaled = base.clone();
-    scale_style(&mut scaled, scale);
-    ctx.set_global_style(scaled);
-    app.ui_scale_applied = scale;
 }
 
 /// Pure open/close decision for the auto-hide sidebar (kept free of egui
@@ -183,7 +157,15 @@ fn sidebar_panel_height(middle: egui::Rect) -> f32 {
 fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) {
     // High-res auto-scale from the *monitor*: larger panel + text on tall
     // physical displays (e.g. 4K), topping up whatever OS scaling exists.
-    let scale = app.ui_scale.max(1.0);
+    let ppp = ctx.pixels_per_point();
+    let (mon_h, nppp) = ctx.input(|i| {
+        (
+            i.viewport().monitor_size.map(|s| s.y),
+            i.viewport().native_pixels_per_point,
+        )
+    });
+    let scale = hidpi_text_scale(mon_h, nppp, ppp, middle.height());
+    app.sidebar_scale = scale;
     let panel_w = SIDEBAR_WIDTH * scale;
 
     let pointer = ctx.pointer_latest_pos();
@@ -226,6 +208,7 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
         .fade_in(false)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
+            apply_text_scale(ui, scale);
             let frame = egui::Frame::side_top_panel(ui.style());
             frame.show(ui, |ui| {
                 ui.set_min_width(panel_w);
@@ -310,11 +293,14 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                 .small(),
         );
     }
-    if app.ui_scale > 1.01 {
+    if app.sidebar_scale > 1.01 {
         ui.label(
-            egui::RichText::new(format!("high-res display · UI ×{:.2}", app.ui_scale))
-                .weak()
-                .small(),
+            egui::RichText::new(format!(
+                "high-res display · sidebar ×{:.2}",
+                app.sidebar_scale
+            ))
+            .weak()
+            .small(),
         );
     }
     ui.add_space(6.0);
@@ -961,34 +947,6 @@ mod tests {
     #[test]
     fn sidebar_pinned_stays_open() {
         assert!(open(true, false, false, at(900.0, 400.0), middle()));
-    }
-
-    /// The style scaler is what makes tooltips/windows/panels readable on a
-    /// 4K panel: it must grow the text styles, the spacing that positions
-    /// them and the tooltip width, and scaling from a base must not compound.
-    #[test]
-    fn scale_style_grows_text_and_metrics() {
-        let base = egui::Style::default();
-        let body = |s: &egui::Style| s.text_styles[&egui::TextStyle::Body].size;
-        let base_body = body(&base);
-        assert!(base_body > 0.0);
-
-        let mut scaled = base.clone();
-        scale_style(&mut scaled, 2.0);
-        assert!((body(&scaled) - base_body * 2.0).abs() < 1e-3);
-        assert!(scaled.spacing.tooltip_width > base.spacing.tooltip_width);
-        assert!(scaled.spacing.interact_size.x >= base.spacing.interact_size.x);
-
-        // Scaling the *base* twice gives the same result as once: the app
-        // always rebuilds from the captured base, so it cannot compound.
-        let mut again = base.clone();
-        scale_style(&mut again, 2.0);
-        assert_eq!(body(&again), body(&scaled));
-
-        // 1.0 is a no-op.
-        let mut same = base.clone();
-        scale_style(&mut same, 1.0);
-        assert!((body(&same) - base_body).abs() < 1e-6);
     }
 
     #[test]

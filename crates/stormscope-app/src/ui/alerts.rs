@@ -217,7 +217,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
 
     // Match the sidebar's high-res scaling: on a 4K panel the window is
     // otherwise unreadable.
-    let scale = app.ui_scale.max(1.0);
+    let scale = app.sidebar_scale.max(1.0);
 
     let mut center_on: Option<(f64, f64)> = None;
     let mut hover: Option<String> = None;
@@ -232,6 +232,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
         .default_pos(ctx.content_rect().center())
         .resizable(true)
         .show(ctx, |ui| {
+            super::apply_text_scale(ui, scale);
             ui.horizontal(|ui| {
                 ui.selectable_value(tab, AlertsTab::All, format!("All US ({})", all.len()));
                 ui.selectable_value(
@@ -379,7 +380,7 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
         return;
     };
 
-    let scale = app.ui_scale.max(1.0);
+    let scale = app.sidebar_scale.max(1.0);
     let mut open = true;
     egui::Window::new("NOAA alert details")
         .id(egui::Id::new("stormscope.alert.detail"))
@@ -390,6 +391,7 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
         .default_pos(ctx.content_rect().center())
         .resizable(true)
         .show(ctx, |ui| {
+            super::apply_text_scale(ui, scale);
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(
                     warning_color(&w),
@@ -633,6 +635,8 @@ fn alert_row(
         raw_clicked |= r.clicked();
         if has_polygon {
             r.on_hover_ui(|ui| {
+                // Tooltip layers do not inherit per-panel scaling.
+                super::apply_text_scale(ui, scale);
                 brief_alert_ui(ui, w, site_latitude, site_longitude);
                 ui.label(
                     egui::RichText::new("click to center the map on this alert")

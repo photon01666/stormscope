@@ -1,0 +1,53 @@
+name: Bug report
+description: Something is wrong or crashed
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Logs go a long way — please run with
+        `RUST_LOG=debug` and paste the interesting lines.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Select KTLX, Reflectivity, tilt 0.5
+        2. Drag the map / switch to Velocity
+        3. …
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or `git rev-parse --short HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: GPU + driver, Wayland or X11, desktop/compositor, monitor scale factor.
+      placeholder: Intel Arc A310 / Mesa 26.2, Wayland (Hyprland), scale 1.5
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `RUST_LOG=debug ./stormscope` (trim to the interesting part).
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: This is not a data-availability problem (upstream radar/alert outages happen).

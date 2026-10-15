@@ -12,6 +12,7 @@ members = [
 version = "1.0.10"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/photon01666/stormscope"
 
 [workspace.dependencies]
 radar-core = { path = "crates/radar-core" }

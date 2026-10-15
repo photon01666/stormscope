@@ -16,6 +16,7 @@
 //! (x, y) is `resp.rect.min + (x, y)`.
 
 use crate::app::StormApp;
+use crate::state::BadgeKind;
 use crate::state::{MeasureDrag, MeasureEnd};
 use radar_render::MapView;
 
@@ -59,7 +60,19 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // Delete / Cancel buttons (or typing then clicking away to commit) must
     // not also drop a second pin or switch radar sites underneath it.
     // (Measure mode handles its own clicks in `measure_interaction` above.)
-    if response.clicked() && !measuring && app.state.pending_marker.is_none() {
+    // Forecast point picking owns the click while armed: the user explicitly
+    // asked for "that spot", so nothing else should react to it.
+    if app.state.forecast_pick_mode && response.clicked() {
+        if let Some(click) = response.interact_pointer_pos() {
+            let (cx, cy) = viewport_pos(rect, click);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            app.state.forecast_point = Some((lat, lon));
+            app.state.forecast_pick_mode = false;
+            app.state.forecast = None;
+            app.state.forecast_requested = None;
+            let _ = app.tx.send(crate::app::DataCmd::LoadForecast(lat, lon));
+        }
+    } else if response.clicked() && !measuring && app.state.pending_marker.is_none() {
         if let Some(click) = response.interact_pointer_pos() {
             // Viewport-relative click position -> same frame of reference as
             // `draw_sites` marker positions.
@@ -1199,7 +1212,7 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_secs(1));
 
-    let mut badges: Vec<(String, egui::Color32)> = Vec::new();
+    let mut badges: Vec<TopBadge> = Vec::new();
     if app.state.current().is_some() {
         let mode = app.state.scan_mode();
         let vcp = app.state.current().and_then(|f| f.volume.meta.vcp);
@@ -1212,7 +1225,12 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
             ScanMode::ClearAir => egui::Color32::from_rgb(255, 209, 102), // amber
             ScanMode::Unknown => egui::Color32::from_white_alpha(190),
         };
-        badges.push((mode_text, mode_color));
+        badges.push(TopBadge {
+            text: mode_text,
+            color: mode_color,
+            kind: BadgeKind::Mode,
+            pulse: false,
+        });
 
         if let Some(lat) = app.state.latency() {
             let secs = lat.num_seconds().max(0);
@@ -1221,7 +1239,12 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
                 AgeBand::Warn => egui::Color32::from_rgb(255, 209, 102), // amber
                 AgeBand::Old => egui::Color32::from_rgb(255, 96, 96),    // red
             };
-            badges.push((format!("{} old", fmt_data_age(secs)), age_color));
+            badges.push(TopBadge {
+                text: format!("{} old", fmt_data_age(secs)),
+                color: age_color,
+                kind: BadgeKind::Age,
+                pulse: false,
+            });
         }
     }
 
@@ -1232,23 +1255,40 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     } else {
         app.state.all_alerts.len()
     };
-    let significant = radar_core::sites::site(&app.state.site_id).and_then(|s| {
-        super::alerts::significant_near(
-            &app.state.alerts,
-            s.latitude,
-            s.longitude,
-            crate::state::STATION_ALERT_RADIUS_KM,
-        )
+    // Copy out what the badge needs (event name + color): the app is mutated
+    // further down for the pill's click handling.
+    let significant: Option<(String, egui::Color32)> = radar_core::sites::site(&app.state.site_id)
+        .and_then(|s| {
+            super::alerts::significant_near(
+                &app.state.alerts,
+                s.latitude,
+                s.longitude,
+                crate::state::STATION_ALERT_RADIUS_KM,
+            )
+        })
+        .map(|w| (w.event.clone(), super::alerts::pulse_color(w)));
+    let alerts_color = significant
+        .as_ref()
+        .map_or(egui::Color32::from_white_alpha(220), |(_, c)| *c);
+    badges.push(TopBadge {
+        text: format!("⚠ {alert_count} alerts"),
+        color: alerts_color,
+        kind: BadgeKind::Alerts,
+        pulse: significant.is_some(),
     });
-    let alerts_color = significant.map_or(egui::Color32::from_white_alpha(220), |w| {
-        super::alerts::pulse_color(w)
-    });
-    badges.push((format!("⚠ {alert_count} alerts"), alerts_color));
 
-    // Flash phase for the alerts badge (also drives the repaint below).
+    // Forecast for the selected station (or a picked point).
+    badges.push(TopBadge {
+        text: "📈 Forecast".to_string(),
+        color: egui::Color32::from_white_alpha(220),
+        kind: BadgeKind::Forecast,
+        pulse: false,
+    });
+
+    // Flash phase for pulsing badges (also drives the repaint below).
     let now = ui.ctx().input(|i| i.time);
     let flash = (0.55 + 0.45 * (now * 4.0).sin()) as f32;
-    if significant.is_some() {
+    if badges.iter().any(|b| b.pulse) {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(120));
     }
@@ -1256,9 +1296,9 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     let font = egui::FontId::proportional(15.0);
     let galleys: Vec<_> = badges
         .iter()
-        .map(|(t, c)| {
+        .map(|b| {
             ui.ctx()
-                .fonts_mut(|f| f.layout_no_wrap(t.clone(), font.clone(), *c))
+                .fonts_mut(|f| f.layout_no_wrap(b.text.clone(), font.clone(), b.color))
         })
         .collect();
     let pad = egui::vec2(24.0, 12.0);
@@ -1267,39 +1307,31 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
         galleys.iter().map(|g| g.size().x + pad.x).sum::<f32>() + gap * (galleys.len() - 1) as f32;
     let top = rect.min.y + 8.0;
     let mut x = rect.center().x - total_w / 2.0;
-    let mut alerts_rect = None;
-    let last = badges.len() - 1;
-    for (i, (galley, color)) in galleys
-        .iter()
-        .zip(badges.iter().map(|(_, c)| c))
-        .enumerate()
-    {
+    let mut rects: Vec<(BadgeKind, egui::Rect)> = Vec::new();
+    for (badge, galley) in badges.iter().zip(galleys.iter()) {
         let size = galley.size();
         let bg = egui::Rect::from_min_size(
             egui::pos2(x, top),
             egui::vec2(size.x + pad.x, size.y + pad.y),
         );
+        let hovered = app.top_badge_hovered == Some(badge.kind);
         painter.rect_filled(bg, 7.0, egui::Color32::from_black_alpha(200));
-        if i == last && significant.is_some() {
+        if badge.pulse {
             // Flash: a glow ring whose width and opacity follow the phase.
             painter.rect_stroke(
                 bg.expand(1.0 + 2.0 * flash),
                 9.0,
-                egui::Stroke::new(2.0, color.gamma_multiply(0.35 + 0.5 * flash)),
+                egui::Stroke::new(2.0, badge.color.gamma_multiply(0.35 + 0.5 * flash)),
                 egui::StrokeKind::Outside,
             );
         }
-        if !(i == last && app.alerts_badge_hovered) {
+        if !hovered {
             painter.rect_stroke(
                 bg,
                 7.0,
                 egui::Stroke::new(
-                    if i == last && significant.is_some() {
-                        1.8
-                    } else {
-                        1.0
-                    },
-                    color.gamma_multiply(0.5),
+                    if badge.pulse { 1.8 } else { 1.0 },
+                    badge.color.gamma_multiply(0.5),
                 ),
                 egui::StrokeKind::Outside,
             );
@@ -1307,33 +1339,71 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
         painter.galley(
             egui::pos2(bg.min.x + pad.x / 2.0, top + pad.y / 2.0),
             (*galley).clone(),
-            *color,
+            badge.color,
         );
-        if i == last {
-            alerts_rect = Some(bg);
-        }
+        rects.push((badge.kind, bg));
         x += size.x + pad.x + gap;
     }
 
-    // The alerts pill is a button: click opens the browser, hover brightens.
-    if let Some(bg) = alerts_rect {
+    // Interactive pills: alerts opens the browser, forecast opens the window.
+    let mut hovered_kind = None;
+    for (kind, bg) in rects {
+        if !matches!(kind, BadgeKind::Alerts | BadgeKind::Forecast) {
+            continue;
+        }
         let resp = ui.interact(
             bg,
-            egui::Id::new("stormscope.alerts.badge"),
+            egui::Id::new(("stormscope.topbadge", badge_id(kind))),
             egui::Sense::click(),
         );
-        app.alerts_badge_hovered = resp.hovered();
-        let hover_text = match significant {
-            Some(w) => format!(
-                "{} in force near {} — click for the alerts browser",
-                w.event, app.state.site_id
-            ),
-            None => format!("{alert_count} active alerts — click to browse"),
+        if resp.hovered() {
+            hovered_kind = Some(kind);
+        }
+        let hover_text = match kind {
+            BadgeKind::Alerts => match &significant {
+                Some((event, _)) => format!(
+                    "{event} in force near {} — click for the alerts browser",
+                    app.state.site_id
+                ),
+                None => format!("{alert_count} active alerts — click to browse"),
+            },
+            BadgeKind::Forecast => {
+                "NWS forecast for the selected station — click to open".to_string()
+            }
+            _ => String::new(),
         };
         if resp.on_hover_text(hover_text).clicked() {
-            app.state.alerts_popup_open = true;
+            match kind {
+                BadgeKind::Alerts => app.state.alerts_popup_open = true,
+                BadgeKind::Forecast => {
+                    app.state.forecast_open = true;
+                    // Fetch now if what is loaded is not what the window will
+                    // show (station follow, or a stale point).
+                    super::forecast::request_forecast_if_stale(app);
+                }
+                _ => {}
+            }
         }
     }
+    app.top_badge_hovered = hovered_kind;
+}
+
+fn badge_id(kind: BadgeKind) -> &'static str {
+    match kind {
+        BadgeKind::Mode => "mode",
+        BadgeKind::Age => "age",
+        BadgeKind::Alerts => "alerts",
+        BadgeKind::Forecast => "forecast",
+    }
+}
+
+/// One pill in the top-center badge row.
+struct TopBadge {
+    text: String,
+    color: egui::Color32,
+    kind: BadgeKind,
+    /// Flash this pill (a watch/warning is in force near the station).
+    pulse: bool,
 }
 
 /// Freshness of the newest radar frame against its scan cadence: fresh under

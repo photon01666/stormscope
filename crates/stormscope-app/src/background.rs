@@ -109,6 +109,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     };
     let alerts = AlertSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
+    let forecasts = radar_data::ForecastSource::new(USER_AGENT).ok();
     // Report the current on-disk cache sizes so Settings has a number from
     // the first frame; the loop below keeps re-sending as they change.
     let mut cached_sizes = cache_sizes(&source);
@@ -252,6 +253,12 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                 DataCmd::LoadOutlook(day) => {
                     outlook_day = day;
                     refresh_outlook(&outlooks, day, &out);
+                }
+                DataCmd::LoadForecast(lat, lon) => {
+                    let _ = out.send(DataMsg::Status(format!(
+                        "loading forecast for {lat:.3}, {lon:.3}…"
+                    )));
+                    refresh_forecast(&forecasts, lat, lon, &out);
                 }
                 DataCmd::ClearRadar => {
                     let _ = out.send(DataMsg::Status("clearing radar data…".into()));
@@ -786,6 +793,24 @@ fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg
 
 /// Re-fetch the SPC categorical outlook for `day` and emit it. CONUS-wide by
 /// nature, so it doesn't need the site; one GET every 10 min.
+fn refresh_forecast(
+    forecasts: &Option<radar_data::ForecastSource>,
+    lat: f64,
+    lon: f64,
+    out: &Sender<DataMsg>,
+) {
+    let Some(f) = forecasts else { return };
+    match f.for_point(lat, lon) {
+        Ok(fc) => {
+            let _ = out.send(DataMsg::Forecast(fc));
+        }
+        Err(e) => {
+            log::warn!("forecast fetch failed: {e:#}");
+            let _ = out.send(DataMsg::Error(format!("forecast: {e:#}")));
+        }
+    }
+}
+
 fn refresh_outlook(outlooks: &Option<OutlookSource>, day: u8, out: &Sender<DataMsg>) {
     let Some(src) = outlooks else { return };
     match src.fetch_day(day) {

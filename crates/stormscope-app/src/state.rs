@@ -72,6 +72,15 @@ pub enum LoopState {
     Paused,
 }
 
+/// Which pill in the top-center badge row is under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadgeKind {
+    Mode,
+    Age,
+    Alerts,
+    Forecast,
+}
+
 /// Which set the alerts browser is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertsTab {
@@ -165,6 +174,20 @@ pub struct AppState {
     /// Alert id whose NOAA detail popup is open (set by the browser's
     /// Details button or by clicking a warning polygon on the map).
     pub alert_detail: Option<String>,
+
+    // NWS forecast (station by default, or a point picked on the map).
+    pub forecast: Option<radar_core::forecast::Forecast>,
+    pub forecast_open: bool,
+    /// Armed by the window's "select on map" control: the next map click
+    /// becomes the forecast point.
+    pub forecast_pick_mode: bool,
+    /// Manually picked forecast point; `None` = follow the selected station.
+    pub forecast_point: Option<(f64, f64)>,
+    /// Station id the request/result corresponds to, so the window can tell
+    /// when a site switch needs a refetch.
+    pub forecast_site: String,
+    /// Coordinates already requested (dedupes sends while one is in flight).
+    pub forecast_requested: Option<(f64, f64)>,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
@@ -266,6 +289,12 @@ impl Default for AppState {
             alerts_focus: None,
             alerts_focus_at: 0.0,
             alert_detail: None,
+            forecast: None,
+            forecast_open: false,
+            forecast_pick_mode: false,
+            forecast_point: None,
+            forecast_site: String::new(),
+            forecast_requested: None,
             show_tracks: true,
             outlook: None,
             // On by default with the outline-only look (fill 0.0): the risk

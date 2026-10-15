@@ -13,6 +13,8 @@ pub enum DataMsg {
     Alerts(Vec<radar_core::warnings::Warning>),
     /// Every active alert nationwide (alerts browser only).
     AllAlerts(Vec<radar_core::warnings::Warning>),
+    /// NWS gridpoint forecast for a requested point.
+    Forecast(radar_core::forecast::Forecast),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
     Status(String),
@@ -49,6 +51,8 @@ pub enum DataCmd {
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
     LoadOutlook(u8),
+    /// Fetch the NWS gridpoint forecast for a coordinate.
+    LoadForecast(f64, f64),
     /// Delete every downloaded radar volume from disk (`l2/`).
     ClearRadar,
     /// Delete every cached basemap tile from disk (`tiles/`).
@@ -123,9 +127,9 @@ pub struct StormApp {
     /// Cache section awaiting the user's "yes" in the clear-cache dialog.
     /// Set by the Settings menu, cleared when the dialog is dismissed.
     pub confirm_clear: Option<ClearTarget>,
-    /// True while the pointer is over the top-center alerts badge, so the
-    /// hover state can brighten its border.
-    pub alerts_badge_hovered: bool,
+    /// Which top-center badge pill the pointer is over (brightens its
+    /// border instead of drawing the hover ring).
+    pub top_badge_hovered: Option<crate::state::BadgeKind>,
     /// Throttle for the debug-level GPU texture accounting log (memory
     /// pressure in this app shows up as resident textures/GPU memory).
     pub tex_stats_at: std::time::Instant,
@@ -217,7 +221,7 @@ impl StormApp {
             marker_etas: Vec::new(),
             min_dbz_bar_rect: None,
             min_dbz_scroll_acc: 0.0,
-            alerts_badge_hovered: false,
+            top_badge_hovered: None,
             confirm_clear: None,
             tex_stats_at: std::time::Instant::now(),
             last_trim: std::time::Instant::now(),
@@ -263,6 +267,16 @@ impl StormApp {
                 DataMsg::Volume(v) => self.state.push_volume(v),
                 DataMsg::Alerts(a) => self.state.alerts = a,
                 DataMsg::AllAlerts(a) => self.state.all_alerts = a,
+                DataMsg::Forecast(f) => {
+                    log::debug!(
+                        "forecast for {} ({} {}): {} periods",
+                        f.place,
+                        f.office,
+                        f.grid,
+                        f.periods.len()
+                    );
+                    self.state.forecast = Some(f);
+                }
                 DataMsg::Outlook(o) => {
                     let label = o
                         .issue

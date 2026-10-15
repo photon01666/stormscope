@@ -41,6 +41,19 @@ log; entries start at the first public release.
 - The per-row **Details** button works (the row's click region used to sit
   above it in egui's hit order and swallow its clicks).
 
+**NWS forecast**
+- New *Forecast* pill to the right of the alerts badge in the top-center row.
+  It opens the NWS gridpoint forecast (`api.weather.gov` `points` → gridpoint
+  forecast) for the selected station's area — one click, no setup.
+- The window can instead forecast any point: "Pick on map…" arms a mode where
+  the next map click becomes the forecast point (labeled with its
+  coordinates), with a "station" tab to go back, and a Refresh button. A
+  radar site's own grid point is often rural (KTWX resolves to Alma, KS), so
+  the picked point covers wherever you actually care about.
+- Periods render as day/night sections (temperature, short forecast, wind)
+  with the detailed NOAA narrative inside; the header shows the issuing
+  office, grid and update time.
+
 ## v1.0.10 — 2026-10-15
 
 First release.

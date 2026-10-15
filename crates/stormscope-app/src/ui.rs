@@ -5,6 +5,7 @@ use crate::state::Mode;
 use radar_core::Moment;
 
 mod alerts;
+mod forecast;
 mod map;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the
@@ -50,6 +51,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // NOAA detail popup for one alert (browser "Details", or a map click on a
     // warning polygon).
     alerts::alert_detail_popup(ui.ctx(), app);
+
+    // NWS forecast window (station by default, or a point picked on the map).
+    forecast::forecast_window(ui.ctx(), app);
 
     // "Really clear …?" confirmation, drawn over everything. Rendered after
     // the panels so it isn't clipped by them; the Settings menu closes

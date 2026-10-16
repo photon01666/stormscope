@@ -3,6 +3,57 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.1.7 — 2026-10-16
+
+**Storm reports (new layer)**
+- Preliminary Local Storm Reports from the NWS, plotted where each product
+  places them: event-family colors, a white ring for trained-spotter
+  reports, a 12-hour window polled every 5 minutes, hover for the brief and
+  click for the full product text. The parser reads the product's own
+  fixed-width columns (measured against real reports, two-word counties
+  included) and the verbatim latitude/longitude it carries.
+
+**Mesoscale discussions (new layer)**
+- SPC MDs as amber areas with "MD n" tags: hover for area, validity and
+  watch chance; click for the full discussion. RSS-driven (none shown when
+  none are active), polygon decoded from the packed `LAT...LON` line —
+  verified against the product's own WFO list.
+
+**SPC outlook types**
+- The outlook layer gained the probabilistic products: Categorical /
+  Tornado / Wind / Hail, days 1–2 (day 3 has none upstream and disables
+  them; picking day 3 falls back to categorical). SPC's own colors and
+  wording ("chance of a tornado within 25 miles of a point"), a separate
+  probability legend, and the 10-minute refresh follows the product on
+  screen.
+
+**Rain & snow totals (new)**
+- A totals window and a map overlay: the stations inside the selected
+  site's viewing area (400 km, geometry-checked), their rolling buckets
+  (rain last hour / 3 / 6 h, snow depth, …) and an hourly-summed
+  accumulation — sampled ≥50 minutes apart so a 5-minute station's
+  overlapping windows do not double-count. On the map: diamonds tagged
+  with each station's strongest number (❄ when it is frozen), hover for the
+  table, click for the window.
+
+**Fixes**
+- Zooming no longer blanks the radar. Under the gesture throttle a stale
+  raster used to be skipped when the zoom had moved ("translation would be
+  scale-wrong"), which flashed the layer off 10–46 times a second while
+  zooming; it is now drawn georeferenced — a pan is a translation, a zoom
+  is the mercator scale — and the fresh raster lands within 100 ms.
+- The gesture throttle now covers every view gesture (100 ms; drags keep
+  150 ms; playback's 8 fps is untouched): measured wheel-zoom churn of
+  16–46 rasters/s is capped at ~10/s, and the churn warning only trips
+  above that cap.
+
+**CI**
+- GitHub Actions now gate every push: rustfmt, workspace check, release
+  build and the test suite; clippy runs informational with the style-lint
+  backlog documented. The live S3 tests (archive download, decode
+  fixtures, realtime poller) are ignored by default so the gating job is
+  hermetic — run them locally with `--ignored`.
+
 ## v1.1.6 — 2026-10-16
 
 **Presentation and diagnostics**

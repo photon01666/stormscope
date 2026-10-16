@@ -169,6 +169,8 @@ pub struct StormApp {
     pub last_frame_at: Option<std::time::Instant>,
     /// Radar rasters since the last stats line (churn corroboration).
     pub radar_raster_count: u32,
+    /// Cumulative 3D pane passes seen at the last stats line (telemetry).
+    pub view3d_count_seen: u64,
     /// Recent raster timestamps for the churn window (see
     /// `ui::map::prune_raster_times`).
     pub radar_raster_times: std::collections::VecDeque<std::time::Instant>,
@@ -278,6 +280,7 @@ impl StormApp {
             frame_stat_at: std::time::Instant::now(),
             last_frame_at: None,
             radar_raster_count: 0,
+            view3d_count_seen: 0,
             radar_raster_times: std::collections::VecDeque::new(),
             radar_churn_warn_at: std::time::Instant::now(),
             last_native_ppp: None,
@@ -343,8 +346,13 @@ impl StormApp {
                 } else {
                     0.0
                 };
+                let (v3_renders, v3_last) = match &self.view3d {
+                    Some(v) => (v.render_count, v.render_count - self.view3d_count_seen),
+                    None => (0, 0),
+                };
+                self.view3d_count_seen = v3_renders;
                 log::debug!(
-                    "frames: {:.1} active fps (ui work avg {avg:.1} ms, max {:.1} ms) | idle gap max {:.1} ms | radar rasters {} | screen {:?} ppp {:.2}",
+                    "frames: {:.1} active fps (ui work avg {avg:.1} ms, max {:.1} ms) | idle gap max {:.1} ms | radar rasters {} | 3d passes {v3_last} | screen {:?} ppp {:.2}",
                     self.frame_count as f64 / secs,
                     self.frame_max_ms,
                     self.frame_gap_max_ms,

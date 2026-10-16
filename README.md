@@ -112,6 +112,11 @@ expensive raster work happens only when something actually changes:
   scan layouts are handled by remapping rows instead of rebuilding.
 - Drags, playback and wheel-zoom bursts rasterize at half resolution with a
   full-resolution pass when the gesture stops.
+- The 3D pane renders on demand: only when its camera, settings, volume,
+  ground tiles or size changed. Motion frames draw at half resolution and one
+  sharp frame lands 160 ms after the motion stops — idle wakes cost a texture
+  sample instead of a volume pass (the policy is a unit-tested pure
+  function).
 - Splats are premultiplied, division-free, into a persistent buffer uploaded
   through one reused GPU texture.
 - Measured on the development machine (Intel Arc A310, 2540×1329 viewport): heavy

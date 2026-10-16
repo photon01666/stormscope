@@ -121,6 +121,15 @@ pub struct Volume3d {
     size: [u32; 2],
     tex_id: Option<egui::TextureId>,
     tex_dirty: bool,
+    /// Change key of the last rendered frame, the last *full-resolution*
+    /// render, and when the key last changed — the "render on demand, half
+    /// res while moving" policy (the pane is GPU-bound at 4K: re-rendering
+    /// the same camera every UI repaint burns the frame budget for nothing).
+    last_key: Option<u64>,
+    last_full_key: Option<u64>,
+    last_change: std::time::Instant,
+    /// Frames actually rendered (telemetry for the app's stats line).
+    pub render_count: u64,
 }
 
 impl Volume3d {
@@ -430,6 +439,10 @@ impl Volume3d {
             size: [0, 0],
             tex_id: None,
             tex_dirty: false,
+            last_key: None,
+            last_full_key: None,
+            last_change: std::time::Instant::now(),
+            render_count: 0,
         }
     }
 
@@ -505,6 +518,8 @@ impl Volume3d {
 
         self.scene_sig = Some(sig);
         self.moment_seen = Some(filter.moment);
+        // New geometry: the cached frame (if any) is stale.
+        self.last_key = None;
         true
     }
 
@@ -685,6 +700,7 @@ impl Volume3d {
         alt_max_km: f32,
     ) {
         self.ensure_targets(device, size);
+        self.render_count += 1;
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         let view_proj = camera.view_proj(aspect, self.max_range_km.max(1.0));
         let volume_uniforms = Uniforms {
@@ -766,6 +782,89 @@ impl Volume3d {
             }
         }
         queue.submit(Some(encoder.finish()));
+    }
+
+    /// Render only what changed: skip entirely when nothing did, render at
+    /// half resolution while the camera/settings are still moving, and land
+    /// one full-resolution frame ~160 ms after the motion stops.
+    ///
+    /// This is the pane's answer to being GPU-bound on a 4K desktop: an
+    /// interaction burst paints 4x fewer pixels, a settled view is sharp,
+    /// and idle UI repaints (the app wakes about once a second for its
+    /// timers) cost a texture sample instead of a full volume pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_if_needed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: [u32; 2],
+        camera: &Camera,
+        vertical_exaggeration: f32,
+        opacity: f32,
+        threshold: f32,
+        alt_min_km: f32,
+        alt_max_km: f32,
+        ground_key: u64,
+    ) {
+        use std::hash::{Hash, Hasher};
+        let key = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for v in [
+                camera.yaw_deg,
+                camera.pitch_deg,
+                camera.distance_km,
+                camera.target_km[0],
+                camera.target_km[1],
+                camera.target_km[2],
+                vertical_exaggeration,
+                opacity,
+                threshold,
+                alt_min_km,
+                alt_max_km,
+            ] {
+                v.to_bits().hash(&mut h);
+            }
+            size.hash(&mut h);
+            self.scene_sig.hash(&mut h);
+            ground_key.hash(&mut h);
+            h.finish()
+        };
+        let since_change_ms = self.last_change.elapsed().as_millis() as u64;
+        match render_decision(self.last_key, self.last_full_key, key, since_change_ms) {
+            RenderDecision::Skip => {}
+            RenderDecision::Full => {
+                if self.color.is_some() {
+                    self.render(
+                        device,
+                        queue,
+                        size,
+                        camera,
+                        vertical_exaggeration,
+                        opacity,
+                        threshold,
+                        alt_min_km,
+                        alt_max_km,
+                    );
+                    self.last_full_key = Some(key);
+                }
+            }
+            RenderDecision::Interactive => {
+                self.last_key = Some(key);
+                self.last_change = std::time::Instant::now();
+                let half = [(size[0] / 2).max(64), (size[1] / 2).max(64)];
+                self.render(
+                    device,
+                    queue,
+                    half,
+                    camera,
+                    vertical_exaggeration,
+                    opacity,
+                    threshold,
+                    alt_min_km,
+                    alt_max_km,
+                );
+            }
+        }
     }
 
     /// The offscreen color target (created by the first [`Self::render`]).
@@ -892,3 +991,89 @@ fn gfs_main(in: GroundOut) -> @location(0) vec4<f32> {
     return vec4<f32>(c.rgb, 1.0);
 }
 "#;
+
+/// How long after the last change the full-resolution frame lands.
+const SETTLE_MS: u64 = 160;
+
+#[derive(Debug, PartialEq, Eq)]
+enum RenderDecision {
+    /// Nothing changed (and the full-res frame is already on screen).
+    Skip,
+    /// Something changed: draw this frame at half resolution.
+    Interactive,
+    /// Settled: draw one sharp frame and stop.
+    Full,
+}
+
+/// The pane's frame policy, split out so it is testable without a GPU:
+/// redraw on every change (half res), land one full-res frame shortly after
+/// the motion stops, skip everything else. Idle UI repaints then cost one
+/// texture sample instead of a volume pass.
+fn render_decision(
+    last_key: Option<u64>,
+    last_full_key: Option<u64>,
+    key: u64,
+    since_change_ms: u64,
+) -> RenderDecision {
+    if last_key == Some(key) {
+        if last_full_key != Some(key) && since_change_ms >= SETTLE_MS {
+            RenderDecision::Full
+        } else {
+            RenderDecision::Skip
+        }
+    } else {
+        RenderDecision::Interactive
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RenderDecision, SETTLE_MS, render_decision};
+
+    #[test]
+    fn first_frame_is_interactive() {
+        assert_eq!(
+            render_decision(None, None, 7, u64::MAX),
+            RenderDecision::Interactive
+        );
+    }
+
+    #[test]
+    fn same_key_skips_until_settled_then_lands_one_full_frame() {
+        // Just changed (key 7 is current, no full-res frame yet).
+        assert_eq!(
+            render_decision(Some(7), None, 7, 0),
+            RenderDecision::Skip,
+            "no redraw while mid-motion"
+        );
+        assert_eq!(
+            render_decision(Some(7), None, 7, SETTLE_MS - 1),
+            RenderDecision::Skip,
+            "still inside the settle window"
+        );
+        assert_eq!(
+            render_decision(Some(7), None, 7, SETTLE_MS),
+            RenderDecision::Full,
+            "settle: one sharp frame"
+        );
+        // Full frame delivered: back to skipping.
+        assert_eq!(
+            render_decision(Some(7), Some(7), 7, SETTLE_MS * 10),
+            RenderDecision::Skip
+        );
+    }
+
+    #[test]
+    fn a_new_key_is_always_an_interactive_frame() {
+        assert_eq!(
+            render_decision(Some(7), Some(7), 8, 5),
+            RenderDecision::Interactive
+        );
+        // Even right after a full-res frame: a new change downgrades to
+        // half-res first (the settle pass will sharpen it).
+        assert_eq!(
+            render_decision(Some(7), Some(7), 8, 0),
+            RenderDecision::Interactive
+        );
+    }
+}

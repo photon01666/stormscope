@@ -3,6 +3,22 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.1 — 2026-10-16
+
+**Performance: the 3D pane renders on demand (and at half res while moving)**
+- The app's own telemetry showed frames taking ~41 ms with under 1 ms of CPU
+  work while the 3D pane was interacted with — a GPU-bound frame, with the
+  pane's offscreen pass paid on every repaint including idle wakes.
+- The pane now renders only when something changed (camera, display
+  settings, volume, ground tiles, size). A motion frame draws at half
+  resolution — the same pattern as the map's rasters — and one
+  full-resolution frame lands 160 ms after the motion stops; idle repaints
+  cost a texture sample. The policy is a pure function under unit test, and
+  the stats line reports `3d passes` so regressions are visible.
+- Measured for scale on the development machine (Arc A310): one volume pass
+  at full pane size is ~1 ms alone; the cost was the *every-frame* habit,
+  not the pass.
+
 ## v1.2.0 — 2026-10-16
 
 **3D radar pane (new)**

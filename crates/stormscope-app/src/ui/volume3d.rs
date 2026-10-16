@@ -192,7 +192,19 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         (rect.width() * ppp).round().clamp(64.0, 4096.0) as u32,
         (rect.height() * ppp).round().clamp(64.0, 4096.0) as u32,
     ];
-    v3.render(
+    let ground_key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        tiles.len().hash(&mut h);
+        for (id, b) in &tiles {
+            id.hash(&mut h);
+            for v in b {
+                v.to_bits().hash(&mut h);
+            }
+        }
+        h.finish()
+    };
+    v3.render_if_needed(
         &render_state.device,
         &render_state.queue,
         size,
@@ -202,6 +214,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         app.state.view3d_threshold,
         alt_lo_km,
         alt_hi_km,
+        ground_key,
     );
     let tex = v3.texture_id(&render_state);
     painter.image(

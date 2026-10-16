@@ -237,3 +237,59 @@ fn renders_a_synthetic_supercell_to_a_png() {
     assert!(lit > 40_000, "scene drew almost nothing ({lit} lit pixels)");
     assert!(greenish > 8_000, "no echo-colored pixels ({greenish})");
 }
+
+/// How expensive is one 3D pass at real pane sizes? The pane is GPU-bound on
+/// a 4K desktop (the app's telemetry shows ~24 fps with <1 ms of CPU work
+/// while the pane is moving), so this measures the two resolutions the
+/// on-demand policy uses: full (sharp, settled) and half (interactive).
+#[test]
+#[ignore = "needs a GPU adapter; run locally with --ignored --nocapture"]
+fn bench_pane_resolution_cost() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("no GPU adapter available");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("device request failed");
+
+    let volume = synthetic_volume();
+    let mut v3 = Volume3d::new(&device, &queue);
+    let filter = MeshFilter::new(Moment::Reflectivity, MeshDetail::Fine);
+    v3.update_scene(&device, &queue, &volume, &filter, 7);
+
+    let ve = 20.0f32;
+    let half_h = 13.0 * ve / 2.0;
+    let camera = Camera {
+        yaw_deg: 25.0,
+        pitch_deg: 30.0,
+        distance_km: (v3.max_range_km() * 1.35).max(half_h / 20.0f32.to_radians().tan() * 1.4),
+        target_km: [0.0, 0.0, 13.0 * ve * 0.42],
+    };
+
+    for (label, size) in [
+        ("full 1917x2118", [1917u32, 2118]),
+        ("half  959x1059", [959, 1059]),
+    ] {
+        // Warm up (pipeline/lazy texture creation), then measure.
+        for _ in 0..3 {
+            v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0);
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("poll");
+        }
+        let frames = 40;
+        let t0 = std::time::Instant::now();
+        for _ in 0..frames {
+            v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0);
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("poll");
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0 / f64::from(frames);
+        eprintln!("{label}: {ms:.2} ms/pass ({} tris)", v3.triangles());
+    }
+}

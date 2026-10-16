@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-test:
+    name: fmt, build, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: Check (workspace, all targets)
+        run: cargo check --workspace --all-targets
+
+      - name: Build (release)
+        run: cargo build --workspace --release
+
+      # Build requirements note: eframe/wgpu load Vulkan and the Wayland/X11
+      # client libraries at runtime (dlopen), so no extra apt packages are
+      # needed to build or test here.
+      - name: Test
+        run: cargo test --workspace
+
+  clippy:
+    name: clippy (informational)
+    runs-on: ubuntu-latest
+    # Not gating yet: ~100 pre-existing lints (mostly collapsible_if and
+    # unnecessary_map_or). Remove `continue-on-error` once that cleanup lands.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings

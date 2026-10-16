@@ -13,6 +13,26 @@ use radar_core::warnings::Warning;
 
 const ALERTS_URL: &str = "https://api.weather.gov/alerts/active";
 
+/// The api.weather.gov HTTP client, shared by every source that talks to it
+/// (alerts, storm reports, …): a descriptive User-Agent is required —
+/// "descriptive" means non-trivial and identifies the app plus a way to reach
+/// the operator (parenthesized contact info is the NWS convention) — and 20 s
+/// is generous for these endpoints without hanging a poll cycle.
+pub(crate) fn api_client(user_agent: &str) -> Result<reqwest::blocking::Client> {
+    let ua = user_agent.trim();
+    if ua.len() < 8 {
+        bail!(
+            "api.weather.gov requires a descriptive User-Agent \
+             like \"stormscope/0.1 (contact@example.com)\"; got {user_agent:?}"
+        );
+    }
+    Ok(reqwest::blocking::Client::builder()
+        .user_agent(ua)
+        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()?)
+}
+
 pub struct AlertSource {
     client: reqwest::blocking::Client,
 }
@@ -22,21 +42,9 @@ impl AlertSource {
     /// api.weather.gov — include something identifying the app and a
     /// contact, e.g. `"stormscope/0.1 (contact@example.com)"`).
     pub fn new(user_agent: &str) -> Result<Self> {
-        let ua = user_agent.trim();
-        // "Descriptive" = non-trivial and identifies the app + a way to reach
-        // the operator (parenthesized contact info is the NWS convention).
-        if ua.len() < 8 {
-            bail!(
-                "api.weather.gov requires a descriptive User-Agent \
-                 like \"stormscope/0.1 (contact@example.com)\"; got {user_agent:?}"
-            );
-        }
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(ua)
-            .timeout(std::time::Duration::from_secs(20))
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client: api_client(user_agent)?,
+        })
     }
 
     /// Active alerts whose polygon centroid is within `radius_km` of

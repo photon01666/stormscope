@@ -1,0 +1,22 @@
+
+000
+NWUS53 KUNR 160257
+LSRUNR
+
+Preliminary Local Storm Report
+National Weather Service Rapid City SD
+857 PM MDT Thu Oct 15 2026
+
+..TIME...   ...EVENT...      ...CITY LOCATION...     ...LAT.LON...
+..DATE...   ....MAG....      ..COUNTY LOCATION..ST.. ...SOURCE....
+            ..REMARKS..
+
+0744 PM     Non-Tstm Wnd Gst 5 N Custer              43.84N 103.62W
+10/15/2026  M51 mph          Custer             SD   Public          
+
+
+&&
+
+$$
+
+KSmith

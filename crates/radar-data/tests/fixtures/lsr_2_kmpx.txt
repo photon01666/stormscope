@@ -1,0 +1,25 @@
+
+000
+NWUS53 KMPX 160240
+LSRMPX
+
+Preliminary Local Storm Report
+National Weather Service Twin Cities/Chanhassen MN
+940 PM CDT Thu Oct 15 2026
+
+..TIME...   ...EVENT...      ...CITY LOCATION...     ...LAT.LON...
+..DATE...   ....MAG....      ..COUNTY LOCATION..ST.. ...SOURCE....
+            ..REMARKS..
+
+0930 PM     Rain             2 NW Lakeville          44.70N 93.28W
+10/15/2026  M1.43 Inch       Dakota             MN   Trained Spotter  
+
+            Rain total as of 9:30pm. 
+
+
+&&
+
+$$
+
+TDH
+

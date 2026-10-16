@@ -1,0 +1,22 @@
+
+000
+NWUS53 KUNR 160224
+LSRUNR
+
+Preliminary Local Storm Report
+National Weather Service Rapid City SD
+824 PM MDT Thu Oct 15 2026
+
+..TIME...   ...EVENT...      ...CITY LOCATION...     ...LAT.LON...
+..DATE...   ....MAG....      ..COUNTY LOCATION..ST.. ...SOURCE....
+            ..REMARKS..
+
+0714 PM     Non-Tstm Wnd Gst Interior                43.72N 101.98W
+10/15/2026  M51 mph          Jackson            SD   Public          
+
+
+&&
+
+$$
+
+KSmith

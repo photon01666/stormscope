@@ -1,0 +1,26 @@
+
+000
+NWAK57 PAJK 160244
+LSRAJK
+
+Preliminary Local Storm Report
+National Weather Service Juneau AK
+644 PM AKDT Thu Oct 15 2026
+
+..TIME...   ...EVENT...      ...CITY LOCATION...     ...LAT.LON...
+..DATE...   ....MAG....      ..COUNTY LOCATION..ST.. ...SOURCE....
+            ..REMARKS..
+
+0500 PM     Flood            1 ESE Ketchikan         55.35N 131.67W
+10/15/2026                   Ketchikan Gateway  AK   Public            
+
+            Flooding over Tongass Ave was seen on 
+            Facebook. Possible cause from muddy runoff 
+            blocking drainage. 
+
+
+&&
+
+$$
+
+ztk

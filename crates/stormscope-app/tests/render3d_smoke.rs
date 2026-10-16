@@ -137,14 +137,18 @@ fn renders_a_synthetic_supercell_to_a_png() {
     let size = [1280u32, 720u32];
     // Mirror the pane's default auto-fit so the PNG represents the app's
     // opening view (1.35 × range, looking a touch above the ground).
+    let ve = 20.0; // the app's (new) default height scale
+    // Mirror the pane's fit: aim at the middle of the exaggerated echo
+    // column (13 km tall on paper) and make sure the column fits.
+    let half_h = 13.0 * ve / 2.0;
     let camera = Camera {
         yaw_deg: 25.0,
         pitch_deg: 30.0,
-        distance_km: v3.max_range_km() * 1.35,
-        target_km: [0.0, 0.0, v3.max_range_km() * 0.02],
+        distance_km: (v3.max_range_km() * 1.35).max(half_h / 20.0f32.to_radians().tan() * 1.4),
+        target_km: [0.0, 0.0, 13.0 * ve * 0.42],
     };
-    // 6× — the app's default height scale — and the full altitude slab.
-    v3.render(&device, &queue, size, &camera, 6.0, 0.6, 5.0, 0.0, 20.0);
+    // The app's default height scale and the full altitude slab.
+    v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0);
 
     // Read the rendered frame back.
     let texture = v3.color_texture().expect("render created the target");

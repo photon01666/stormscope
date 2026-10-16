@@ -29,13 +29,15 @@ use radar_render::volume3d::{Camera, FT_PER_KM, KM_PER_MILE, MeshFilter, ring_ra
 /// straight down degenerates the look-at.
 const PITCH_MIN: f32 = 8.0;
 const PITCH_MAX: f32 = 88.0;
-/// Auto-fit distance as a multiple of the longest cut range.
+/// Auto-fit distance as a multiple of the longest cut range (a floor; the
+/// exaggerated echo column can demand more).
 const FIT_FACTOR: f32 = 1.35;
-/// Physical height (km) the camera aims at — mid-troposphere, where the
-/// interesting echo is. Applied *before* exaggeration, so the aim rises with
-/// the height slider (aiming at a fixed altitude made tall storms look
-/// flat-footed as the exaggeration went up).
-const FIT_TARGET_KM: f32 = 4.5;
+/// Top of the echo column (km on paper) the framing budgets for, and the
+/// fraction of it the camera aims at. Applied *after* exaggeration: at ×20 a
+/// 13 km storm is 260 km of visual, so aiming at a fixed altitude made tall
+/// storms float half out of frame.
+const FIT_ECHO_TOP_KM: f32 = 13.0;
+const FIT_AIM_FRAC: f32 = 0.42;
 /// Marker pin height, physical km (exaggerated like the volume).
 const MARKER_PIN_KM: f32 = 3.0;
 /// Pan sensitivity: how many screen-km of camera movement per dragged km.
@@ -129,14 +131,19 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         app.state.view3d_threshold = lo;
     }
     // Fit the camera once there is a scene (and whenever "Fit" was asked):
-    // distance from the range, orbit center back at the site.
+    // distance from the range (with a floor for the exaggerated column),
+    // orbit center back at the site, aimed at the echo the height scale
+    // produces.
+    let ve = app.state.view3d_ve.max(1.0);
     if app.state.view3d_dist_km < 1.0 && v3.max_range_km() > 1.0 {
-        app.state.view3d_dist_km = (v3.max_range_km() * FIT_FACTOR).max(30.0);
+        let half_h = FIT_ECHO_TOP_KM * ve / 2.0;
+        let column_dist =
+            half_h / (radar_render::volume3d::FOV_Y_DEG.to_radians() / 2.0).tan() * 1.4;
+        app.state.view3d_dist_km = (v3.max_range_km() * FIT_FACTOR).max(column_dist).max(30.0);
         app.state.view3d_target_x_km = 0.0;
         app.state.view3d_target_y_km = 0.0;
-        app.state.view3d_target_z_km = FIT_TARGET_KM * app.state.view3d_ve.max(1.0);
+        app.state.view3d_target_z_km = FIT_ECHO_TOP_KM * ve * FIT_AIM_FRAC;
     }
-    let ve = app.state.view3d_ve.max(1.0);
     let max_r = v3.max_range_km();
     let camera = Camera {
         yaw_deg: app.state.view3d_yaw,
@@ -221,12 +228,13 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             // can be brought to the middle.
             let off = camera.pan_offset_km([d.x, d.y], rect.height());
             let limit = max_r.max(20.0) * 3.0;
+            let z_limit = FIT_ECHO_TOP_KM * ve + 40.0;
             app.state.view3d_target_x_km =
                 (app.state.view3d_target_x_km + off[0] * PAN_GAIN).clamp(-limit, limit);
             app.state.view3d_target_y_km =
                 (app.state.view3d_target_y_km + off[1] * PAN_GAIN).clamp(-limit, limit);
             app.state.view3d_target_z_km =
-                (app.state.view3d_target_z_km + off[2] * PAN_GAIN).clamp(0.0, 60.0);
+                (app.state.view3d_target_z_km + off[2] * PAN_GAIN).clamp(0.0, z_limit);
         } else {
             app.state.view3d_yaw = (app.state.view3d_yaw - d.x * 0.35).rem_euclid(360.0);
             app.state.view3d_pitch =
@@ -286,9 +294,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
                 dz -= speed;
             }
             let limit = max_r.max(20.0) * 3.0;
+            let z_limit = FIT_ECHO_TOP_KM * ve + 40.0;
             app.state.view3d_target_x_km = (app.state.view3d_target_x_km + dx).clamp(-limit, limit);
             app.state.view3d_target_y_km = (app.state.view3d_target_y_km + dy).clamp(-limit, limit);
-            app.state.view3d_target_z_km = (app.state.view3d_target_z_km + dz).clamp(0.0, 60.0);
+            app.state.view3d_target_z_km = (app.state.view3d_target_z_km + dz).clamp(0.0, z_limit);
             ui.ctx().request_repaint();
         }
     }

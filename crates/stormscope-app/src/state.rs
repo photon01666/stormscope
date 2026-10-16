@@ -460,9 +460,10 @@ impl Default for AppState {
             view3d_target_x_km: 0.0,
             view3d_target_y_km: 0.0,
             view3d_target_z_km: 0.0,
-            // Real storms are ~15 km tall over a 300 km-wide scan — 1:20.
-            // 6× reads like the classic GR2 look without lying about shape.
-            view3d_ve: 6.0,
+            // Real storms are ~13-15 km tall over a 300 km-wide scan — 1:20
+            // on paper. The default runs the exaggeration at full (x20) so
+            // structure reads immediately; the slider walks it back.
+            view3d_ve: 20.0,
             view3d_alpha: 0.45,
             view3d_threshold: 5.0,
             view3d_detail: radar_render::MeshDetail::Fine,

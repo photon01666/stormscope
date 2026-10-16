@@ -515,6 +515,11 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         .on_hover_text(
             "SPC mesoscale discussion areas — hover for the watch chance, click for the full text",
         );
+    ui.checkbox(&mut app.state.show_totals, "Station totals on map")
+        .on_hover_text(
+            "Diamonds at the NWS stations in this site's area, tagged with their \
+             strongest rain/snow number; hover for the table, click for the totals window",
+        );
     let alert_count = if app.state.all_alerts.is_empty() {
         app.state.alerts.len()
     } else {

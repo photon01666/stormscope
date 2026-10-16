@@ -126,8 +126,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         // 4) A storm-report dot (drawn on top, small precise
                         // target): open its full report.
                         app.state.lsr_detail = Some(r.id.clone());
+                    } else if app.state.show_totals
+                        && super::totals::totals_at(&app.state.totals, &view, cx, cy).is_some()
+                    {
+                        // 5) A station-total dot: the marker is the shortcut,
+                        // the window the table.
+                        app.state.totals_open = true;
                     } else {
-                        // 5) A warning polygon under the click — inside it, or
+                        // 6) A warning polygon under the click — inside it, or
                         // on its outline (8 px of reach, so a polygon drawn
                         // under another one stays clickable where they
                         // overlap). Opens its NOAA text and lights it up (site
@@ -294,7 +300,26 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     }
     app.state.lsr_hover = report_hover;
 
-    let mcd_hover = if app.state.show_mcds && app.state.lsr_hover.is_none() && !response.dragged() {
+    let totals_hover =
+        if app.state.show_totals && app.state.lsr_hover.is_none() && !response.dragged() {
+            map_pointer.and_then(|p| {
+                let (cx, cy) = viewport_pos(rect, p);
+                super::totals::totals_at(&app.state.totals, &view, cx, cy)
+                    .map(|t| t.station_id.clone())
+            })
+        } else {
+            None
+        };
+    if totals_hover != app.state.totals_hover {
+        app.state.totals_hover_at = ui.input(|i| i.time);
+    }
+    app.state.totals_hover = totals_hover;
+
+    let mcd_hover = if app.state.show_mcds
+        && app.state.lsr_hover.is_none()
+        && app.state.totals_hover.is_none()
+        && !response.dragged()
+    {
         map_pointer.and_then(|p| {
             let (cx, cy) = viewport_pos(rect, p);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
@@ -307,7 +332,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         app.state.mcd_hover_at = ui.input(|i| i.time);
     }
     app.state.mcd_hover = mcd_hover;
-    if (app.state.lsr_hover.is_some() || app.state.mcd_hover.is_some()) && !response.dragged() {
+    if (app.state.lsr_hover.is_some()
+        || app.state.totals_hover.is_some()
+        || app.state.mcd_hover.is_some())
+        && !response.dragged()
+    {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
@@ -317,6 +346,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // key off the border.
     let outlook_hover = if app.state.alerts_map_stack.is_empty()
         && app.state.lsr_hover.is_none()
+        && app.state.totals_hover.is_none()
         && app.state.mcd_hover.is_none()
         && app.state.show_outlook
     {
@@ -639,6 +669,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Storm report dots (small precise targets, on top) ----------------
     super::reports::draw_lsrs(&painter, origin, &view, app);
 
+    // --- Station totals: diamonds with their strongest number --------------
+    super::totals::draw_totals(&painter, origin, &view, app);
+
     // --- Measure tool line + draggable blue bubble (topmost) ---------------
     if app.state.measure_mode {
         draw_measure(&painter, origin, &view, app);
@@ -659,6 +692,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     warning_hover_tooltip(ui, &response, app);
     super::reports::lsr_hover_tooltip(ui, &response, app);
     super::reports::mcd_hover_tooltip(ui, &response, app);
+    super::totals::totals_hover_tooltip(ui, &response, app);
     outlook_hover_tooltip(ui, &response, app);
 
     // --- Min dBZ quick-adjust bar at bottom-center --------------------------

@@ -256,6 +256,10 @@ pub struct AppState {
     /// probe and bounds retries after a failure to once a minute.
     pub totals_requested: Option<(f64, f64, std::time::Instant)>,
     pub totals_fetched_at: Option<std::time::Instant>,
+    /// The map overlay: station dot under the pointer (station id) and when.
+    pub show_totals: bool,
+    pub totals_hover: Option<String>,
+    pub totals_hover_at: f64,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
@@ -394,6 +398,9 @@ impl Default for AppState {
             totals_target: None,
             totals_requested: None,
             totals_fetched_at: None,
+            show_totals: true,
+            totals_hover: None,
+            totals_hover_at: 0.0,
             show_tracks: true,
             outlook: None,
             // On by default with the outline-only look (fill 0.0): the risk

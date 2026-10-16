@@ -95,18 +95,23 @@ impl ForecastSource {
         })?)
     }
 
-    /// Rain/snow totals for up to `max_stations` stations reporting around a
-    /// point — one `/points` lookup, one station list, then one observation
-    /// *series* per station (the series carries both the rolling buckets and
-    /// the hourly accumulations an event total is summed from).
+    /// Rain/snow totals for up to `max_stations` stations reporting *within
+    /// `radius_km` of the point* — one `/points` lookup, one station list,
+    /// then one observation *series* per station (the series carries both
+    /// the rolling buckets and the hourly accumulations an event total is
+    /// summed from).
     ///
-    /// Failures are per-station: a station that will not answer is skipped,
-    /// because "totals for seven of eight nearby stations" beats none.
+    /// The radius keeps the pull inside the selected station's viewing area:
+    /// only stations whose geometry puts them inside are requested at all,
+    /// so nothing outside the area is fetched. Failures are per-station — a
+    /// station that will not answer is skipped, because "totals for seven of
+    /// eight stations" beats none.
     pub fn station_totals(
         &self,
         lat: f64,
         lon: f64,
         max_stations: usize,
+        radius_km: f64,
     ) -> Result<Vec<StationTotals>> {
         let points = self.points(lat, lon)?;
         let stations_url = points
@@ -115,9 +120,13 @@ impl ForecastSource {
             .context("points response listed no observation stations")?;
         let list = self.get_json(stations_url)?;
         let mut out = Vec::new();
-        for (url, id, name) in nearest_stations(&list, lat, lon, max_stations) {
+        for (url, id, name, geo) in nearest_stations(&list, lat, lon, max_stations, radius_km) {
+            let (lat_opt, lon_opt) = match geo {
+                Some((la, lo)) => (Some(la), Some(lo)),
+                None => (None, None),
+            };
             match self.get_json(&format!("{url}/observations?limit=80")) {
-                Ok(series) => out.push(totals_from_series(&series, &id, &name)),
+                Ok(series) => out.push(totals_from_series(&series, &id, &name, lat_opt, lon_opt)),
                 Err(e) => log::debug!("totals for {id}: {e:#}"),
             }
         }
@@ -224,6 +233,10 @@ pub(crate) fn forecast_from_json(
 pub struct StationTotals {
     pub station_id: String,
     pub station_name: String,
+    /// Where the station is, when the listing carried geometry — the map
+    /// overlay plots it (stations without geometry simply stay off-map).
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
     /// Time of the newest observation in the series.
     pub last_obs: Option<DateTime<Utc>>,
     /// Newest non-null value per hydrometeor property: (label, inches) —
@@ -323,6 +336,8 @@ pub(crate) fn totals_from_series(
     series: &serde_json::Value,
     station_id: &str,
     station_name: &str,
+    lat: Option<f64>,
+    lon: Option<f64>,
 ) -> StationTotals {
     let mut obs: Vec<(DateTime<Utc>, &serde_json::Map<String, serde_json::Value>)> = Vec::new();
     for f in series
@@ -424,6 +439,8 @@ pub(crate) fn totals_from_series(
     StationTotals {
         station_id: station_id.to_string(),
         station_name: station_name.to_string(),
+        lat,
+        lon,
         last_obs: newest,
         buckets,
         hourly_sums,
@@ -441,7 +458,8 @@ pub(crate) fn nearest_stations(
     lat: f64,
     lon: f64,
     max_stations: usize,
-) -> Vec<(String, String, String)> {
+    radius_km: f64,
+) -> Vec<(String, String, String, Option<(f64, f64)>)> {
     let Some(features) = list
         .pointer("/features")
         .and_then(|v| v.as_array())
@@ -449,8 +467,9 @@ pub(crate) fn nearest_stations(
     else {
         return Vec::new();
     };
-    let mut with_geo: Vec<(f64, String, String, String)> = Vec::new();
-    let mut without_geo: Vec<(String, String, String)> = Vec::new();
+    // (distance, url, id, name, geometry)
+    let mut with_geo: Vec<(f64, String, String, String, Option<(f64, f64)>)> = Vec::new();
+    let mut without_geo: Vec<(String, String, String, Option<(f64, f64)>)> = Vec::new();
     for f in features {
         let Some(url) = f.get("id").and_then(|v| v.as_str()) else {
             continue;
@@ -476,15 +495,19 @@ pub(crate) fn nearest_stations(
                 url.to_string(),
                 id,
                 name,
+                Some((slat, slon)),
             )),
-            None => without_geo.push((url.to_string(), id, name)),
+            None => without_geo.push((url.to_string(), id, name, None)),
         }
     }
     with_geo.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    // The viewing area is the contract: a geolocated station must fall inside
+    // the radius, and one without geometry cannot prove that it does — so it
+    // is dropped rather than fetched speculatively.
     with_geo
         .into_iter()
-        .map(|(_, u, i, n)| (u, i, n))
-        .chain(without_geo)
+        .filter(|(d, ..)| *d <= radius_km)
+        .map(|(_, u, i, n, g)| (u, i, n, g))
         .take(max_stations)
         .collect()
 }
@@ -738,8 +761,10 @@ mod tests {
               "precipitationLastHour":{"value":5.08,"unitCode":"wmoUnit:mm"}}}]}"#,
         )
         .unwrap();
-        let t = totals_from_series(&series, "KTOP", "Topeka");
+        let t = totals_from_series(&series, "KTOP", "Topeka", Some(39.07), Some(-95.69));
         assert_eq!(t.station_id, "KTOP");
+        assert_eq!(t.lat, Some(39.07), "coords carried for the map overlay");
+        assert_eq!(t.lon, Some(-95.69));
         assert_eq!(t.obs_count, 4);
         assert_eq!(
             t.last_obs.unwrap().to_rfc3339(),
@@ -776,12 +801,20 @@ mod tests {
              "geometry":null}]}"#,
         )
         .unwrap();
-        let picked = nearest_stations(&list, 38.0, -97.0, 10);
-        let ids: Vec<&str> = picked.iter().map(|(_, i, _)| i.as_str()).collect();
-        assert_eq!(ids, vec!["KNEAR", "KFAR", "KNOGEO"]);
-        let capped = nearest_stations(&list, 38.0, -97.0, 1);
+        // Generous radius: both geolocated stations, geometry-less dropped
+        // (it cannot prove it is inside the area).
+        let picked = nearest_stations(&list, 38.0, -97.0, 10, 10_000.0);
+        let ids: Vec<&str> = picked.iter().map(|(_, i, _, _)| i.as_str()).collect();
+        assert_eq!(ids, vec!["KNEAR", "KFAR"]);
+        assert_eq!(picked[0].3, Some((38.1, -97.0)), "geometry kept");
+        // KFAR is ~880 km away: outside a 500 km viewing area it is not
+        // requested at all.
+        let in_area = nearest_stations(&list, 38.0, -97.0, 10, 500.0);
+        let ids: Vec<&str> = in_area.iter().map(|(_, i, _, _)| i.as_str()).collect();
+        assert_eq!(ids, vec!["KNEAR"], "radius scopes the pull");
+        let capped = nearest_stations(&list, 38.0, -97.0, 1, 10_000.0);
         assert_eq!(capped.len(), 1, "max_stations bounds the fetch count");
-        assert!(nearest_stations(&serde_json::json!({}), 0.0, 0.0, 3).is_empty());
+        assert!(nearest_stations(&serde_json::json!({}), 0.0, 0.0, 3, 100.0).is_empty());
     }
 
     #[test]

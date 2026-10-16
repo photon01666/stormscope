@@ -13,14 +13,11 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
 [![Latest release](https://img.shields.io/github/v/release/photon01666/stormscope)](https://github.com/photon01666/stormscope/releases)
 
 <!--
-Screenshot slot: save a screenshot to docs/screenshot.png and uncomment the
-line below (the image is committed with the repo; keep it ~1600 px wide).
-
-To grab one: open stormscope, hover the left edge so the sidebar shows, then
-    grim -g "$(hyprctl -j activewindow | jq -r '"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')" docs/screenshot.png
-(or any region screenshot tool).
+Screenshot regeneration: focus stormscope, then
+    grim -g "$(hyprctl -j clients | jq -r '.[] | select(.class=="stormscope") | "\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')" /tmp/shot.png
+    magick /tmp/shot.png -resize 1600x docs/screenshot.png
 -->
-<!-- ![stormscope: KTWX reflectivity, SPC outlook outlines and the scan-age badge](docs/screenshot.png) -->
+![stormscope: NEXRAD reflectivity with warning polygons, the alerts badge and station totals](docs/screenshot.png)
 
 ## Features
 

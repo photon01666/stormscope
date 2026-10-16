@@ -299,6 +299,9 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     // seconds of network work and must not sit in front of
                     // radar and alert commands.
                     let out = out.clone();
+                    // "Viewing area" = the selected station's area, the same
+                    // radius the alerts layer uses for near-station data.
+                    let radius = crate::state::STATION_ALERT_RADIUS_KM as f64;
                     std::thread::spawn(move || {
                         let src = match radar_data::ForecastSource::new(USER_AGENT) {
                             Ok(s) => s,
@@ -307,7 +310,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                                 return;
                             }
                         };
-                        match src.station_totals(lat, lon, 8) {
+                        match src.station_totals(lat, lon, 8, radius) {
                             Ok(v) => {
                                 log::debug!("{} stations report totals", v.len());
                                 let _ = out.send(DataMsg::Totals(v));

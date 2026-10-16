@@ -568,25 +568,42 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             // Current view: draw in place (a motion raster is
                             // stretched to the viewport rect for free).
                             painter.image(rt.handle.id(), tile_resp.rect, uv, egui::Color32::WHITE);
-                        } else if (rt.zoom - view.zoom).abs() < 1e-9 {
-                            // Stale-by-pan only (zoom unchanged): keep the
-                            // raster glued to the ground by shifting it by the
-                            // world-origin delta — one image() call, no
-                            // re-raster, so no rubber-banding. The texture is
-                            // stretched across the full viewport rect, so one
-                            // world pixel is one screen pixel regardless of
-                            // the raster resolution (no scale factor here).
+                        } else {
+                            // Stale under the gesture throttle: show it
+                            // georeferenced instead of blanking. A pan is a
+                            // pure translation and a zoom is a pure scale
+                            // (mercator doubles per level: 256·2^zoom), so
+                            // the same raster maps to screen as
+                            //     p1 = s·(p0 + o0) − o1,   s = 2^(z_now − z_raster)
+                            // where o is `origin_px()` in each zoom's units.
+                            // At s = 1 that is exactly the old pan-shift.
+                            //
+                            // This is what keeps wheel-zoom from flickering:
+                            // the old code skipped any raster whose zoom was
+                            // stale ("translation would be scale-wrong"), so
+                            // between throttle ticks the radar was simply not
+                            // drawn — and zooming blanked the layer 10–46
+                            // times a second. The image is LINEAR, so an
+                            // intermediate frame is a touch soft — the same
+                            // trade the half-res motion frame makes — and the
+                            // fresh raster lands within 100 ms.
+                            let s = 2f64.powf(view.zoom - rt.zoom);
                             let (ox_now, oy_now) = view.origin_px();
-                            let dx = (rt.ox - ox_now) as f32;
-                            let dy = (rt.oy - oy_now) as f32;
-                            let moved = egui::Rect::from_min_size(
-                                egui::pos2(tile_resp.rect.min.x + dx, tile_resp.rect.min.y + dy),
-                                tile_resp.rect.size(),
+                            let min = egui::pos2(
+                                (tile_resp.rect.min.x as f64 + s * rt.ox - ox_now) as f32,
+                                (tile_resp.rect.min.y as f64 + s * rt.oy - oy_now) as f32,
                             );
-                            painter.image(rt.handle.id(), moved, uv, egui::Color32::WHITE);
+                            let size = egui::vec2(
+                                (tile_resp.rect.width() as f64 * s) as f32,
+                                (tile_resp.rect.height() as f64 * s) as f32,
+                            );
+                            painter.image(
+                                rt.handle.id(),
+                                egui::Rect::from_min_size(min, size),
+                                uv,
+                                egui::Color32::WHITE,
+                            );
                         }
-                        // Zoom changed under a deferred raster: skip the one
-                        // stale frame (translation would be scale-wrong).
                     }
                 }
             }

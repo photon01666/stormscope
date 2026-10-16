@@ -3,6 +3,26 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.1.6 — 2026-10-16
+
+**Presentation and diagnostics**
+- Presentation is pinned to vsync (`Fifo`) instead of eframe's `AutoVsync`.
+  The auto mode renegotiates on every display reconfigure, and a monitor that
+  has been asleep can come back without the same capability list: the
+  fullscreen map then presents uncapped, the shared GPU is pinned, and the
+  whole session feels like it dropped to half the refresh rate — dragging,
+  zooming, and the DisplayPort audio that rides the same GPU. That is what
+  returning to a machine whose monitors had been off ended in, until the app
+  was restarted. The mode is no longer left to negotiation (and a test keeps
+  it that way).
+- Frame-cadence telemetry: a debug line every 15 s with the frame rate,
+  average/max frame time, radar raster count and viewport size, plus an INFO
+  line when the monitor scale changes — so "the machine feels half-rate" is
+  measurable from the log next time it happens.
+- A rate-limited warning if idle radar rasters exceed 15/s: each raster is
+  also a texture upload, so an oscillating signature would otherwise become a
+  per-frame cost with nothing naming it.
+
 ## v1.1.5 — 2026-10-15
 
 **SPC outlooks**

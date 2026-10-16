@@ -142,6 +142,25 @@ pub struct StormApp {
     /// (alert ids, in the order they were offered) and which member was
     /// chosen — so clicking the same spot again steps to the next one.
     pub map_alert_cycle: Option<(egui::Pos2, Vec<String>, usize)>,
+    /// Frame-cadence telemetry (see `record_frame_stats`): back-to-back
+    /// frames and their UI work, plus the longest sleep between frames —
+    /// "the whole session felt half-rate" is only diagnosable with numbers,
+    /// so they are always collected.
+    pub frame_count: u32,
+    pub frame_sum_ms: f64,
+    pub frame_max_ms: f64,
+    pub frame_gap_max_ms: f64,
+    pub frame_stat_at: std::time::Instant,
+    pub last_frame_at: Option<std::time::Instant>,
+    /// Radar rasters since the last stats line (churn corroboration).
+    pub radar_raster_count: u32,
+    /// Recent raster timestamps for the churn window (see
+    /// `ui::map::prune_raster_times`).
+    pub radar_raster_times: std::collections::VecDeque<std::time::Instant>,
+    pub radar_churn_warn_at: std::time::Instant,
+    /// Last observed monitor scale (`native_pixels_per_point`), logged when it
+    /// changes: a display reconfigure is the event behind the incident.
+    pub last_native_ppp: Option<f32>,
     /// Throttle for the debug-level GPU texture accounting log (memory
     /// pressure in this app shows up as resident textures/GPU memory).
     pub tex_stats_at: std::time::Instant,
@@ -235,6 +254,16 @@ impl StormApp {
             min_dbz_scroll_acc: 0.0,
             top_badge_hovered: None,
             map_alert_cycle: None,
+            frame_count: 0,
+            frame_sum_ms: 0.0,
+            frame_max_ms: 0.0,
+            frame_gap_max_ms: 0.0,
+            frame_stat_at: std::time::Instant::now(),
+            last_frame_at: None,
+            radar_raster_count: 0,
+            radar_raster_times: std::collections::VecDeque::new(),
+            radar_churn_warn_at: std::time::Instant::now(),
+            last_native_ppp: None,
             confirm_clear: None,
             tex_stats_at: std::time::Instant::now(),
             last_trim: std::time::Instant::now(),
@@ -254,6 +283,65 @@ impl StormApp {
         self.prev_tracks.clear();
         self.marker_etas.clear();
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
+    }
+
+    /// Feed the frame-cadence counters and emit the periodic stats line.
+    ///
+    /// `work` is how long the frame body ran; the *gap* since the previous
+    /// frame is tracked separately, because idle sleep between timer wakes
+    /// must not read as frame cost. Together with the raster count (churn
+    /// corroboration) and the monitor scale (what a display reconfigure
+    /// changes), these are the numbers a "the whole session feels half-rate"
+    /// report needs — logged every 15 s at debug level.
+    fn record_frame_stats(&mut self, work: std::time::Duration, ctx: &egui::Context) {
+        let now = std::time::Instant::now();
+        let work_ms = work.as_secs_f64() * 1000.0;
+        let gap_ms = self
+            .last_frame_at
+            .map(|prev| (now - prev).as_secs_f64() * 1000.0);
+        self.last_frame_at = Some(now);
+        self.frame_gap_max_ms = self.frame_gap_max_ms.max(gap_ms.unwrap_or(0.0));
+        // Back-to-back frames (no sleep between them) are the ones whose cost
+        // matters; a longer gap is idle or a timer firing.
+        if gap_ms.is_some_and(|g| g <= 50.0) {
+            self.frame_count += 1;
+            self.frame_sum_ms += work_ms;
+            self.frame_max_ms = self.frame_max_ms.max(work_ms);
+        }
+
+        if let (Some(prev), Some(cur)) = (self.last_native_ppp, ctx.native_pixels_per_point())
+            && (prev - cur).abs() > 0.01
+        {
+            log::info!("display scale changed: {prev:.2} -> {cur:.2}");
+        }
+        self.last_native_ppp = ctx.native_pixels_per_point();
+
+        let elapsed = self.frame_stat_at.elapsed();
+        if elapsed >= std::time::Duration::from_secs(15) {
+            self.frame_stat_at = now;
+            if log::log_enabled!(log::Level::Debug) {
+                let secs = elapsed.as_secs_f64().max(1e-6);
+                let avg = if self.frame_count > 0 {
+                    self.frame_sum_ms / self.frame_count as f64
+                } else {
+                    0.0
+                };
+                log::debug!(
+                    "frames: {:.1} active fps (ui work avg {avg:.1} ms, max {:.1} ms) | idle gap max {:.1} ms | radar rasters {} | screen {:?} ppp {:.2}",
+                    self.frame_count as f64 / secs,
+                    self.frame_max_ms,
+                    self.frame_gap_max_ms,
+                    self.radar_raster_count,
+                    ctx.content_rect().size(),
+                    ctx.pixels_per_point(),
+                );
+            }
+            self.frame_count = 0;
+            self.frame_sum_ms = 0.0;
+            self.frame_max_ms = 0.0;
+            self.frame_gap_max_ms = 0.0;
+            self.radar_raster_count = 0;
+        }
     }
 
     fn configure_fonts(ctx: &egui::Context) -> Option<egui::FontDefinitions> {
@@ -389,28 +477,8 @@ impl StormApp {
             self.state.measure_drag = None;
         }
     }
-}
 
-/// Minimal system font lookup (Linux fontconfig paths).
-fn find_system_font(name: &str) -> Option<String> {
-    let dirs = ["/usr/share/fonts", "/usr/local/share/fonts"];
-    let want = name.to_lowercase();
-    for dir in dirs {
-        if let Ok(walker) = std::fs::read_dir(dir) {
-            for entry in walker.flatten() {
-                let path = entry.path();
-                let fname = path.file_name()?.to_string_lossy().to_lowercase();
-                if fname.contains(&want) && fname.ends_with(".ttf") {
-                    return Some(path.to_string_lossy().to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-impl eframe::App for StormApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui_frame(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
         self.handle_input(ui.ctx());
 
@@ -478,5 +546,37 @@ impl eframe::App for StormApp {
         self.state.view.height_px = avail.y;
 
         crate::ui::layout(ui, self);
+    }
+}
+
+/// Minimal system font lookup (Linux fontconfig paths).
+fn find_system_font(name: &str) -> Option<String> {
+    let dirs = ["/usr/share/fonts", "/usr/local/share/fonts"];
+    let want = name.to_lowercase();
+    for dir in dirs {
+        if let Ok(walker) = std::fs::read_dir(dir) {
+            for entry in walker.flatten() {
+                let path = entry.path();
+                let fname = path.file_name()?.to_string_lossy().to_lowercase();
+                if fname.contains(&want) && fname.ends_with(".ttf") {
+                    return Some(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+impl eframe::App for StormApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // Time the frame's *work* separately from the gap since the previous
+        // frame: an idle app wakes about once a second (timers such as the
+        // scan-age pill), and counting that sleep as frame cost would bury a
+        // genuinely slow frame — which is exactly what happened with the
+        // first version of this line ("1 fps, avg 983 ms" while doing
+        // nothing). Both numbers feed the stats line in `record_frame_stats`.
+        let t0 = std::time::Instant::now();
+        self.ui_frame(ui, frame);
+        self.record_frame_stats(t0.elapsed(), ui.ctx());
     }
 }

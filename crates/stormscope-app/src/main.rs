@@ -57,17 +57,49 @@ fn main() -> eframe::Result {
     install_panic_log();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let options = eframe::NativeOptions {
+    eframe::run_native(
+        "stormscope",
+        native_options(),
+        Box::new(|cc| Ok(Box::new(StormApp::new(cc)))),
+    )
+}
+
+/// Window and renderer options.
+///
+/// Presentation is pinned to vsync (`Fifo`) instead of eframe's default
+/// `AutoVsync`, because the auto modes renegotiate whenever the output is
+/// reconfigured: a display that has been asleep can come back from the
+/// monitor sleep/wake cycle with a different capability list, and an uncapped
+/// fullscreen map then presents at hundreds of frames a second. The GPU is
+/// shared with the compositor (whose DisplayPort audio sits on the same
+/// device), so the whole session feels like it dropped to half the refresh
+/// rate — dragging, zooming, everything — and the audio hiccups. That is
+/// exactly what a night with the monitors off ended in until the app was
+/// restarted, so the mode is no longer left to negotiation.
+fn native_options() -> eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([800.0, 500.0])
             .with_title("stormscope"),
         ..Default::default()
     };
+    options.wgpu_options.surface.present_mode = egui_wgpu::wgpu::PresentMode::Fifo;
+    options
+}
 
-    eframe::run_native(
-        "stormscope",
-        options,
-        Box::new(|cc| Ok(Box::new(StormApp::new(cc)))),
-    )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Presentation must stay vsync-bound: an uncapped present after a
+    /// display reconfigure is what dragged the whole session down to "half
+    /// the refresh rate" (see `native_options`).
+    #[test]
+    fn presentation_is_pinned_to_vsync() {
+        assert_eq!(
+            native_options().wgpu_options.surface.present_mode,
+            egui_wgpu::wgpu::PresentMode::Fifo
+        );
+    }
 }

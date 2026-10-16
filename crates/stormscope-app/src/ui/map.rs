@@ -466,6 +466,34 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             }
                             app.radar_last_raster = std::time::Instant::now();
                             app.radar_pending = None;
+                            app.radar_raster_count += 1;
+                            // Churn guard: every raster is also a full
+                            // texture upload, so a signature that oscillates
+                            // (something flipping across a threshold — which
+                            // is what a display reconfigure can leave behind)
+                            // turns the most expensive op into a per-frame
+                            // one. Warn rate-limited, so the log names it the
+                            // next time the machine feels half-rate.
+                            let now = std::time::Instant::now();
+                            let rate = prune_raster_times(
+                                &mut app.radar_raster_times,
+                                now,
+                                std::time::Duration::from_secs(1),
+                            );
+                            // Playback rasters once per data frame by design,
+                            // so only *idle* churn is a symptom of something.
+                            let playing = app.state.loop_state == crate::state::LoopState::Playing;
+                            if !playing
+                                && rate > 15
+                                && now.saturating_duration_since(app.radar_churn_warn_at)
+                                    >= std::time::Duration::from_secs(2)
+                            {
+                                app.radar_churn_warn_at = now;
+                                log::warn!(
+                                    "radar raster churn: {rate}/s (dragged={}, burst={burst}, motion={motion}) — a value is oscillating",
+                                    response.dragged(),
+                                );
+                            }
                         } else {
                             app.radar_pending = Some(sig);
                         }
@@ -1777,6 +1805,23 @@ pub(super) fn outlook_border_at<'a>(
     best.map(|(f, _)| f)
 }
 
+/// Raster timestamps inside the churn window: push `now`, drop what fell out,
+/// and report how many are left — the count behind the churn warning.
+fn prune_raster_times(
+    times: &mut std::collections::VecDeque<std::time::Instant>,
+    now: std::time::Instant,
+    window: std::time::Duration,
+) -> usize {
+    times.push_back(now);
+    while times
+        .front()
+        .is_some_and(|t| now.duration_since(*t) > window)
+    {
+        times.pop_front();
+    }
+    times.len()
+}
+
 /// Distance from a point to a line segment, in the same (pixel) units.
 pub(super) fn point_segment_distance(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let (dx, dy) = (bx - ax, by - ay);
@@ -2205,6 +2250,33 @@ mod tests {
         assert!((point_segment_distance(13.0, 4.0, 0.0, 0.0, 10.0, 0.0) - 5.0).abs() < 1e-9);
         // Degenerate segment.
         assert!((point_segment_distance(3.0, 4.0, 0.0, 0.0, 0.0, 0.0) - 5.0).abs() < 1e-9);
+    }
+
+    /// The churn window ages rasters out, so the count is per-second and a
+    /// one-off burst does not warn forever.
+    #[test]
+    fn raster_churn_window_is_one_second() {
+        use std::time::{Duration, Instant};
+        let base = Instant::now();
+        let mut q = std::collections::VecDeque::new();
+        assert_eq!(prune_raster_times(&mut q, base, Duration::from_secs(1)), 1);
+        assert_eq!(
+            prune_raster_times(
+                &mut q,
+                base + Duration::from_millis(200),
+                Duration::from_secs(1)
+            ),
+            2
+        );
+        // Two seconds later the early ones have aged out: only the new one.
+        assert_eq!(
+            prune_raster_times(
+                &mut q,
+                base + Duration::from_millis(2200),
+                Duration::from_secs(1)
+            ),
+            1
+        );
     }
 
     /// The polygon fill follows the user's slider, and 0% means no wash at

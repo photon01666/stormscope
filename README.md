@@ -1,7 +1,6 @@
 # stormscope
 
-A fast, native NEXRAD weather-radar viewer for Linux — RadarScope-style
-workflow, built in Rust with [egui/eframe](https://github.com/emilk/egui) on
+A fast, native NEXRAD weather-radar viewer for Linux, built in Rust with [egui/eframe](https://github.com/emilk/egui) on
 Vulkan (wgpu), native Wayland and X11.
 
 **Free public data only**: NOAA/NWS NEXRAD Level II (via Unidata's AWS Open

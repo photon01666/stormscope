@@ -133,10 +133,17 @@ pub struct StormApp {
     /// Per-marker arrival estimates, aligned with `state.markers` by index
     /// (`None` = no cell incoming). Recomputed whenever tracks refresh.
     pub marker_etas: Vec<Option<MarkerEta>>,
+    /// GPU resources of the 3D volume pane, created on first use (see
+    /// [`crate::render3d`]).
+    pub view3d: Option<crate::render3d::Volume3d>,
     /// Last frame's rect of the floating Min-dBZ bar over the map (screen
     /// coords). The map's wheel-zoom skips while the pointer is inside it, so
     /// a scroll there adjusts the filter instead of zooming the map.
     pub min_dbz_bar_rect: Option<egui::Rect>,
+    /// Same, for the 3D pane's display-slider bar: the pane's wheel-zoom
+    /// skips while the pointer is on it (the wheel adjusts the slider under
+    /// the pointer instead).
+    pub view3d_bar_rect: Option<egui::Rect>,
     /// Sub-notch wheel residue (points) for the Min-dBZ bar, so touchpad
     /// scrolls accumulate into whole steps instead of being dropped.
     pub min_dbz_scroll_acc: f32,
@@ -258,7 +265,9 @@ impl StormApp {
             tracks_cache: None,
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
+            view3d: None,
             min_dbz_bar_rect: None,
+            view3d_bar_rect: None,
             min_dbz_scroll_acc: 0.0,
             top_badge_hovered: None,
             map_alert_cycle: None,

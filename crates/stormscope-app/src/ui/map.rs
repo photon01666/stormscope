@@ -1729,7 +1729,7 @@ fn fmt_data_age(total_secs: i64) -> String {
 /// makes one notch equal one step: egui spreads a notch across frames for
 /// smooth scrolling, so any threshold on the smoothed value drops most
 /// notches and the wheel feels like it needs several flicks per tick.
-fn consume_wheel_steps(events: &mut Vec<egui::Event>, acc: &mut f32) -> f32 {
+pub(super) fn consume_wheel_steps(events: &mut Vec<egui::Event>, acc: &mut f32) -> f32 {
     let mut steps = 0.0f32;
     events.retain(|e| {
         if let egui::Event::MouseWheel { unit, delta, .. } = e {

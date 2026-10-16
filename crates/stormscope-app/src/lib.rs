@@ -10,6 +10,7 @@
 
 mod app;
 mod background;
+pub mod render3d;
 mod state;
 mod timefmt;
 mod timeline;

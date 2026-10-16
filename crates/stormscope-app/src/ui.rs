@@ -1,7 +1,7 @@
 //! Top-level layout: auto-hiding controls sidebar, central map, bottom timeline.
 
 use crate::app::StormApp;
-use crate::state::Mode;
+use crate::state::{Mode, PaneMax};
 use radar_core::Moment;
 
 mod alerts;
@@ -9,6 +9,7 @@ mod forecast;
 mod map;
 mod reports;
 mod totals;
+mod volume3d;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the
 /// hover hysteresis below — keep the two in sync.
@@ -37,11 +38,11 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // covers the status bar or timeline.
     let middle = ui.available_rect_before_wrap();
 
-    // Central map canvas takes the full middle width; the sidebar floats
-    // above it instead of reserving space, so peeking it in never resizes
-    // the map (and never triggers a radar re-raster).
+    // Central area: the map, or the map split with the 3D volume pane. The
+    // sidebar floats above the panes instead of reserving space, so peeking
+    // it in never resizes them (and never triggers a radar re-raster).
     egui::CentralPanel::default().show(ui, |ui| {
-        crate::ui::map::map(ui, app);
+        central_panes(ui, app);
     });
 
     // Floating auto-hide sidebar, drawn over the map.
@@ -67,6 +68,160 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // the panels so it isn't clipped by them; the Settings menu closes
     // itself before opening this.
     confirm_clear_dialog(ui.ctx(), app);
+}
+
+/// The central area: 2D map alone, or side-by-side with the 3D volume pane.
+///
+/// Panes carry small chips in their top-right corner ("Max" / "Split" /
+/// "Fit" / "3D") drawn *after* the panes so they sit on top of the map's
+/// interaction widget — the pointer lands on the chip, not the map. The
+/// split divider is a drag strip between the two panes.
+fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
+    let full = ui.available_rect_before_wrap();
+    let scale = app.sidebar_scale.max(1.0);
+    let chip_y = |rect: egui::Rect| rect.min.y + 8.0 * scale;
+
+    match (app.state.view3d_open, app.state.pane_max) {
+        // 3D closed: the map, with a small opener chip for discoverability.
+        (false, _) => {
+            crate::ui::map::map(ui, app);
+            let chip = pane_chip(
+                ui,
+                egui::pos2(full.max.x - 8.0 * scale, chip_y(full)),
+                "3D",
+                scale,
+            )
+            .on_hover_text("Show the 3D volume of this scan beside the map");
+            if chip.clicked() {
+                app.state.view3d_open = true;
+                app.state.pane_max = PaneMax::None;
+            }
+        }
+        // The 3D pane maximized: volume fills the middle, "Split" brings the
+        // map back and "Fit" re-frames the camera.
+        (true, PaneMax::View3d) => {
+            crate::ui::volume3d::show_pane(ui, app, full);
+            let fit = pane_chip(
+                ui,
+                egui::pos2(full.max.x - 8.0 * scale, chip_y(full)),
+                "Fit",
+                scale,
+            )
+            .on_hover_text("Re-fit the camera to this volume");
+            let split = pane_chip(
+                ui,
+                egui::pos2(fit.rect.min.x - 6.0 * scale, chip_y(full)),
+                "Split",
+                scale,
+            )
+            .on_hover_text("Show the 2D map beside the 3D view again");
+            if fit.clicked() {
+                crate::ui::volume3d::fit_view(&mut app.state);
+            }
+            if split.clicked() {
+                app.state.pane_max = PaneMax::None;
+            }
+        }
+        // The map maximized (3D still on, one click away).
+        (true, PaneMax::Map) => {
+            crate::ui::map::map(ui, app);
+            let split = pane_chip(
+                ui,
+                egui::pos2(full.max.x - 8.0 * scale, chip_y(full)),
+                "Split",
+                scale,
+            )
+            .on_hover_text("Show the 3D view beside the map again");
+            if split.clicked() {
+                app.state.pane_max = PaneMax::None;
+            }
+        }
+        // Side-by-side split with a draggable divider.
+        (true, PaneMax::None) => {
+            let frac = app.state.pane_split.clamp(0.25, 0.75);
+            let div_w = 7.0_f32;
+            let usable = (full.width() - div_w).max(80.0);
+            let map_rect =
+                egui::Rect::from_min_size(full.min, egui::vec2(usable * frac, full.height()));
+            let div_rect = egui::Rect::from_min_size(
+                egui::pos2(map_rect.max.x, full.min.y),
+                egui::vec2(div_w, full.height()),
+            );
+            let v3_rect =
+                egui::Rect::from_min_max(egui::pos2(div_rect.max.x, full.min.y), full.max);
+
+            ui.scope_builder(egui::UiBuilder::new().max_rect(map_rect), |ui| {
+                crate::ui::map::map(ui, app);
+            });
+
+            // Divider: drag to re-balance the panes (map keeps 25–75%).
+            let resp = ui.interact(
+                div_rect,
+                egui::Id::new("stormscope.pane.divider"),
+                egui::Sense::drag(),
+            );
+            if resp.hovered() || resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if resp.dragged() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    app.state.pane_split =
+                        ((p.x - full.min.x) / full.width().max(1.0)).clamp(0.25, 0.75);
+                }
+            }
+            ui.painter()
+                .rect_filled(div_rect, 0.0, egui::Color32::from_rgb(44, 48, 56));
+
+            crate::ui::volume3d::show_pane(ui, app, v3_rect);
+
+            let map_max = pane_chip(
+                ui,
+                egui::pos2(map_rect.max.x - 8.0 * scale, chip_y(map_rect)),
+                "Max",
+                scale,
+            )
+            .on_hover_text("Maximize the 2D map");
+            let fit = pane_chip(
+                ui,
+                egui::pos2(v3_rect.max.x - 8.0 * scale, chip_y(v3_rect)),
+                "Fit",
+                scale,
+            )
+            .on_hover_text("Re-fit the camera to this volume");
+            let v3_max = pane_chip(
+                ui,
+                egui::pos2(fit.rect.min.x - 6.0 * scale, chip_y(v3_rect)),
+                "Max",
+                scale,
+            )
+            .on_hover_text("Maximize the 3D view");
+            if map_max.clicked() {
+                app.state.pane_max = PaneMax::Map;
+            }
+            if fit.clicked() {
+                crate::ui::volume3d::fit_view(&mut app.state);
+            }
+            if v3_max.clicked() {
+                app.state.pane_max = PaneMax::View3d;
+            }
+        }
+    }
+}
+
+/// A small chip button pinned by its right edge at `right_top`, used for the
+/// pane controls. Sized to its label so "Max"/"Split"/"Fit" all fit.
+fn pane_chip(ui: &mut egui::Ui, right_top: egui::Pos2, label: &str, scale: f32) -> egui::Response {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE);
+    let size = galley.size() + egui::vec2(16.0 * scale, 9.0 * scale);
+    let rect = egui::Rect::from_min_size(egui::pos2(right_top.x - size.x, right_top.y), size);
+    ui.put(
+        rect,
+        egui::Button::new(egui::RichText::new(label).small())
+            .fill(egui::Color32::from_black_alpha(170)),
+    )
 }
 
 /// Extra text/element scale for the sidebar on high-res monitors.
@@ -541,6 +696,120 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         .clicked()
     {
         app.state.totals_open = !app.state.totals_open;
+    }
+
+    // 3D volume pane: the split/max controls live on the panes themselves
+    // (top-right corner chips); this is the on/off + the display settings.
+    ui.add_space(6.0);
+    let mut view3d_open = app.state.view3d_open;
+    if ui
+        .checkbox(&mut view3d_open, "3D radar pane")
+        .on_hover_text(
+            "All elevation cuts of the current scan as one rotatable volume, \
+             beside the map: drag the 3D pane to orbit, right-drag (or \
+             middle-drag) to pan freely, wheel to zoom, double-click (or Fit) \
+             to re-frame. The \"Max\" chip maximizes either pane; the divider \
+             between them drags",
+        )
+        .changed()
+    {
+        app.state.view3d_open = view3d_open;
+        if !view3d_open {
+            app.state.pane_max = crate::state::PaneMax::None;
+        }
+    }
+    if app.state.view3d_open {
+        let (lo, hi) = radar_render::ColorTable::for_moment(app.state.moment).range();
+        // Quick controls (echo floor / opacity / height) live at the pane's
+        // bottom center too; these stay as the settings home.
+        ui.horizontal(|ui| {
+            ui.label("Echo ≥");
+            ui.add(egui::Slider::new(&mut app.state.view3d_threshold, lo..=hi).step_by(1.0));
+        });
+        ui.add(egui::Slider::new(&mut app.state.view3d_alpha, 0.1..=1.0).text("3D opacity"));
+        ui.add(egui::Slider::new(&mut app.state.view3d_ve, 1.0..=20.0).text("Height ×"));
+
+        // Tilt range: which cuts the 3D scene includes (all of them by
+        // default). Options come from the volume on screen.
+        let mut tilts: Vec<f32> = app
+            .state
+            .current()
+            .map(|f| {
+                f.volume
+                    .sweeps
+                    .iter()
+                    .filter(|s| s.moment(app.state.moment).is_some())
+                    .map(|s| s.elevation_deg)
+                    .collect()
+            })
+            .unwrap_or_default();
+        tilts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        tilts.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        ui.horizontal(|ui| {
+            ui.label("Tilt");
+            let label =
+                |v: Option<f32>| v.map_or_else(|| "all".to_string(), |t| format!("{t:.1}°"));
+            egui::ComboBox::from_id_salt("view3d-tilt-lo")
+                .selected_text(label(app.state.view3d_tilt_lo))
+                .width(64.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut app.state.view3d_tilt_lo, None, "all");
+                    for t in &tilts {
+                        ui.selectable_value(
+                            &mut app.state.view3d_tilt_lo,
+                            Some(*t),
+                            format!("{t:.1}°"),
+                        );
+                    }
+                });
+            ui.label("to");
+            egui::ComboBox::from_id_salt("view3d-tilt-hi")
+                .selected_text(label(app.state.view3d_tilt_hi))
+                .width(64.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut app.state.view3d_tilt_hi, None, "all");
+                    for t in &tilts {
+                        ui.selectable_value(
+                            &mut app.state.view3d_tilt_hi,
+                            Some(*t),
+                            format!("{t:.1}°"),
+                        );
+                    }
+                });
+        });
+        if let (Some(lo), Some(hi)) = (app.state.view3d_tilt_lo, app.state.view3d_tilt_hi) {
+            if lo > hi {
+                app.state.view3d_tilt_hi = Some(lo);
+            }
+        }
+
+        // Altitude slab, in feet (the 3D pane speaks miles and feet).
+        ui.add(
+            egui::Slider::new(&mut app.state.view3d_alt_lo_ft, 0.0..=65_000.0)
+                .step_by(1_000.0)
+                .text("Altitude from")
+                .suffix(" ft"),
+        );
+        ui.add(
+            egui::Slider::new(&mut app.state.view3d_alt_hi_ft, 0.0..=65_000.0)
+                .step_by(1_000.0)
+                .text("Altitude to")
+                .suffix(" ft"),
+        );
+        if app.state.view3d_alt_lo_ft > app.state.view3d_alt_hi_ft {
+            app.state.view3d_alt_hi_ft = app.state.view3d_alt_lo_ft;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Detail");
+            egui::ComboBox::from_id_salt("view3d-detail")
+                .selected_text(app.state.view3d_detail.label())
+                .show_ui(ui, |ui| {
+                    for d in radar_render::MeshDetail::ALL {
+                        ui.selectable_value(&mut app.state.view3d_detail, d, d.label());
+                    }
+                });
+        });
     }
 
     // --- SPC convective outlook overlay ------------------------------------

@@ -31,6 +31,13 @@ Screenshot regeneration: focus stormscope, then
   adjustable fps, exact per-frame timestamps.
 - Reflectivity filter (min dBZ) both in the controls sidebar and as a
   floating quick-adjust bar on the map — scroll over it to step 5 dB.
+- Optional **3D radar pane**: every elevation cut of the current scan as one
+  rotatable volume, beside the map or maximized. Drag orbits, right-drag
+  pans freely, wheel zooms; the bottom-center sliders set the echo floor,
+  opacity and height scale; the sidebar adds a tilt range and an altitude
+  slab (feet). The ground is the same basemap the 2D map draws, and custom
+  markers rise from it as pins. Range rings are 50-mile landmarks, like a
+  sectional chart.
 - Scan-age badge next to the precip/clear-air mode badge: exact age of the
   newest scan with cadence-aware staleness colours.
 

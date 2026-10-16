@@ -3,6 +3,35 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.0 — 2026-10-16
+
+**3D radar pane (new)**
+- The map gained an optional 3D companion: every elevation cut of the
+  current scan as one rotatable volume — beside the 2D map (resizable split,
+  draggable divider) or maximized to fill the window. "Max"/"Split" chips
+  live on the panes, "Fit" re-frames the camera; drag orbits, wheel zooms,
+  double-click re-fits.
+- The geometry is honest: each cut is a draped surface over its azimuth ×
+  range grid at true 4/3-earth beam heights (a 0.5° beam is ~1.5 km up at
+  100 km), and no-echo gaps are skipped rather than smeared across. Height
+  scale is the readability knob (default ×6, range ×1–×20) because real
+  storms are ~15 km tall over a 300 km view — 1:20 on paper.
+- Units are US radar-display units: range rings every 50 mi, the altitude
+  scale and the altitude slab in feet, echo floors in the moment's unit.
+- The pane's bottom center carries the three quick sliders (echo floor,
+  opacity, height scale — the wheel adjusts the one under the pointer); the
+  sidebar carries tilt range (e.g. only 0.5–1.8°, or one cut alone),
+  altitude slab (e.g. only echo above 10,000 ft), mesh detail, and it
+  follows the map's moment and timeline playhead.
+- The ground is the same basemap the 2D map draws — the same tiles out of
+  the same disk cache and fetch queue — so the volume reads against real
+  geography. Custom markers rise from it as labeled pins.
+- Rendered by a wgpu offscreen pass on the UI's own device (depth buffer,
+  premultiplied blending, colors straight from the 2D colormap — the two
+  views never disagree about what a color means). The mesh builder is a
+  pure module in radar-render under unit test, and a headless smoke test
+  renders a synthetic supercell to a PNG.
+
 ## v1.1.7 — 2026-10-16
 
 **Storm reports (new layer)**

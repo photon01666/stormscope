@@ -17,6 +17,7 @@ radar-render = { workspace = true }
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
+bytemuck.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 serde.workspace = true
@@ -39,3 +40,10 @@ egui = "0.36"
 # egui_wgpu::RenderState can name the device handed to the renderer.
 egui-wgpu = "0.36"
 wgpu = { workspace = true }
+
+[dev-dependencies]
+# Headless render smoke test (`tests/render3d_smoke.rs`, ignored by default):
+# block_on for the async adapter/device request, png to dump the frame for
+# eyeballing.
+pollster = "0.4"
+png = "0.17"

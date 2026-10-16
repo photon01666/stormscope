@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.7"
+version = "1.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/photon01666/stormscope"
@@ -29,6 +29,8 @@ serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
 wgpu = "30"
+# Zero-copy casting for the 3D mesh vertex buffers ([`MeshVertex`] → GPU).
+bytemuck = { version = "1", features = ["derive"] }
 # Mapbox/earcut polygon triangulation — needed to FILL the concave SPC
 # outlook polygons (egui's convex_polygon can't).
 earcutr = "0.5"

@@ -124,6 +124,18 @@ pub enum MeasureDrag {
     Label,
 }
 
+/// Which pane owns the central area while the 3D volume pane is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaneMax {
+    /// Side-by-side split: 2D map and 3D volume with a draggable divider.
+    #[default]
+    None,
+    /// The 2D map fills the central area.
+    Map,
+    /// The 3D volume fills the central area.
+    View3d,
+}
+
 /// One frame in the animation ring.
 pub struct Frame {
     pub volume_start: DateTime<Utc>,
@@ -260,6 +272,40 @@ pub struct AppState {
     pub show_totals: bool,
     pub totals_hover: Option<String>,
     pub totals_hover_at: f64,
+
+    // 3D volume pane — split view beside the 2D map.
+    /// Whether the 3D pane is shown beside the map. `STORMSCOPE_3D_OPEN=1`
+    /// in the environment opens it at launch (scripted screenshots).
+    pub view3d_open: bool,
+    /// Which pane fills the central area (`None` = side-by-side split).
+    pub pane_max: PaneMax,
+    /// Fraction of the central width the map keeps while split.
+    pub pane_split: f32,
+    /// Orbit camera for the 3D pane. `view3d_dist_km < 1` means "auto-fit".
+    pub view3d_yaw: f32,
+    pub view3d_pitch: f32,
+    pub view3d_dist_km: f32,
+    /// Orbit center offset from the site (km, ENU) — moved by panning the
+    /// 3D pane (right/middle drag); "Fit" recenters it.
+    pub view3d_target_x_km: f32,
+    pub view3d_target_y_km: f32,
+    pub view3d_target_z_km: f32,
+    /// Vertical exaggeration of the volume (height multiplier).
+    pub view3d_ve: f32,
+    /// Opacity of the volume surfaces.
+    pub view3d_alpha: f32,
+    /// Echo display threshold, in the current moment's units.
+    pub view3d_threshold: f32,
+    /// Mesh density of the 3D pane.
+    pub view3d_detail: radar_render::MeshDetail,
+    /// Elevation cuts to include, degrees; `None` = unbounded. The 3D
+    /// "tilt" control — all cuts render at once unless narrowed.
+    pub view3d_tilt_lo: Option<f32>,
+    pub view3d_tilt_hi: Option<f32>,
+    /// Altitude slab shown, feet (0 = ground, 65k = no ceiling). The shader
+    /// discards fragments outside, so moving these never rebuilds geometry.
+    pub view3d_alt_lo_ft: f32,
+    pub view3d_alt_hi_ft: f32,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
@@ -401,6 +447,29 @@ impl Default for AppState {
             show_totals: true,
             totals_hover: None,
             totals_hover_at: 0.0,
+            view3d_open: std::env::var_os("STORMSCOPE_3D_OPEN").is_some(),
+            pane_max: if std::env::var_os("STORMSCOPE_3D_OPEN").is_some_and(|v| v == "max") {
+                PaneMax::View3d
+            } else {
+                PaneMax::None
+            },
+            pane_split: 0.5,
+            view3d_yaw: 0.0,
+            view3d_pitch: 38.0,
+            view3d_dist_km: 0.0,
+            view3d_target_x_km: 0.0,
+            view3d_target_y_km: 0.0,
+            view3d_target_z_km: 0.0,
+            // Real storms are ~15 km tall over a 300 km-wide scan — 1:20.
+            // 6× reads like the classic GR2 look without lying about shape.
+            view3d_ve: 6.0,
+            view3d_alpha: 0.45,
+            view3d_threshold: 5.0,
+            view3d_detail: radar_render::MeshDetail::Normal,
+            view3d_tilt_lo: None,
+            view3d_tilt_hi: None,
+            view3d_alt_lo_ft: 0.0,
+            view3d_alt_hi_ft: 65_000.0,
             show_tracks: true,
             outlook: None,
             // On by default with the outline-only look (fill 0.0): the risk

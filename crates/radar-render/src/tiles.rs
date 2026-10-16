@@ -720,6 +720,81 @@ impl TileLayer {
     /// requests a repaint so the frame updates). The returned
     /// [`egui::Response`]'s `rect.min` is the viewport origin — screen
     /// position of view pixel `(x, y)` is `response.rect.min + (x, y)`.
+    /// Ensure a set of tiles is loaded, returning each one's texture as soon
+    /// as it exists in memory (`None` = queued/failed, try again next frame).
+    ///
+    /// Used by the 3D pane's map-textured ground, which needs the same tiles
+    /// the basemap uses without painting a 2D viewport. Drains worker
+    /// results, queues misses (disk cache first, then the shared network
+    /// politeness gate) and starts workers — the same tail as `paint`, just
+    /// batched once per frame instead of per tile.
+    pub fn ensure_tiles(
+        &mut self,
+        ui: &egui::Ui,
+        keys: &[TileKey],
+    ) -> Vec<Option<egui::TextureId>> {
+        // 1) Collect finished tiles (capped, like `paint`: a warm burst of
+        // uploads in one frame is a visible hitch).
+        const MAX_TEXTURE_UPLOADS: usize = 16;
+        let mut drained = 0usize;
+        while drained < MAX_TEXTURE_UPLOADS {
+            let Ok(msg) = self.rx.try_recv() else { break };
+            drained += 1;
+            self.pending.remove(&msg.key);
+            match msg.image {
+                Some(image) => {
+                    let name = format!("tile {}/{}/{}", msg.key.z, msg.key.x, msg.key.y);
+                    let handle = ui
+                        .ctx()
+                        .load_texture(name, image, egui::TextureOptions::LINEAR);
+                    self.textures.put(msg.key, handle);
+                }
+                None => {
+                    self.mark_failed(msg.key);
+                    log::warn!("tile {:?} failed", msg.key);
+                }
+            }
+        }
+
+        // 2) Resolve each requested key.
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(handle) = self.textures.get(key) {
+                out.push(Some(handle.id()));
+                continue;
+            }
+            if self.client.is_some()
+                && !self.failed.contains_key(key)
+                && !self.pending.contains(key)
+            {
+                self.pending.insert(*key);
+                self.queue.push_back(*key);
+            }
+            out.push(None);
+        }
+
+        // 3) Failure cooldowns + start workers, exactly like `paint`.
+        let now = Instant::now();
+        self.failed.retain(|key, at| {
+            if now.duration_since(*at) >= FAILED_RETRY {
+                self.queue.push_back(*key);
+                false
+            } else {
+                true
+            }
+        });
+        while self.in_flight() < MAX_IN_FLIGHT {
+            let Some(key) = self.queue.pop_front() else {
+                break;
+            };
+            self.spawn(key);
+        }
+        if self.in_flight() > 0 || !self.queue.is_empty() {
+            ui.ctx().request_repaint();
+        }
+        out
+    }
+
     pub fn paint(&mut self, ui: &egui::Ui, view: &MapView) -> egui::Response {
         // 1) Collect finished tiles (disk/HTTP work happened off-thread).
         // Capped per frame: a warm startup can deliver ~150 tiles at once and

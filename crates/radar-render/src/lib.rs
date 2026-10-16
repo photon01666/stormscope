@@ -22,6 +22,7 @@ pub mod projection;
 pub mod raster;
 pub mod tiles;
 pub mod tracks;
+pub mod volume3d;
 
 pub use colormap::{ColorTable, Stop};
 pub use projection::{
@@ -35,3 +36,8 @@ pub use raster::{
 };
 pub use tiles::{TileKey, TileLayer, TileRange, tile_range, tile_scale, tile_view_rect};
 pub use tracks::{CellEta, StormTrack, compute_tracks, eta_to_point, extrapolate};
+pub use volume3d::{
+    Camera, FT_PER_KM, KM_PER_MILE, MeshDetail, MeshFilter, MeshVertex, NO_THRESHOLD_VALUE,
+    TiltDraw, VolumeMesh, beam_height_km, build_ground_grid, build_volume_mesh,
+    ground_tile_bounds_km, ground_tile_keys, ring_radii_mi,
+};

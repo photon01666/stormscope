@@ -45,6 +45,19 @@ log; entries start at the first public release.
   the radar — the border carries the color. Event labels now appear only while
   the pointer is on a polygon: a clicked alert keeps its afterglow without
   leaving a name floating on the map.
+- That tint is adjustable now: a **fill slider** sits in Settings → Map
+  appearance and in the alerts browser header (0% = outlines only, 100% = the
+  shipped wash).
+
+**Popup resizing**
+- Grabbing a popup's bottom border no longer yanks it upward. egui derives the
+  resize drag's base rectangle from the *window* while treating it as a
+  *content* size, so any vertical space a popup was offered and did not use
+  (a scroll area capped below its space, a footer row using less than the
+  rest) made the first drag frame jump by exactly that gap — a 50 px gap, a
+  50 px jump — leaving the pointer grabbing thin air. Popups now pad the
+  leftover so they are exactly as tall as they look, and a headless test
+  drives synthetic pointer input at the border to keep it that way.
 
 **Alerts browser**
 - New popup listing active NWS alerts, opened from the sidebar or by clicking

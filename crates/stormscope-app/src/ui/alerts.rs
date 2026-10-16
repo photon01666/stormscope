@@ -286,6 +286,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let open = &mut state.alerts_popup_open;
     let filter = &mut state.alerts_filter;
     let tab = &mut state.alerts_tab;
+    let fill = &mut state.alerts_fill;
     let site_id = &state.site_id;
     let all = &state.all_alerts;
     let station: Vec<&Warning> = station_alerts(all, site_lat, site_lon, STATION_ALERT_RADIUS_KM);
@@ -324,7 +325,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
             });
             ui.label(
                 egui::RichText::new(format!(
-                    "source api.weather.gov · refreshed every 5 min · the station tab covers alerts within {} km of the site",
+                    "source api.weather.gov · nationwide sweep every 5 min, station alerts every 60 s (within {} km of the site)",
                     STATION_ALERT_RADIUS_KM as i64
                 ))
                 .weak()
@@ -337,6 +338,20 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                     egui::TextEdit::singleline(filter)
                         .hint_text("event, area, office, headline…")
                         .desired_width(f32::INFINITY),
+                );
+            });
+            // The polygon tint is adjusted where the warnings are read, and
+            // the fill is applied on the map behind this window.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Polygon fill").weak().small());
+                ui.add_sized(
+                    [110.0, 18.0],
+                    egui::Slider::new(fill, 0.0..=1.0)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                )
+                .on_hover_text(
+                    "Tint strength of the warning polygons on the map \
+                     (0% = outlines only)",
                 );
             });
             ui.separator();
@@ -359,6 +374,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                     })
                     .weak(),
                 );
+                super::fill_popup_height(ui);
                 return;
             }
             ui.label(
@@ -417,6 +433,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                         }
                     }
                 });
+            super::fill_popup_height(ui);
         });
 
     if let Some((lat, lon)) = center_on {
@@ -549,6 +566,7 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
                         }
                     }
                 });
+            super::fill_popup_height(ui);
         });
 
     if !open {

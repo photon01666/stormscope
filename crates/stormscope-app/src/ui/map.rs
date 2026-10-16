@@ -1042,7 +1042,7 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
             // hides the thing the map is for. The border carries the color.
             painter.add(egui::Shape::convex_polygon(
                 pts,
-                color.gamma_multiply(0.05 + 0.17 * intensity),
+                color.gamma_multiply(warning_fill_alpha(intensity, app.state.alerts_fill)),
                 egui::Stroke::NONE,
             ));
         }
@@ -1788,6 +1788,13 @@ pub(super) fn point_segment_distance(px: f64, py: f64, ax: f64, ay: f64, bx: f64
     (px - (ax + t * dx)).hypot(py - (ay + t * dy))
 }
 
+/// Alpha of a warning polygon's fill: the shipped wash (5% at rest, 22%
+/// under the pointer) scaled by the user's fill setting, where 0% leaves the
+/// outline alone on the map.
+fn warning_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
+    (0.05 + 0.17 * intensity) * user_fill.clamp(0.0, 1.0)
+}
+
 /// How close (viewport px) the pointer must be to a warning polygon's outline
 /// for the hover and the click to treat it as aimed at that polygon: the same
 /// 8 px reach the SPC outlines use (`OUTLOOK_BORDER_PX`), so "what lights up is
@@ -2198,6 +2205,25 @@ mod tests {
         assert!((point_segment_distance(13.0, 4.0, 0.0, 0.0, 10.0, 0.0) - 5.0).abs() < 1e-9);
         // Degenerate segment.
         assert!((point_segment_distance(3.0, 4.0, 0.0, 0.0, 0.0, 0.0) - 5.0).abs() < 1e-9);
+    }
+
+    /// The polygon fill follows the user's slider, and 0% means no wash at
+    /// all — overlapping warnings then show only their outlines.
+    #[test]
+    fn warning_fill_alpha_follows_the_slider() {
+        assert!(
+            (warning_fill_alpha(0.0, 1.0) - 0.05).abs() < 1e-6,
+            "at rest"
+        );
+        assert!(
+            (warning_fill_alpha(1.0, 1.0) - 0.22).abs() < 1e-6,
+            "under the pointer"
+        );
+        assert!((warning_fill_alpha(0.0, 0.5) - 0.025).abs() < 1e-6);
+        assert_eq!(warning_fill_alpha(1.0, 0.0), 0.0, "outlines only");
+        // Out-of-range values clamp instead of misbehaving.
+        assert!((warning_fill_alpha(0.0, 3.0) - 0.05).abs() < 1e-6);
+        assert_eq!(warning_fill_alpha(0.0, -1.0), 0.0);
     }
 
     /// Clicking a stack of overlapping warnings: the first click takes the

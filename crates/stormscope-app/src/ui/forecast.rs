@@ -194,6 +194,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
                         });
                 }
             }
+            super::fill_popup_height(ui);
         });
 
     app.state.forecast_open = open;

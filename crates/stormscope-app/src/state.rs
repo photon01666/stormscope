@@ -184,6 +184,10 @@ pub struct AppState {
     /// Alert id under the pointer in the alerts browser: the map glows that
     /// polygon so a list row can be matched to the warning on screen.
     pub alerts_hover: Option<String>,
+    /// How opaque warning polygon fills are drawn: 1.0 is the shipped look
+    /// (a light wash that lets the radar through), 0.0 leaves just the
+    /// outlines. The Settings menu carries the slider.
+    pub alerts_fill: f32,
     /// Warnings under the pointer *on the map*, most clickable first: the
     /// polygon whose outline is nearest the pointer, then the containing
     /// polygons smallest first (see `ui::alerts::warning_stack_at`). Every one
@@ -332,6 +336,7 @@ impl Default for AppState {
             alerts_filter: String::new(),
             alerts_hover: None,
             alerts_map_stack: Vec::new(),
+            alerts_fill: 1.0,
             outlook_hover: None,
             outlook_hover_at: 0.0,
             alerts_map_hover_at: 0.0,

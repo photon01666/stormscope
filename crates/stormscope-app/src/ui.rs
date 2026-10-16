@@ -781,6 +781,28 @@ fn settings_menu(ui: &mut egui::Ui, app: &mut StormApp) {
                 .weak()
                 .small(),
         );
+        ui.separator();
+        ui.label(egui::RichText::new("Map appearance").strong());
+        ui.add_space(4.0);
+        warning_fill_slider(ui, app);
+    });
+}
+
+/// The warning-polygon fill slider, shared by the Settings menu and the
+/// alerts browser. 0% leaves the outlines and hides the wash entirely.
+pub(super) fn warning_fill_slider(ui: &mut egui::Ui, app: &mut StormApp) {
+    ui.horizontal(|ui| {
+        ui.label("Warning polygon fill");
+        ui.add_sized(
+            [120.0, 18.0],
+            egui::Slider::new(&mut app.state.alerts_fill, 0.0..=1.0)
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        )
+        .on_hover_text(
+            "How strongly warning polygons are tinted. Overlapping warnings \
+             multiply their fills, so turning this down keeps the radar visible \
+             underneath while the outlines stay put (0% = outlines only).",
+        );
     });
 }
 
@@ -902,6 +924,25 @@ pub(super) fn popup_size(ctx: &egui::Context, scale: f32, w: f32, h: f32) -> egu
         (w * scale).min(screen.x - 40.0 * scale),
         (h * scale).min(screen.y - 90.0 * scale),
     )
+}
+
+/// Fill whatever vertical space a popup's content did not use, so the window
+/// stays exactly as tall as what it draws.
+///
+/// This is what keeps border-dragging sane. egui lays a resizable window's
+/// content out inside the size it was offered, but the resize drag takes its
+/// base rect from the *window* rectangle while treating it as a content size:
+/// if the content ends short of the window — a scroll area capped below the
+/// space it was handed, a footer that does not use the rest — the two
+/// disagree, and the first frame of a border drag yanks the border up by
+/// exactly that gap, leaving the pointer grabbing thin air. Measured with a
+/// probe driving synthetic input: a 50 px shortfall produced a 50 px jump, and
+/// padding the leftover removes it (the border then tracks the pointer 1:1).
+pub(super) fn fill_popup_height(ui: &mut egui::Ui) {
+    let rest = ui.available_height();
+    if rest > 0.0 {
+        ui.add_space(rest);
+    }
 }
 
 /// SPC forecaster discussion popup, opened by clicking an outlook outline on
@@ -1048,6 +1089,7 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
                         .small(),
                 );
             });
+            fill_popup_height(ui);
         });
 
     if !open {
@@ -1202,5 +1244,98 @@ mod tests {
     fn sidebar_panel_height_floored_on_short_windows() {
         let tiny = egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(1280.0, 50.0));
         assert_eq!(sidebar_panel_height(tiny), 120.0);
+    }
+
+    /// Dragging a popup's bottom border must not move it: egui derives the
+    /// drag base from the window rectangle, so content that ends short of the
+    /// window makes the first drag frame yank the border up by the shortfall
+    /// (the "border jumps up and the mouse is left behind" bug). Drive a real
+    /// popup — built like the shipped ones, scroll area and all — with
+    /// synthetic pointer input and check the border follows the pointer.
+    #[test]
+    fn popup_border_drag_stays_glued_to_the_pointer() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+        let long: String = (0..40)
+            .map(|i| format!("line {i}: the quick brown fox jumps over the lazy dog\n"))
+            .collect();
+
+        let mut time = 0.0f64;
+        let mut frame = |events: Vec<egui::Event>| -> egui::Rect {
+            time += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut rect = egui::Rect::ZERO;
+            let out = ctx.run_ui(input, |ui| {
+                let win = egui::Window::new("Popup drag probe")
+                    .id(egui::Id::new("stormscope.test.popup_drag"))
+                    .default_size(popup_size(ui.ctx(), 1.0, 620.0, 500.0))
+                    .max_height(popup_max_height(ui.ctx(), 1.0))
+                    .min_size(egui::vec2(420.0, 220.0))
+                    .default_pos(egui::pos2(200.0, 100.0))
+                    .resizable(true)
+                    .show(ui.ctx(), |ui| {
+                        ui.heading("NOAA alert details");
+                        ui.separator();
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .max_height((ui.available_height() - 50.0).max(120.0))
+                            .show(ui, |ui| {
+                                ui.label(&long);
+                            });
+                        ui.horizontal(|ui| {
+                            let _ = ui.button("Reload text");
+                            ui.label("source: spc.noaa.gov");
+                        });
+                        fill_popup_height(ui);
+                    });
+                rect = win.expect("window shown").response.rect;
+            });
+            out.drop_without_applying_deltas();
+            rect
+        };
+
+        let mut rect = egui::Rect::ZERO;
+        for _ in 0..5 {
+            rect = frame(vec![]);
+        }
+        let steady = rect;
+        let bottom = egui::pos2(steady.center().x, steady.max.y - 1.0);
+        frame(vec![egui::Event::PointerMoved(bottom)]);
+        frame(vec![egui::Event::PointerButton {
+            pos: bottom,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        }]);
+        // The grab frame itself: egui may re-run the pass while a drag starts.
+        let mut grab = steady;
+        for _ in 0..2 {
+            frame(vec![egui::Event::PointerMoved(bottom)]);
+            grab = frame(vec![]);
+        }
+        assert!(
+            (grab.height() - steady.height()).abs() <= 2.0,
+            "grabbing the bottom border moved it: {} -> {}",
+            steady.height(),
+            grab.height()
+        );
+        // And now the drag proper: 100 px of pointer must be 100 px of border.
+        let target = bottom + egui::vec2(0.0, 100.0);
+        let mut grown = grab;
+        for _ in 0..2 {
+            frame(vec![egui::Event::PointerMoved(target)]);
+            grown = frame(vec![]);
+        }
+        assert!(
+            (grown.height() - grab.height() - 100.0).abs() <= 2.0,
+            "border did not follow the pointer: {} -> {} for a 100 px drag",
+            grab.height(),
+            grown.height()
+        );
     }
 }

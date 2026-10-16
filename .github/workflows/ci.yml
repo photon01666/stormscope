@@ -40,9 +40,6 @@ jobs:
   clippy:
     name: clippy (informational)
     runs-on: ubuntu-latest
-    # Not gating yet: ~100 pre-existing lints (mostly collapsible_if and
-    # unnecessary_map_or). Remove `continue-on-error` once that cleanup lands.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -51,5 +48,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Informational on purpose: ~100 pre-existing style lints (the first
+      # one clippy stops on is clippy::chunks_exact_to_as_chunks in
+      # radar-decode). Without `-D warnings` the lints surface as annotated
+      # warnings on the run while the job itself stays green; once the
+      # backlog is cleaned up, add `-- -D warnings` here to make it gating.
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets

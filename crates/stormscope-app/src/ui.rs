@@ -7,6 +7,7 @@ use radar_core::Moment;
 mod alerts;
 mod forecast;
 mod map;
+mod reports;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the
 /// hover hysteresis below — keep the two in sync.
@@ -57,6 +58,8 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // SPC discussion popup (clicking an outlook outline).
     outlook_detail_window(ui.ctx(), app);
+    reports::lsr_detail_window(ui.ctx(), app);
+    reports::mcd_detail_window(ui.ctx(), app);
 
     // "Really clear …?" confirmation, drawn over everything. Rendered after
     // the panels so it isn't clipped by them; the Settings menu closes
@@ -504,6 +507,12 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.add_space(6.0);
     ui.checkbox(&mut app.state.show_alerts, "Show warnings");
     ui.checkbox(&mut app.state.show_tracks, "Show storm tracks");
+    ui.checkbox(&mut app.state.show_lsrs, "Storm reports")
+        .on_hover_text("NWS Preliminary Local Storm Reports from the last 12 hours, plotted where the report places them; white-ringed dots are trained spotters");
+    ui.checkbox(&mut app.state.show_mcds, "Mesoscale discussions")
+        .on_hover_text(
+            "SPC mesoscale discussion areas — hover for the watch chance, click for the full text",
+        );
     let alert_count = if app.state.all_alerts.is_empty() {
         app.state.alerts.len()
     } else {

@@ -201,7 +201,10 @@ impl LsrSource {
                 .to_string();
             keep.push((id.to_string(), office, issued));
         }
-        // The list is newest first; keep it that way.
+        // Bound the first fill: the list spans more products than any view
+        // needs, and each unseen product is one request (paced). Newest
+        // first, so truncating keeps the most recent reports.
+        keep.truncate(80);
         self.texts
             .retain(|id, _| keep.iter().any(|(k, _, _)| k == id));
 

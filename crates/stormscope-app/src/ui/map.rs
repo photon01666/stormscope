@@ -120,8 +120,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     }
                     if let Some((site, _)) = best {
                         app.select_site(site.id);
+                    } else if app.state.show_lsrs
+                        && let Some(r) = super::reports::lsr_at(&app.state.lsrs, &view, cx, cy)
+                    {
+                        // 4) A storm-report dot (drawn on top, small precise
+                        // target): open its full report.
+                        app.state.lsr_detail = Some(r.id.clone());
                     } else {
-                        // 4) A warning polygon under the click — inside it, or
+                        // 5) A warning polygon under the click — inside it, or
                         // on its outline (8 px of reach, so a polygon drawn
                         // under another one stays clickable where they
                         // overlap). Opens its NOAA text and lights it up (site
@@ -151,7 +157,12 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             // Clicked off the warnings: the next click on a
                             // stack starts from the top of it again.
                             app.map_alert_cycle = None;
-                            if app.state.show_outlook {
+                            if app.state.show_mcds
+                                && let Some(m) = super::reports::mcd_at(&app.state.mcds, lon, lat)
+                            {
+                                // Discussion area: open the full SPC text.
+                                app.state.mcd_detail = Some(m.number);
+                            } else if app.state.show_outlook {
                                 // Clicking an SPC outline opens that day's
                                 // forecaster discussion.
                                 let hit = app.state.outlook.as_ref().and_then(|o| {
@@ -266,11 +277,49 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
+    // --- Storm reports / discussion areas under the pointer ---------------
+    // Reports are small dots (nearest within reach wins), discussion areas
+    // are regions (containment wins); reports take precedence as the smaller
+    // target. Both restart their tooltip dwell on change, like warnings.
+    let report_hover = if app.state.show_lsrs && !response.dragged() {
+        map_pointer.and_then(|p| {
+            let (cx, cy) = viewport_pos(rect, p);
+            super::reports::lsr_at(&app.state.lsrs, &view, cx, cy).map(|r| r.id.clone())
+        })
+    } else {
+        None
+    };
+    if report_hover != app.state.lsr_hover {
+        app.state.lsr_hover_at = ui.input(|i| i.time);
+    }
+    app.state.lsr_hover = report_hover;
+
+    let mcd_hover = if app.state.show_mcds && app.state.lsr_hover.is_none() && !response.dragged() {
+        map_pointer.and_then(|p| {
+            let (cx, cy) = viewport_pos(rect, p);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            super::reports::mcd_at(&app.state.mcds, lon, lat).map(|m| m.number)
+        })
+    } else {
+        None
+    };
+    if mcd_hover != app.state.mcd_hover {
+        app.state.mcd_hover_at = ui.input(|i| i.time);
+    }
+    app.state.mcd_hover = mcd_hover;
+    if (app.state.lsr_hover.is_some() || app.state.mcd_hover.is_some()) && !response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
     // SPC risk area *outline* under the pointer — only when no warning is (a
     // warning is the more specific reading of the same spot). The risk areas
     // cover most of the map, so the emphasis, the tooltip and the click all
     // key off the border.
-    let outlook_hover = if app.state.alerts_map_stack.is_empty() && app.state.show_outlook {
+    let outlook_hover = if app.state.alerts_map_stack.is_empty()
+        && app.state.lsr_hover.is_none()
+        && app.state.mcd_hover.is_none()
+        && app.state.show_outlook
+    {
         response.hover_pos().and_then(|p| {
             let (cx, cy) = viewport_pos(rect, p);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
@@ -371,15 +420,26 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     let sig = h.finish();
 
                     if app.radar_tex.as_ref().map_or(true, |t| t.sig != sig) {
-                        // Drag throttle: a full-viewport raster is the app's
-                        // most expensive op, so during a pan keep the last
+                        // Gesture throttle: a full-viewport raster is the
+                        // app's most expensive op, so during *any* view
+                        // gesture — pan, wheel-zoom, timeline — keep the last
                         // raster and redo it once things settle. The stale
                         // raster stays georeferenced by *translating* it with
                         // the drag offset when painting (below), instead of
                         // letting it rubber-band against the moving tiles.
-                        let settling = !response.dragged()
-                            || app.radar_last_raster.elapsed()
-                                >= std::time::Duration::from_millis(150);
+                        //
+                        // The measured traffic that made this unconditional:
+                        // trackpad zoom emits steps at frame rate, and with a
+                        // drag-only gate every step rasterized — real logs
+                        // showed 16–46 rasters/s of pure churn. 100 ms caps
+                        // every non-drag gesture at ~10/s; drags keep 150 ms
+                        // (their translation path is cheaper and panning
+                        // benefits from freshness); playback's 8 fps (125 ms
+                        // spacing) stays under the window, so loops never
+                        // drop a frame.
+                        let settle_ms = if response.dragged() { 150 } else { 100 };
+                        let settling = app.radar_last_raster.elapsed()
+                            >= std::time::Duration::from_millis(settle_ms);
                         if settling {
                             let min_dbz = match app.state.moment {
                                 radar_core::Moment::Reflectivity
@@ -483,8 +543,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             // Playback rasters once per data frame by design,
                             // so only *idle* churn is a symptom of something.
                             let playing = app.state.loop_state == crate::state::LoopState::Playing;
+                            // Above the throttle's own ceiling (~11/s), so a
+                            // trip means the gate was bypassed — not normal
+                            // gesture traffic.
                             if !playing
-                                && rate > 15
+                                && rate > 12
                                 && now.saturating_duration_since(app.radar_churn_warn_at)
                                     >= std::time::Duration::from_secs(2)
                             {
@@ -534,6 +597,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // Only the risk boundaries, so they stay legible across rain echoes.
     draw_outlooks(&painter, origin, &view, app, false);
 
+    // --- Mesoscale discussion areas (broad layer, under the warnings) ----
+    super::reports::draw_mcds(&painter, origin, &view, app);
+
     // --- Layer 4: warning polygons ----------------------------------------
     draw_warnings(&painter, origin, &view, app);
 
@@ -553,6 +619,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- User-placed pins (above radar + warnings, below measure tool) ---
     draw_markers(&painter, origin, &view, app);
 
+    // --- Storm report dots (small precise targets, on top) ----------------
+    super::reports::draw_lsrs(&painter, origin, &view, app);
+
     // --- Measure tool line + draggable blue bubble (topmost) ---------------
     if app.state.measure_mode {
         draw_measure(&painter, origin, &view, app);
@@ -571,6 +640,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // anywhere inside, SPC risk areas only when the pointer is on the outline
     // (clicking it opens the full discussion).
     warning_hover_tooltip(ui, &response, app);
+    super::reports::lsr_hover_tooltip(ui, &response, app);
+    super::reports::mcd_hover_tooltip(ui, &response, app);
     outlook_hover_tooltip(ui, &response, app);
 
     // --- Min dBZ quick-adjust bar at bottom-center --------------------------
@@ -871,7 +942,7 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
 /// Dark pill-backed text label: measures the text, paints a translucent
 /// black rounded rect behind it, then the foreground text. Guarantees the
 /// label stays clear over bright radar echoes / warning fills.
-fn draw_tag_label(
+pub(super) fn draw_tag_label(
     painter: &egui::Painter,
     at: egui::Pos2,
     anchor: egui::Align2,
@@ -944,7 +1015,11 @@ fn draw_outlooks(
 }
 
 /// Project one lon/lat ring into a screen-space ring of `Pos2`s.
-fn project_ring(ring: &[(f64, f64)], view: &MapView, origin: egui::Pos2) -> Vec<egui::Pos2> {
+pub(super) fn project_ring(
+    ring: &[(f64, f64)],
+    view: &MapView,
+    origin: egui::Pos2,
+) -> Vec<egui::Pos2> {
     ring.iter()
         .map(|&(lon, lat)| {
             let (vx, vy) = view.lonlat_to_view_px(lon, lat);
@@ -957,7 +1032,7 @@ fn project_ring(ring: &[(f64, f64)], view: &MapView, origin: egui::Pos2) -> Vec<
 /// using earcut. Outlook polygons are strongly concave, unlike most warning
 /// polygons, so a fan fill (egui's `convex_polygon`) would spill outside the
 /// shapes — earcut gives exact concave + holed fills.
-fn triangulate(rings: &[Vec<egui::Pos2>], color: egui::Color32) -> Option<egui::Mesh> {
+pub(super) fn triangulate(rings: &[Vec<egui::Pos2>], color: egui::Color32) -> Option<egui::Mesh> {
     if rings.is_empty() || rings[0].len() < 3 {
         return None;
     }

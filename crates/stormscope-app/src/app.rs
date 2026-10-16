@@ -15,6 +15,10 @@ pub enum DataMsg {
     AlertsFast(Vec<radar_core::warnings::Warning>),
     /// Every active alert nationwide (alerts browser only).
     AllAlerts(Vec<radar_core::warnings::Warning>),
+    /// Preliminary Local Storm Reports (realtime spotter/public reports).
+    Reports(Vec<radar_data::lsrs::Lsr>),
+    /// Active SPC Mesoscale Discussions.
+    Mcds(Vec<radar_data::mcds::Mcd>),
     /// NWS gridpoint forecast for a requested point.
     Forecast(radar_core::forecast::Forecast),
     /// Latest observation from the nearest reporting station.
@@ -373,6 +377,8 @@ impl StormApp {
                         &self.state.alerts_fast,
                     );
                 }
+                DataMsg::Reports(v) => self.state.lsrs = v,
+                DataMsg::Mcds(v) => self.state.mcds = v,
                 DataMsg::AlertsFast(a) => {
                     self.state.alerts_fast = a;
                     self.state.alerts = crate::state::merge_alerts(

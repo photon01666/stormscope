@@ -211,6 +211,23 @@ pub struct AppState {
     /// Details button or by clicking a warning polygon on the map).
     pub alert_detail: Option<String>,
 
+    // Storm reports (Preliminary Local Storm Reports) and Mesoscale
+    // Discussions: both polled every five minutes by the coordinator.
+    /// Newest-first list of reports (12 h window, capped) with coordinates.
+    pub lsrs: Vec<radar_data::lsrs::Lsr>,
+    pub show_lsrs: bool,
+    /// Report id under the pointer / whose detail popup is open.
+    pub lsr_hover: Option<String>,
+    pub lsr_hover_at: f64,
+    pub lsr_detail: Option<String>,
+    /// Active SPC mesoscale discussions by number.
+    pub mcds: Vec<radar_data::mcds::Mcd>,
+    pub show_mcds: bool,
+    /// Discussion number under the pointer / whose detail popup is open.
+    pub mcd_hover: Option<u32>,
+    pub mcd_hover_at: f64,
+    pub mcd_detail: Option<u32>,
+
     // NWS forecast (station by default, or a point picked on the map).
     pub forecast: Option<radar_core::forecast::Forecast>,
     /// Current conditions from the nearest reporting station (same point as
@@ -345,6 +362,16 @@ impl Default for AppState {
             alert_detail: None,
             forecast: None,
             observation: None,
+            lsrs: Vec::new(),
+            show_lsrs: true,
+            lsr_hover: None,
+            lsr_hover_at: 0.0,
+            lsr_detail: None,
+            mcds: Vec::new(),
+            show_mcds: true,
+            mcd_hover: None,
+            mcd_hover_at: 0.0,
+            mcd_detail: None,
             forecast_open: false,
             forecast_pick_mode: false,
             forecast_point: None,

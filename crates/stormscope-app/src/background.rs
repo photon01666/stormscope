@@ -27,6 +27,12 @@ const OUTLOOK_REFRESH: Duration = Duration::from_secs(600);
 /// uses one every 5 minutes).
 const ALERTS_REFRESH: Duration = Duration::from_secs(300);
 
+/// Storm reports and mesoscale discussions are short-fused (a report lands
+/// within minutes of the event, an MD lives about an hour), so both ride the
+/// same five-minute cadence as the alert sweep.
+const REPORTS_REFRESH: Duration = Duration::from_secs(300);
+const MCD_REFRESH: Duration = Duration::from_secs(300);
+
 /// The fast lane: alerts that contain the selected station, fetched with the
 /// API's server-side point filter — a few hundred bytes per request, so a
 /// minute's cadence costs ~10 KB/hour while cutting warning latency from five
@@ -116,6 +122,17 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     let alerts = AlertSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
     let forecasts = radar_data::ForecastSource::new(USER_AGENT).ok();
+    // Both feeds hold caches (report texts, MCD pages) and a cold fill can
+    // take tens of seconds (up to 80 product texts), so each poll runs on a
+    // worker thread: measured cold-start fill blocked this loop for ~40 s,
+    // during which radar and alert commands waited behind it. The mutex
+    // serializes overlapping polls of the same feed instead of double-fetching.
+    let reports = radar_data::LsrSource::new(USER_AGENT)
+        .ok()
+        .map(|s| std::sync::Arc::new(std::sync::Mutex::new(s)));
+    let mcds = radar_data::McdSource::new(USER_AGENT)
+        .ok()
+        .map(|s| std::sync::Arc::new(std::sync::Mutex::new(s)));
     // Report the current on-disk cache sizes so Settings has a number from
     // the first frame; the loop below keeps re-sending as they change.
     let mut cached_sizes = cache_sizes(&source);
@@ -131,6 +148,8 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     let mut last_outlook = already_elapsed(OUTLOOK_REFRESH);
     let mut last_alerts = already_elapsed(ALERTS_REFRESH);
     let mut last_alerts_fast = already_elapsed(ALERTS_FAST_REFRESH);
+    let mut last_reports = already_elapsed(REPORTS_REFRESH);
+    let mut last_mcds = already_elapsed(MCD_REFRESH);
     // Cache sizes for the Settings menu: recomputed every couple of seconds
     // (a full directory walk is far too expensive to run per 250 ms tick).
     let mut last_cache_report = already_elapsed(CACHE_INFO_REFRESH);
@@ -371,6 +390,14 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
 
         // Timed refreshes (not user-driven): keep alerts + the SPC outlook
         // current without hammering anything.
+        if last_reports.elapsed() >= REPORTS_REFRESH {
+            last_reports = std::time::Instant::now();
+            refresh_reports(&reports, &out);
+        }
+        if last_mcds.elapsed() >= MCD_REFRESH {
+            last_mcds = std::time::Instant::now();
+            refresh_mcds(&mcds, &out);
+        }
         if last_alerts_fast.elapsed() >= ALERTS_FAST_REFRESH {
             last_alerts_fast = std::time::Instant::now();
             refresh_alerts_at_station(&alerts, &current_site, &out);
@@ -802,6 +829,57 @@ fn refresh_alerts_at_station(alerts: &Option<AlertSource>, site: &str, out: &Sen
         }
         Err(e) => log::debug!("station alert check failed: {e:#}"),
     }
+}
+
+/// Five-minute storm-report pull: the feed is one list request, the texts
+/// come from the source's cache (only new products are fetched, paced). The
+/// work happens on a worker thread so a cold fill never stalls the
+/// coordinator's 250 ms command loop.
+fn refresh_reports(
+    src: &Option<std::sync::Arc<std::sync::Mutex<radar_data::LsrSource>>>,
+    out: &Sender<DataMsg>,
+) {
+    let Some(src) = src else { return };
+    let src = std::sync::Arc::clone(src);
+    let out = out.clone();
+    std::thread::spawn(move || {
+        let mut s = match src.lock() {
+            Ok(g) => g,
+            Err(_) => return, // a panicking worker poisoned it; drop the poll
+        };
+        match s.recent(chrono::Duration::hours(12)) {
+            Ok(v) => {
+                let spotter = v.iter().filter(|r| r.is_spotter()).count();
+                log::debug!("{} storm reports ({} from spotters)", v.len(), spotter);
+                let _ = out.send(DataMsg::Reports(v));
+            }
+            Err(e) => log::debug!("storm reports: {e:#}"),
+        }
+    });
+}
+
+/// Five-minute mesoscale-discussion pull (feed + any new discussion page),
+/// threaded for the same reason as the reports fill.
+fn refresh_mcds(
+    src: &Option<std::sync::Arc<std::sync::Mutex<radar_data::McdSource>>>,
+    out: &Sender<DataMsg>,
+) {
+    let Some(src) = src else { return };
+    let src = std::sync::Arc::clone(src);
+    let out = out.clone();
+    std::thread::spawn(move || {
+        let mut s = match src.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        match s.active() {
+            Ok(v) => {
+                log::debug!("{} active mesoscale discussions", v.len());
+                let _ = out.send(DataMsg::Mcds(v));
+            }
+            Err(e) => log::debug!("mesoscale discussions: {e:#}"),
+        }
+    });
 }
 
 fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg>) {

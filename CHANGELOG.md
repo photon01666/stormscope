@@ -9,8 +9,9 @@ log; entries start at the first public release.
 - The map gained an optional 3D companion: every elevation cut of the
   current scan as one rotatable volume — beside the 2D map (resizable split,
   draggable divider) or maximized to fill the window. "Max"/"Split" chips
-  live on the panes, "Fit" re-frames the camera; drag orbits, wheel zooms,
-  double-click re-fits.
+  live on the panes, "Fit" re-frames the camera; drag orbits, right/middle
+  drag — or W/A/S/D with the pointer over the pane, Shift to sprint — pans
+  freely, wheel zooms, double-click re-fits.
 - The geometry is honest: each cut is a draped surface over its azimuth ×
   range grid at true 4/3-earth beam heights (a 0.5° beam is ~1.5 km up at
   100 km), and no-echo gaps are skipped rather than smeared across. Height

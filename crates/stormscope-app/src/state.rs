@@ -465,7 +465,7 @@ impl Default for AppState {
             view3d_ve: 6.0,
             view3d_alpha: 0.45,
             view3d_threshold: 5.0,
-            view3d_detail: radar_render::MeshDetail::Normal,
+            view3d_detail: radar_render::MeshDetail::Fine,
             view3d_tilt_lo: None,
             view3d_tilt_hi: None,
             view3d_alt_lo_ft: 0.0,

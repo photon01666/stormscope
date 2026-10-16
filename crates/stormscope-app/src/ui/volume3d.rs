@@ -38,6 +38,13 @@ const FIT_FACTOR: f32 = 1.35;
 const FIT_TARGET_KM: f32 = 4.5;
 /// Marker pin height, physical km (exaggerated like the volume).
 const MARKER_PIN_KM: f32 = 3.0;
+/// Pan sensitivity: how many screen-km of camera movement per dragged km.
+/// 1.0 is geometrically exact; a bit over that is what "moves with the
+/// pointer" feels like on a scene this wide.
+const PAN_GAIN: f32 = 2.2;
+/// WASD pan speed, scene-widths per second (÷ the camera distance, so it
+/// feels the same zoomed in or out). Shift multiplies it.
+const WASD_SPEED: f32 = 1.2;
 
 /// Alert-style yellow for marker pins and their labels.
 const MARKER_COLOR: Color32 = Color32::from_rgb(255, 214, 90);
@@ -209,21 +216,81 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             || resp.dragged_by(egui::PointerButton::Middle);
         if panning {
             // Free movement: right/middle drag slides the orbit center in
-            // the screen plane (scale-corrected), so any point of the volume
+            // the screen plane (scale-corrected; the gain is tuned until the
+            // scene visibly follows the pointer), so any point of the volume
             // can be brought to the middle.
             let off = camera.pan_offset_km([d.x, d.y], rect.height());
             let limit = max_r.max(20.0) * 3.0;
             app.state.view3d_target_x_km =
-                (app.state.view3d_target_x_km + off[0]).clamp(-limit, limit);
+                (app.state.view3d_target_x_km + off[0] * PAN_GAIN).clamp(-limit, limit);
             app.state.view3d_target_y_km =
-                (app.state.view3d_target_y_km + off[1]).clamp(-limit, limit);
-            app.state.view3d_target_z_km = (app.state.view3d_target_z_km + off[2]).clamp(0.0, 60.0);
+                (app.state.view3d_target_y_km + off[1] * PAN_GAIN).clamp(-limit, limit);
+            app.state.view3d_target_z_km =
+                (app.state.view3d_target_z_km + off[2] * PAN_GAIN).clamp(0.0, 60.0);
         } else {
             app.state.view3d_yaw = (app.state.view3d_yaw - d.x * 0.35).rem_euclid(360.0);
             app.state.view3d_pitch =
                 (app.state.view3d_pitch - d.y * 0.25).clamp(PITCH_MIN, PITCH_MAX);
         }
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    }
+
+    // WASD free movement while the pointer rests on the pane (never while a
+    // text field owns the keyboard): W/S along the view's ground axis, A/D
+    // across it, Q/E down/up. Speed follows the camera distance, so it feels
+    // identical zoomed in or out; Shift is the sprint key.
+    if resp.hovered() && !ui.ctx().egui_wants_keyboard_input() {
+        let (dt, keys) = ui.ctx().input(|i| {
+            (
+                i.stable_dt.clamp(0.0, 0.1),
+                (
+                    i.key_down(egui::Key::W),
+                    i.key_down(egui::Key::S),
+                    i.key_down(egui::Key::A),
+                    i.key_down(egui::Key::D),
+                    i.key_down(egui::Key::Q),
+                    i.key_down(egui::Key::E),
+                    i.modifiers.shift,
+                ),
+            )
+        });
+        let (w, s, a, d, q, e, shift) = keys;
+        if w || s || a || d || q || e {
+            let yaw = app.state.view3d_yaw.to_radians();
+            let (sy, cy) = yaw.sin_cos();
+            // Ground-plane forward (away from the camera) and its right.
+            let (fx, fy) = (sy, cy);
+            let (rx, ry) = (cy, -sy);
+            let speed = camera.distance_km * WASD_SPEED * if shift { 3.0 } else { 1.0 } * dt;
+            let (mut dx, mut dy, mut dz) = (0.0f32, 0.0f32, 0.0f32);
+            if w {
+                dx += fx * speed;
+                dy += fy * speed;
+            }
+            if s {
+                dx -= fx * speed;
+                dy -= fy * speed;
+            }
+            if d {
+                dx += rx * speed;
+                dy += ry * speed;
+            }
+            if a {
+                dx -= rx * speed;
+                dy -= ry * speed;
+            }
+            if e {
+                dz += speed;
+            }
+            if q {
+                dz -= speed;
+            }
+            let limit = max_r.max(20.0) * 3.0;
+            app.state.view3d_target_x_km = (app.state.view3d_target_x_km + dx).clamp(-limit, limit);
+            app.state.view3d_target_y_km = (app.state.view3d_target_y_km + dy).clamp(-limit, limit);
+            app.state.view3d_target_z_km = (app.state.view3d_target_z_km + dz).clamp(0.0, 60.0);
+            ui.ctx().request_repaint();
+        }
     }
     if resp.hovered() {
         // The slider bar floats over the pane and owns the wheel there.
@@ -375,7 +442,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         v3.elev_hi_deg(),
         v3.triangles() as f32 / 1000.0,
     );
-    for (i, text) in [line1, line2].iter().enumerate() {
+    let line3 = "orbit: drag · pan: right-drag or W/A/S/D · zoom: wheel · fit: double-click";
+    for (i, text) in [line1, line2, line3.to_string()].iter().enumerate() {
         painter.text(
             rect.left_top()
                 + Vec2::new(9.0 * scale, 8.0 * scale + (15.0 + i as f32 * 13.0) * scale),

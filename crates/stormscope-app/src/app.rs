@@ -23,6 +23,8 @@ pub enum DataMsg {
     Forecast(radar_core::forecast::Forecast),
     /// Latest observation from the nearest reporting station.
     Observation(radar_core::forecast::Observation),
+    /// Rain/snow totals for the stations around a requested point.
+    Totals(Vec<radar_data::StationTotals>),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
     /// Forecaster discussion text for one outlook day.
@@ -61,6 +63,8 @@ pub enum DataCmd {
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
     LoadOutlook(u8, radar_core::outlooks::OutlookType),
+    /// Rain/snow totals for the stations around (lat, lon).
+    LoadTotals(f64, f64),
     /// Fetch the forecaster discussion text for a day (1..=3).
     LoadOutlookDiscussion(u8),
     /// Fetch the NWS gridpoint forecast for a coordinate.
@@ -402,6 +406,14 @@ impl StormApp {
                         o.text
                     );
                     self.state.observation = Some(o);
+                }
+                DataMsg::Totals(v) => {
+                    if let Some((lat, lon, _)) = self.state.totals_requested.take() {
+                        self.state.totals_target = Some((lat, lon));
+                    }
+                    self.state.totals = v;
+                    self.state.totals_fetched_at = Some(std::time::Instant::now());
+                    log::debug!("totals loaded from {} stations", self.state.totals.len());
                 }
                 DataMsg::Forecast(f) => {
                     log::debug!(

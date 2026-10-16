@@ -8,6 +8,7 @@ mod alerts;
 mod forecast;
 mod map;
 mod reports;
+mod totals;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the
 /// hover hysteresis below — keep the two in sync.
@@ -55,6 +56,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // NWS forecast window (station by default, or a point picked on the map).
     forecast::forecast_window(ui.ctx(), app);
+    totals::totals_window(ui.ctx(), app);
 
     // SPC discussion popup (clicking an outlook outline).
     outlook_detail_window(ui.ctx(), app);
@@ -524,6 +526,16 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         .clicked()
     {
         app.state.alerts_popup_open = !app.state.alerts_popup_open;
+    }
+    if ui
+        .button("💧 Rain & snow totals")
+        .on_hover_text(
+            "What nearby NWS stations measured: rolling rain/snow buckets \
+             and an event total summed from their hourly observations",
+        )
+        .clicked()
+    {
+        app.state.totals_open = !app.state.totals_open;
     }
 
     // --- SPC convective outlook overlay ------------------------------------

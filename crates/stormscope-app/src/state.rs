@@ -247,6 +247,15 @@ pub struct AppState {
     /// When the forecast/observation currently on screen was fetched, for the
     /// auto-refresh cadence.
     pub forecast_fetched_at: Option<std::time::Instant>,
+    // Rain/snow totals (NWS observation series around the selected site).
+    pub totals_open: bool,
+    pub totals: Vec<radar_data::StationTotals>,
+    /// Target the loaded totals belong to (lat, lon).
+    pub totals_target: Option<(f64, f64)>,
+    /// In-flight request: (lat, lon, when sent) — dedupes the 30 s repaint
+    /// probe and bounds retries after a failure to once a minute.
+    pub totals_requested: Option<(f64, f64, std::time::Instant)>,
+    pub totals_fetched_at: Option<std::time::Instant>,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
@@ -380,6 +389,11 @@ impl Default for AppState {
             forecast_site: String::new(),
             forecast_requested: None,
             forecast_fetched_at: None,
+            totals_open: false,
+            totals: Vec::new(),
+            totals_target: None,
+            totals_requested: None,
+            totals_fetched_at: None,
             show_tracks: true,
             outlook: None,
             // On by default with the outline-only look (fill 0.0): the risk

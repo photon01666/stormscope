@@ -95,6 +95,35 @@ impl ForecastSource {
         })?)
     }
 
+    /// Rain/snow totals for up to `max_stations` stations reporting around a
+    /// point — one `/points` lookup, one station list, then one observation
+    /// *series* per station (the series carries both the rolling buckets and
+    /// the hourly accumulations an event total is summed from).
+    ///
+    /// Failures are per-station: a station that will not answer is skipped,
+    /// because "totals for seven of eight nearby stations" beats none.
+    pub fn station_totals(
+        &self,
+        lat: f64,
+        lon: f64,
+        max_stations: usize,
+    ) -> Result<Vec<StationTotals>> {
+        let points = self.points(lat, lon)?;
+        let stations_url = points
+            .pointer("/properties/observationStations")
+            .and_then(|v| v.as_str())
+            .context("points response listed no observation stations")?;
+        let list = self.get_json(stations_url)?;
+        let mut out = Vec::new();
+        for (url, id, name) in nearest_stations(&list, lat, lon, max_stations) {
+            match self.get_json(&format!("{url}/observations?limit=80")) {
+                Ok(series) => out.push(totals_from_series(&series, &id, &name)),
+                Err(e) => log::debug!("totals for {id}: {e:#}"),
+            }
+        }
+        Ok(out)
+    }
+
     /// The `/points/{lat},{lon}` lookup both responses hang off.
     fn points(&self, lat: f64, lon: f64) -> Result<serde_json::Value> {
         self.get_json(&format!("{POINTS_URL}/{lat:.4},{lon:.4}"))
@@ -188,6 +217,276 @@ pub(crate) fn forecast_from_json(
         updated,
         periods,
     }
+}
+
+/// One station's precipitation/snow picture, from its observation series.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationTotals {
+    pub station_id: String,
+    pub station_name: String,
+    /// Time of the newest observation in the series.
+    pub last_obs: Option<DateTime<Utc>>,
+    /// Newest non-null value per hydrometeor property: (label, inches) —
+    /// `"rain · last hour"`, `"snow depth"`, … whatever the station reports.
+    pub buckets: Vec<(String, f64)>,
+    /// Rolling one-hour accumulations summed over the loaded window:
+    /// (label, inches). Samples are taken at least 50 minutes apart, so a
+    /// 5-minute station's overlapping hour-windows do not double-count.
+    pub hourly_sums: Vec<(String, f64)>,
+    /// Hours the sums above cover, and how many observations went into them.
+    pub window_hours: f64,
+    pub obs_count: usize,
+}
+
+/// Property keys that are precipitation, rain, snow or ice (and not, say,
+/// dew point).
+fn is_hydrometeor(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k.contains("precip") || k.contains("rain") || k.contains("snow") || k.contains("ice")
+}
+
+/// camelCase → words: `precipitationLastHour` → ["precipitation", "Last", "Hour"].
+fn camel_words(key: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    for (i, c) in key.chars().enumerate() {
+        let starts_word = !cur.is_empty()
+            && i > 0
+            && (c.is_uppercase()
+                // Digits open their own word so "Last24Hours" splits as
+                // Last | 24 | Hours rather than keeping "Last24".
+                || (c.is_ascii_digit() && key.as_bytes()[i - 1].is_ascii_alphabetic()));
+        if starts_word {
+            words.push(std::mem::take(&mut cur));
+        }
+        cur.push(c);
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+}
+
+/// Human label for a hydrometeor property: `precipitationLastHour` →
+/// "rain · last hour", `snowDepth` → "snow depth", `snowfallLast6Hours` →
+/// "snow · last 6 hours". "hour" becomes "hours" only after digits ("24
+/// hour" → "24 hours", but "last hour" stays singular).
+pub fn hydrometeor_label(key: &str) -> String {
+    let words = camel_words(key);
+    if words.len() == 2
+        && words[0].eq_ignore_ascii_case("snow")
+        && words[1].eq_ignore_ascii_case("depth")
+    {
+        return "snow depth".to_string();
+    }
+    let metric = match words.first().map(String::as_str) {
+        Some("precipitation") => "rain",
+        Some("snowfall") | Some("snow") => "snow",
+        Some("ice") => "ice",
+        _ => {
+            return words
+                .iter()
+                .map(|w| w.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+    };
+    let mut rest: Vec<String> = words[1..].iter().map(|w| w.to_lowercase()).collect();
+    // A trailing "hour" *after digits* is a span ("24 Hour" → "24 hours");
+    // "last Hour" keeps its singular.
+    for i in 1..rest.len() {
+        if rest[i] == "hour" && rest[i - 1].chars().all(|c| c.is_ascii_digit()) {
+            rest[i] = "hours".to_string();
+        }
+    }
+    if rest.is_empty() {
+        metric.to_string()
+    } else {
+        format!("{metric} · {}", rest.join(" "))
+    }
+}
+
+/// Value in inches: NWS precip/depth is millimetres (`wmoUnit:mm`); anything
+/// else passes through untouched (it is already in the unit asked for).
+fn in_inches(value: f64, unit_code: &str) -> f64 {
+    if unit_code.contains("mm") {
+        value / 25.4
+    } else {
+        value
+    }
+}
+
+/// Parse an `observations` series into a station's totals. Series arrives
+/// newest-first; the hourly accumulation walk sorts ascending so it can take
+/// samples at least 50 minutes apart.
+pub(crate) fn totals_from_series(
+    series: &serde_json::Value,
+    station_id: &str,
+    station_name: &str,
+) -> StationTotals {
+    let mut obs: Vec<(DateTime<Utc>, &serde_json::Map<String, serde_json::Value>)> = Vec::new();
+    for f in series
+        .pointer("/features")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
+    {
+        let p = f.pointer("/properties");
+        let Some(ts) = p
+            .and_then(|p| p.pointer("/timestamp"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc))
+        else {
+            continue;
+        };
+        if let Some(props) = p.and_then(|p| p.as_object()) {
+            obs.push((ts, props));
+        }
+    }
+    obs.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+
+    let mut buckets: Vec<(String, f64)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (_, props) in &obs {
+        for (key, val) in props.iter() {
+            if !is_hydrometeor(key) || seen.contains(key.as_str()) {
+                continue;
+            }
+            let value = val.get("value").and_then(|v| v.as_f64());
+            let Some(value) = value else { continue };
+            let unit = val.get("unitCode").and_then(|v| v.as_str()).unwrap_or("");
+            seen.insert(key.clone());
+            buckets.push((hydrometeor_label(key), in_inches(value, unit)));
+        }
+    }
+
+    // Rolling one-hour fields, summed at ≥50-minute spacing (denser cadences
+    // report overlapping windows; hourly cadences are taken every sample).
+    // (label, summed inches, hours covered)
+    let mut hourly_sums: Vec<(String, f64, f64)> = Vec::new();
+    let newest = obs.first().map(|(t, _)| *t);
+    let mut hour_keys: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for (_, props) in &obs {
+        for (key, val) in props.iter() {
+            if !key.ends_with("LastHour") {
+                continue;
+            }
+            let Some(value) = val.get("value").and_then(|v| v.as_f64()) else {
+                continue;
+            };
+            hour_keys.entry(key.clone()).or_insert_with(|| {
+                in_inches(
+                    value,
+                    val.get("unitCode").and_then(|v| v.as_str()).unwrap_or(""),
+                )
+            });
+        }
+    }
+    for (key, _) in &hour_keys {
+        let mut last: Option<DateTime<Utc>> = None;
+        let mut sum = 0.0;
+        let mut oldest: Option<DateTime<Utc>> = None;
+        for (ts, props) in obs.iter().rev() {
+            // walk oldest → newest
+            let Some(val) = props.get(key) else { continue };
+            let Some(value) = val.get("value").and_then(|v| v.as_f64()) else {
+                continue;
+            };
+            if last.is_some_and(|l| (*ts - l).num_minutes() < 50) {
+                continue;
+            }
+            last = Some(*ts);
+            oldest.get_or_insert(*ts);
+            sum += in_inches(
+                value,
+                val.get("unitCode").and_then(|v| v.as_str()).unwrap_or(""),
+            );
+        }
+        if last.is_some() {
+            let label = format!(
+                "{} · hourly sum",
+                hydrometeor_label(key).replace(" · last hour", "")
+            );
+            let span = match (oldest, newest) {
+                (Some(o), Some(n)) => (n - o).num_seconds() as f64 / 3600.0,
+                _ => 0.0,
+            };
+            hourly_sums.push((label, sum, span));
+        }
+    }
+    let window_hours = hourly_sums
+        .iter()
+        .map(|(_, _, h)| *h)
+        .fold(0.0_f64, f64::max);
+    let hourly_sums: Vec<(String, f64)> = hourly_sums.into_iter().map(|(l, v, _)| (l, v)).collect();
+
+    StationTotals {
+        station_id: station_id.to_string(),
+        station_name: station_name.to_string(),
+        last_obs: newest,
+        buckets,
+        hourly_sums,
+        window_hours,
+        obs_count: obs.len(),
+    }
+}
+
+/// The `max_stations` stations nearest (lat, lon) as (url, id, name),
+/// nearest first. Stations without geometry keep their listing order after
+/// the geolocated ones — the list is one request either way, so sorting
+/// costs nothing and the fetch count stays bounded.
+pub(crate) fn nearest_stations(
+    list: &serde_json::Value,
+    lat: f64,
+    lon: f64,
+    max_stations: usize,
+) -> Vec<(String, String, String)> {
+    let Some(features) = list
+        .pointer("/features")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice())
+    else {
+        return Vec::new();
+    };
+    let mut with_geo: Vec<(f64, String, String, String)> = Vec::new();
+    let mut without_geo: Vec<(String, String, String)> = Vec::new();
+    for f in features {
+        let Some(url) = f.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let props = f.get("properties");
+        let name = props
+            .and_then(|p| p.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let id = props
+            .and_then(|p| p.get("stationIdentifier"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| url.rsplit('/').next().unwrap_or(""))
+            .to_string();
+        let coords = f
+            .pointer("/geometry/coordinates")
+            .and_then(|c| c.as_array())
+            .and_then(|c| Some((c.first()?.as_f64()?, c.get(1)?.as_f64()?)));
+        match coords {
+            Some((slon, slat)) => with_geo.push((
+                radar_core::sites::haversine_km(lat, lon, slat, slon),
+                url.to_string(),
+                id,
+                name,
+            )),
+            None => without_geo.push((url.to_string(), id, name)),
+        }
+    }
+    with_geo.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    with_geo
+        .into_iter()
+        .map(|(_, u, i, n)| (u, i, n))
+        .chain(without_geo)
+        .take(max_stations)
+        .collect()
 }
 
 /// Forecast office from a gridpoint URL (the path segment before the grid).
@@ -397,6 +696,94 @@ mod tests {
 
     /// Missing pieces degrade instead of panicking: no place name, no
     /// periods, unparseable times.
+    /// Hydrometeor keys read as labels the way an operator would say them.
+    #[test]
+    fn hydrometeor_labels_read_naturally() {
+        assert_eq!(
+            hydrometeor_label("precipitationLastHour"),
+            "rain · last hour"
+        );
+        assert_eq!(hydrometeor_label("precipitation24Hour"), "rain · 24 hours");
+        assert_eq!(
+            hydrometeor_label("precipitationLast24Hours"),
+            "rain · last 24 hours"
+        );
+        assert_eq!(hydrometeor_label("snowDepth"), "snow depth");
+        assert_eq!(
+            hydrometeor_label("snowfallLast6Hours"),
+            "snow · last 6 hours"
+        );
+        assert_eq!(
+            hydrometeor_label("dewpointTemperature"),
+            "dewpoint temperature"
+        );
+    }
+
+    /// Totals from a real-shaped series: newest-first buckets (mm → in),
+    /// hourly sums taken at ≥50-minute spacing so overlapping windows do not
+    /// double-count, and a window spanning what was summed.
+    #[test]
+    fn totals_from_series_buckets_sums_and_spans() {
+        let series: serde_json::Value = serde_json::from_str(
+            r#"{"features":[
+            {"properties":{"timestamp":"2026-10-16T01:35:00Z",
+              "precipitationLastHour":{"value":12.7,"unitCode":"wmoUnit:mm"},
+              "snowDepth":{"value":25.4,"unitCode":"wmoUnit:mm"},
+              "dewpoint":{"value":10.0,"unitCode":"wmoUnit:degC"}}},
+            {"properties":{"timestamp":"2026-10-16T01:05:00Z",
+              "precipitationLastHour":{"value":2.54,"unitCode":"wmoUnit:mm"}}},
+            {"properties":{"timestamp":"2026-10-16T00:25:00Z",
+              "precipitationLastHour":{"value":0.0,"unitCode":"wmoUnit:mm"}}},
+            {"properties":{"timestamp":"2026-10-16T00:05:00Z",
+              "precipitationLastHour":{"value":5.08,"unitCode":"wmoUnit:mm"}}}]}"#,
+        )
+        .unwrap();
+        let t = totals_from_series(&series, "KTOP", "Topeka");
+        assert_eq!(t.station_id, "KTOP");
+        assert_eq!(t.obs_count, 4);
+        assert_eq!(
+            t.last_obs.unwrap().to_rfc3339(),
+            "2026-10-16T01:35:00+00:00"
+        );
+        assert_eq!(t.buckets.len(), 2, "dewpoint is not a hydrometeor");
+        assert_eq!(t.buckets[0].0, "rain · last hour");
+        assert!((t.buckets[0].1 - 0.5).abs() < 1e-6, "{}", t.buckets[0].1);
+        assert_eq!(t.buckets[1].0, "snow depth");
+        assert!((t.buckets[1].1 - 1.0).abs() < 1e-6);
+        // 00:05 and 01:05 taken (00:25, 01:35 are <50 min after them):
+        // 5.08 + 2.54 mm = 7.62 mm = 0.30 in over a 1.5 h span.
+        assert_eq!(t.hourly_sums.len(), 1);
+        assert_eq!(t.hourly_sums[0].0, "rain · hourly sum");
+        assert!(
+            (t.hourly_sums[0].1 - 0.3).abs() < 1e-6,
+            "{}",
+            t.hourly_sums[0].1
+        );
+        assert!((t.window_hours - 1.5).abs() < 1e-6, "{}", t.window_hours);
+    }
+
+    /// Stations sort nearest-first when geometry is present, geometry-less
+    /// stations still come through, and max_stations bounds the fetches.
+    #[test]
+    fn nearest_stations_sorts_and_caps() {
+        let list: serde_json::Value = serde_json::from_str(
+            r#"{"features":[
+            {"id":"https://api.weather.gov/stations/FAR","properties":{"stationIdentifier":"KFAR","name":"Far Away"},
+             "geometry":{"coordinates":[-97.4,46.0]}},
+            {"id":"https://api.weather.gov/stations/NEAR","properties":{"stationIdentifier":"KNEAR","name":"Near"},
+             "geometry":{"coordinates":[-97.0,38.1]}},
+            {"id":"https://api.weather.gov/stations/NOGEO","properties":{"stationIdentifier":"KNOGEO","name":"No Geo"},
+             "geometry":null}]}"#,
+        )
+        .unwrap();
+        let picked = nearest_stations(&list, 38.0, -97.0, 10);
+        let ids: Vec<&str> = picked.iter().map(|(_, i, _)| i.as_str()).collect();
+        assert_eq!(ids, vec!["KNEAR", "KFAR", "KNOGEO"]);
+        let capped = nearest_stations(&list, 38.0, -97.0, 1);
+        assert_eq!(capped.len(), 1, "max_stations bounds the fetch count");
+        assert!(nearest_stations(&serde_json::json!({}), 0.0, 0.0, 3).is_empty());
+    }
+
     #[test]
     fn tolerates_missing_fields() {
         let f = forecast_from_json(&serde_json::json!({}), &serde_json::json!({}), "");

@@ -12,7 +12,7 @@ pub mod sites_gen;
 
 pub use alerts::AlertSource;
 pub use cache::DiskCache;
-pub use forecast::ForecastSource;
+pub use forecast::{ForecastSource, StationTotals};
 pub use lsrs::LsrSource;
 pub use mcds::McdSource;
 pub use outlooks::OutlookSource;

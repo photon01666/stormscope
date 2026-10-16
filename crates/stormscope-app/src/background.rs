@@ -294,6 +294,31 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     outlook_type = ty;
                     refresh_outlook(&outlooks, day, ty, &out);
                 }
+                DataCmd::LoadTotals(lat, lon) => {
+                    // Its own worker: up to eight observation series is
+                    // seconds of network work and must not sit in front of
+                    // radar and alert commands.
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let src = match radar_data::ForecastSource::new(USER_AGENT) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ = out.send(DataMsg::Error(format!("totals: {e:#}")));
+                                return;
+                            }
+                        };
+                        match src.station_totals(lat, lon, 8) {
+                            Ok(v) => {
+                                log::debug!("{} stations report totals", v.len());
+                                let _ = out.send(DataMsg::Totals(v));
+                            }
+                            Err(e) => {
+                                log::warn!("totals fetch failed: {e:#}");
+                                let _ = out.send(DataMsg::Error(format!("totals: {e:#}")));
+                            }
+                        }
+                    });
+                }
                 DataCmd::LoadForecast(lat, lon) => {
                     let _ = out.send(DataMsg::Status(format!(
                         "loading forecast for {lat:.3}, {lon:.3}…"

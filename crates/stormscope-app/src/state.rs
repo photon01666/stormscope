@@ -254,6 +254,8 @@ pub struct AppState {
     pub outlook: Option<radar_core::outlooks::Outlook>,
     pub show_outlook: bool,
     pub outlook_day: u8,
+    /// Which outlook product the layer shows (categorical or probabilities).
+    pub outlook_type: radar_core::outlooks::OutlookType,
     /// Fill opacity of the outlook polygons (0..=1).
     pub outlook_opacity: f32,
     /// Open state of the SPC discussion popup, which risk area was clicked
@@ -384,6 +386,7 @@ impl Default for AppState {
             // boundaries show over the radar without tinting the echoes.
             show_outlook: true,
             outlook_day: 1,
+            outlook_type: radar_core::outlooks::OutlookType::Categorical,
             outlook_opacity: 0.0,
             outlook_detail_open: false,
             outlook_detail_dn: None,
@@ -575,6 +578,15 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The outlook layer starts on the product everyone reads by default.
+    #[test]
+    fn default_outlook_type_is_categorical() {
+        assert_eq!(
+            AppState::default().outlook_type,
+            radar_core::outlooks::OutlookType::Categorical
+        );
+    }
     use radar_core::VolumeMeta;
 
     fn at(minute: u32) -> DateTime<Utc> {

@@ -26,11 +26,68 @@ pub struct OutlookFeature {
     pub polygons: Vec<Vec<Vec<(f64, f64)>>>,
 }
 
-/// A day's categorical convective outlook.
+/// Which SPC outlook product a polygon set came from. `Categorical` is the
+/// Day 1–3 risk areas everyone knows (MRGL/SLGT/ENH/MDT/HIGH); the others
+/// are the probabilistic outlooks — chances of tornadoes, damaging wind or
+/// hail, which SPC publishes for Days 1–2 only (Day 3 has no probability
+/// GeoJSON upstream).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutlookType {
+    Categorical,
+    Tornado,
+    Wind,
+    Hail,
+}
+
+impl OutlookType {
+    /// Dropdown label, as SPC names the products.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Categorical => "Categorical",
+            Self::Tornado => "Tornado",
+            Self::Wind => "Wind",
+            Self::Hail => "Hail",
+        }
+    }
+
+    /// Filename key: `day1otlk` + key + `.nolyr.geojson`.
+    pub fn file_key(self) -> &'static str {
+        match self {
+            Self::Categorical => "_cat",
+            Self::Tornado => "_torn",
+            Self::Wind => "_wind",
+            Self::Hail => "_hail",
+        }
+    }
+
+    /// What the probability is a chance *of* (SPC defines these as the chance
+    /// within 25 miles of a point).
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Categorical => "severe weather",
+            Self::Tornado => "a tornado",
+            Self::Wind => "damaging wind",
+            Self::Hail => "hail",
+        }
+    }
+
+    pub fn is_probability(self) -> bool {
+        self != Self::Categorical
+    }
+}
+
+/// Whether SPC publishes probability outlooks for `day` (Days 1–2 only).
+pub fn probabilities_available(day: u8) -> bool {
+    day <= 2
+}
+
+/// A day's convective outlook (categorical or probabilistic).
 #[derive(Clone, Debug)]
 pub struct Outlook {
     /// Outlook day, `1..=3` (Days 4-8 are probability-only upstream).
     pub day: u8,
+    /// Which product this is (see [`OutlookType`]).
+    pub ty: OutlookType,
     pub issue: Option<DateTime<Utc>>,
     pub valid: Option<DateTime<Utc>>,
     pub expire: Option<DateTime<Utc>>,
@@ -86,6 +143,16 @@ impl OutlookFeature {
         }
     }
 
+    /// For probability outlooks: SPC's `LABEL` as a percentage — `"0.02"` →
+    /// `"2%"` — or SPC's own words when it printed them (`"Less Than 5% All
+    /// Areas"`). Categorical features return their label unchanged.
+    pub fn probability_text(&self) -> String {
+        match self.label.trim().parse::<f64>() {
+            Ok(v) if (0.0..=1.0).contains(&v) => format!("{:.0}%", v * 100.0),
+            _ => self.label.clone(),
+        }
+    }
+
     /// "Enhanced Risk (3/5)" / "General Thunderstorms" — the label to show
     /// alongside the description.
     pub fn headline(&self) -> String {
@@ -114,6 +181,35 @@ impl Outlook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Probability labels are SPC fractions ("0.02" → "2%"); textual labels
+    /// (the "Less Than 5%" no-areas case) come through untouched, as do
+    /// categorical labels.
+    #[test]
+    fn probability_labels_become_percentages() {
+        let mut f = feature("0.02", 2);
+        assert_eq!(f.probability_text(), "2%");
+        f.label = "0.15".into();
+        assert_eq!(f.probability_text(), "15%");
+        f.label = "0.3".into();
+        assert_eq!(f.probability_text(), "30%");
+        f.label = "Less Than 5% All Areas".into();
+        assert_eq!(f.probability_text(), "Less Than 5% All Areas");
+        f.label = "MRGL".into();
+        assert_eq!(f.probability_text(), "MRGL");
+    }
+
+    #[test]
+    fn outlook_types_and_probability_availability() {
+        use OutlookType::*;
+        assert_eq!(Categorical.file_key(), "_cat");
+        assert_eq!(Tornado.file_key(), "_torn");
+        assert_eq!(Hail.noun(), "hail");
+        assert!(Tornado.is_probability());
+        assert!(!Categorical.is_probability());
+        assert!(probabilities_available(1) && probabilities_available(2));
+        assert!(!probabilities_available(3), "day 3 has no probabilities");
+    }
 
     fn feature(label: &str, dn: u16) -> OutlookFeature {
         OutlookFeature {

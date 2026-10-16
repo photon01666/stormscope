@@ -60,7 +60,7 @@ pub enum DataCmd {
     EnterLive,
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
-    LoadOutlook(u8),
+    LoadOutlook(u8, radar_core::outlooks::OutlookType),
     /// Fetch the forecaster discussion text for a day (1..=3).
     LoadOutlookDiscussion(u8),
     /// Fetch the NWS gridpoint forecast for a coordinate.

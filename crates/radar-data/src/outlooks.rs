@@ -32,12 +32,18 @@ impl OutlookSource {
         Ok(Self { client })
     }
 
-    /// Fetch the categorical outlook for `day` (1..=3).
-    pub fn fetch_day(&self, day: u8) -> Result<Outlook> {
+    /// Fetch a day's outlook as a given product type. The categorical areas
+    /// exist for Days 1–3; Tornado/Wind/Hail probability GeoJSONs exist for
+    /// Days 1–2 only (verified against the live server), and asking for day 3
+    /// probabilities fails fast instead of hitting a 404.
+    pub fn fetch(&self, day: u8, ty: radar_core::outlooks::OutlookType) -> Result<Outlook> {
         if !(1..=3).contains(&day) {
             bail!("outlook day must be 1..=3 (got {day})");
         }
-        let url = format!("{BASE}/day{day}otlk_cat.nolyr.geojson");
+        if ty.is_probability() && !radar_core::outlooks::probabilities_available(day) {
+            bail!("SPC publishes no {} outlooks for day {day}", ty.label());
+        }
+        let url = format!("{BASE}/day{day}otlk{}.nolyr.geojson", ty.file_key());
         let resp = self
             .client
             .get(&url)
@@ -49,7 +55,12 @@ impl OutlookSource {
             bail!("SPC outlook day {day} returned HTTP {status}");
         }
         let fc: serde_json::Value = resp.json().context("parsing SPC outlook GeoJSON")?;
-        parse_outlook(day, &fc)
+        parse_outlook(day, ty, &fc)
+    }
+
+    /// The categorical outlook for `day` (1..=3) — the layer's default.
+    pub fn fetch_day(&self, day: u8) -> Result<Outlook> {
+        self.fetch(day, radar_core::outlooks::OutlookType::Categorical)
     }
 
     /// The forecaster's full discussion for `day` (1..=3): the plain-text
@@ -95,7 +106,11 @@ pub(crate) fn strip_wmo_header(text: &str) -> String {
 
 /// Parse an SPC categorical FeatureCollection into an [`Outlook`]. Separated
 /// from the network call so tests can run on a canned fixture.
-pub fn parse_outlook(day: u8, fc: &serde_json::Value) -> Result<Outlook> {
+pub fn parse_outlook(
+    day: u8,
+    ty: radar_core::outlooks::OutlookType,
+    fc: &serde_json::Value,
+) -> Result<Outlook> {
     let features_json = fc
         .get("features")
         .and_then(|f| f.as_array())
@@ -150,6 +165,7 @@ pub fn parse_outlook(day: u8, fc: &serde_json::Value) -> Result<Outlook> {
     features.sort_by_key(|f| f.dn);
     Ok(Outlook {
         day,
+        ty,
         issue,
         valid,
         expire,
@@ -278,7 +294,8 @@ mod tests {
         )
         .unwrap();
 
-        let o = parse_outlook(1, &fc).unwrap();
+        let o = parse_outlook(1, radar_core::outlooks::OutlookType::Categorical, &fc).unwrap();
+        assert_eq!(o.ty, radar_core::outlooks::OutlookType::Categorical);
         assert_eq!(o.day, 1);
         assert_eq!(o.forecaster, "Dean/Chalmers");
         assert_eq!(
@@ -311,10 +328,48 @@ mod tests {
         assert_eq!(iso("not a date"), None);
     }
 
+    const TORN: &str = include_str!("../tests/fixtures/outlook_day1_torn.geojson");
+    const HAIL_NO_AREAS: &str = include_str!("../tests/fixtures/outlook_day1_hail.geojson");
+
+    /// The probability GeoJSON is the categorical shape with a fraction
+    /// `LABEL` and SPC's own human `LABEL2` — colors included.
+    #[test]
+    fn parses_probability_outlook() {
+        let fc: serde_json::Value = serde_json::from_str(TORN).unwrap();
+        let o = parse_outlook(1, radar_core::outlooks::OutlookType::Tornado, &fc).unwrap();
+        assert_eq!(o.ty, radar_core::outlooks::OutlookType::Tornado);
+        assert_eq!(o.features.len(), 1);
+        let f = &o.features[0];
+        assert_eq!(f.label, "0.02");
+        assert_eq!(f.probability_text(), "2%");
+        assert_eq!(f.name, "2% Tornado Risk");
+        assert_eq!(f.stroke, [0x1A, 0x73, 0x1D], "SPC's own stroke parsed");
+        assert_eq!(f.fill, [0x79, 0xBA, 0x7A]);
+        assert!(!f.polygons.is_empty(), "geometry carried");
+        assert_eq!(o.forecaster, "Dean");
+    }
+
+    /// A "no areas" probability product (hail here) draws nothing: its
+    /// GeometryCollection has no Polygon/MultiPolygon, so the feature is
+    /// skipped — the UI shows "no areas" instead of an empty map.
+    #[test]
+    fn probability_outlook_without_areas_yields_no_features() {
+        let fc: serde_json::Value = serde_json::from_str(HAIL_NO_AREAS).unwrap();
+        let o = parse_outlook(1, radar_core::outlooks::OutlookType::Hail, &fc).unwrap();
+        assert_eq!(o.ty, radar_core::outlooks::OutlookType::Hail);
+        assert!(o.features.is_empty(), "no drawable areas");
+        assert_eq!(o.forecaster, "Dean", "metadata still parsed");
+    }
+
     #[test]
     fn rejects_bad_day() {
         let src = OutlookSource::new("stormscope-test (dev@example.com)").unwrap();
         assert!(src.fetch_day(0).is_err());
         assert!(src.fetch_day(4).is_err());
+        // Day 3 has no probability products: fail before hitting the server.
+        assert!(
+            src.fetch(3, radar_core::outlooks::OutlookType::Tornado)
+                .is_err()
+        );
     }
 }

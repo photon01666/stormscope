@@ -1989,12 +1989,45 @@ fn outlook_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormAp
         .at_pointer()
         .show(|ui| {
             super::apply_text_scale(ui, app.sidebar_scale.max(1.0));
+            let prob = o.ty.is_probability();
             ui.horizontal(|ui| {
                 ui.colored_label(color, "●");
-                ui.strong(f.headline());
+                // headline()/description() are categorical wording; a
+                // probability feature's identity is SPC's LABEL2 ("2% Tornado
+                // Risk") and its meaning is the 25-mile definition below.
+                ui.strong(if prob {
+                    if f.name.is_empty() {
+                        f.probability_text()
+                    } else {
+                        f.name.clone()
+                    }
+                } else {
+                    f.headline()
+                });
             });
-            ui.label(egui::RichText::new(f.description()).small());
-            let mut meta = vec![format!("SPC Day {} categorical outlook", o.day)];
+            if prob {
+                let def = f
+                    .label
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| (0.0..=1.0).contains(v))
+                    .map(|v| {
+                        format!(
+                            "{:.0}% chance of {} within 25 miles of a point",
+                            v * 100.0,
+                            o.ty.noun()
+                        )
+                    });
+                ui.label(egui::RichText::new(def.unwrap_or_else(|| f.label.clone())).small());
+            } else {
+                ui.label(egui::RichText::new(f.description()).small());
+            }
+            let mut meta = vec![if prob {
+                format!("SPC Day {} {} probability outlook", o.day, o.ty.label())
+            } else {
+                format!("SPC Day {} categorical outlook", o.day)
+            }];
             if !o.forecaster.is_empty() {
                 meta.push(o.forecaster.clone());
             }
@@ -2308,6 +2341,7 @@ mod tests {
         };
         let o = Outlook {
             day: 1,
+            ty: radar_core::outlooks::OutlookType::Categorical,
             issue: None,
             valid: None,
             expire: None,

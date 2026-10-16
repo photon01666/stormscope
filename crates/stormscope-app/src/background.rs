@@ -143,6 +143,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     // Which SPC outlook day the UI is asking for + when it was last refreshed
     // (outlooks update only a few times per day).
     let mut outlook_day: u8 = 1;
+    let mut outlook_type = radar_core::outlooks::OutlookType::Categorical;
     // Start both timers pre-expired so the first loop iteration fetches
     // alerts + outlook immediately — startup never blocks on the network.
     let mut last_outlook = already_elapsed(OUTLOOK_REFRESH);
@@ -288,9 +289,10 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                         None => {}
                     }
                 }
-                DataCmd::LoadOutlook(day) => {
+                DataCmd::LoadOutlook(day, ty) => {
                     outlook_day = day;
-                    refresh_outlook(&outlooks, day, &out);
+                    outlook_type = ty;
+                    refresh_outlook(&outlooks, day, ty, &out);
                 }
                 DataCmd::LoadForecast(lat, lon) => {
                     let _ = out.send(DataMsg::Status(format!(
@@ -408,7 +410,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
         }
         if last_outlook.elapsed() >= OUTLOOK_REFRESH {
             last_outlook = std::time::Instant::now();
-            refresh_outlook(&outlooks, outlook_day, &out);
+            refresh_outlook(&outlooks, outlook_day, outlook_type, &out);
         }
         // Keep the Settings cache readout live. Only send on an actual
         // change — a directory walk every 2s that says the same thing would
@@ -938,16 +940,22 @@ fn refresh_forecast(
     }
 }
 
-fn refresh_outlook(outlooks: &Option<OutlookSource>, day: u8, out: &Sender<DataMsg>) {
+fn refresh_outlook(
+    outlooks: &Option<OutlookSource>,
+    day: u8,
+    ty: radar_core::outlooks::OutlookType,
+    out: &Sender<DataMsg>,
+) {
     let Some(src) = outlooks else { return };
-    match src.fetch_day(day) {
+    match src.fetch(day, ty) {
         Ok(o) => {
             let issued = o
                 .issue
                 .map(|t| crate::timefmt::fmt_central(&t))
                 .unwrap_or_else(|| "?".into());
             log::info!(
-                "outlook day {day}: {} areas, issued {issued}",
+                "outlook day {day} {}: {} areas, issued {issued}",
+                ty.label(),
                 o.features.len()
             );
             let _ = out.send(DataMsg::Outlook(o));

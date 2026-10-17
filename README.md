@@ -108,8 +108,10 @@ expensive raster work happens only when something actually changes:
 - The 3D pane renders on demand: only when its camera, settings, volume,
   ground tiles or size changed. Motion frames draw at half resolution and one
   sharp frame lands 160 ms after the motion stops — idle wakes cost a texture
-  sample instead of a volume pass (the policy is a unit-tested pure
-  function).
+  sample instead of a volume pass (the policy is a unit-tested pure function).
+- The 3D scene holds still while the timeline plays (it re-syncs on pause) and
+  scrub-dragging rebuilds at most every 250 ms, so playing the loop can never
+  starve map panning or 3D orbiting.
 - Splats are premultiplied, division-free, into a persistent buffer uploaded
   through one reused GPU texture.
 - Measured on the development machine (Intel Arc A310, 2540×1329 viewport): heavy

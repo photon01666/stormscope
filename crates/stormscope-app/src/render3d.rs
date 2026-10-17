@@ -121,6 +121,10 @@ pub struct Volume3d {
     size: [u32; 2],
     tex_id: Option<egui::TextureId>,
     tex_dirty: bool,
+    /// When the current scene buffers were built — the rate limit for
+    /// scrub-driven rebuilds (each one is a ~1M-vertex mesh plus ~50 MB of
+    /// buffer traffic; right for "a volume arrived", wrong for a scrubber).
+    scene_built_at: std::time::Instant,
     /// Change key of the last rendered frame, the last *full-resolution*
     /// render, and when the key last changed — the "render on demand, half
     /// res while moving" policy (the pane is GPU-bound at 4K: re-rendering
@@ -439,6 +443,7 @@ impl Volume3d {
             size: [0, 0],
             tex_id: None,
             tex_dirty: false,
+            scene_built_at: std::time::Instant::now(),
             last_key: None,
             last_full_key: None,
             last_change: std::time::Instant::now(),
@@ -518,9 +523,43 @@ impl Volume3d {
 
         self.scene_sig = Some(sig);
         self.moment_seen = Some(filter.moment);
+        self.scene_built_at = std::time::Instant::now();
         // New geometry: the cached frame (if any) is stale.
         self.last_key = None;
         true
+    }
+
+    /// Whether any scene has been built yet.
+    pub fn has_scene(&self) -> bool {
+        self.scene_sig.is_some()
+    }
+
+    /// Rebuild the scene when `sig` is stale, rate-limited to one rebuild per
+    /// `min_interval` (the first scene is exempt). Scrub-dragging then costs
+    /// a few rebuilds a second instead of one per pointer event, and it
+    /// self-heals: the stale signature keeps the request alive until the
+    /// final position is built, even if intermediate positions were skipped.
+    pub fn refresh_scene(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        volume: &Volume,
+        filter: &MeshFilter,
+        sig: u64,
+        min_interval: std::time::Duration,
+    ) -> bool {
+        if self.scene_sig == Some(sig) {
+            return false;
+        }
+        let since_ms = self.scene_built_at.elapsed().as_millis() as u64;
+        if !scene_decision(
+            self.scene_sig.is_some(),
+            since_ms,
+            min_interval.as_millis() as u64,
+        ) {
+            return false;
+        }
+        self.update_scene(device, queue, volume, filter, sig)
     }
 
     /// Set the ground quads for this frame: `(egui texture, [x0, y0, x1, y1])`
@@ -1075,5 +1114,31 @@ mod tests {
             render_decision(Some(7), Some(7), 8, 0),
             RenderDecision::Interactive
         );
+    }
+}
+
+/// Whether a stale scene should rebuild now: never for the first scene,
+/// otherwise at most one per `min_interval` (the caller only asks when the
+/// signature is stale, so a skipped rebuild is re-asked next frame).
+fn scene_decision(has_scene: bool, since_build_ms: u64, min_interval_ms: u64) -> bool {
+    !has_scene || since_build_ms >= min_interval_ms
+}
+
+#[cfg(test)]
+mod scene_tests {
+    use super::scene_decision;
+
+    #[test]
+    fn first_scene_builds_immediately() {
+        assert!(scene_decision(false, 0, 250));
+    }
+
+    #[test]
+    fn scrub_rebuilds_are_rate_limited_and_self_healing() {
+        // Just built: skip the intermediate scrub positions...
+        assert!(!scene_decision(true, 10, 250));
+        assert!(!scene_decision(true, 249, 250));
+        // ...and the stale request lands as soon as the window passes.
+        assert!(scene_decision(true, 250, 250));
     }
 }

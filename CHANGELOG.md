@@ -3,6 +3,20 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.2 — 2026-10-17
+
+**Playing the timeline no longer drags the 3D pane down with it**
+- The 3D scene followed every playhead tick, so an 8 fps loop triggered a
+  full ~1M-vertex mesh rebuild and ~50 MB of buffer uploads eight times a
+  second — map panning and 3D orbiting in that state were a slideshow.
+- The scene now holds still while the timeline plays and re-syncs the moment
+  playback pauses (the pane says so in its stats line). While paused,
+  scrub-dragging rebuilds at most every 250 ms: smooth to drag, and the final
+  position still lands because the stale request is re-asked until built.
+  The policy is a unit-tested pure function.
+- Panning the 3D pane during playback now costs one half-res volume pass per
+  moved frame and nothing else.
+
 ## v1.2.1 — 2026-10-16
 
 **Performance: the 3D pane renders on demand (and at half res while moving)**

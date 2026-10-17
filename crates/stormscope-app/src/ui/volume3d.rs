@@ -6,7 +6,9 @@
 //! 2D map is for finding the point (pan/zoom, warnings, reports), the 3D
 //! pane is for seeing the vertical structure there (overhang, hail core,
 //! mesocyclone depth). Both follow the same selection — site, moment, and
-//! the timeline playhead — so they never disagree about what is on screen.
+//! the timeline playhead — except while playback runs: rebuilding the
+//! volume mesh on every playhead tick would starve the UI, so the scene
+//! holds still during playback and re-syncs the moment it pauses.
 //! The ground is the same basemap the 2D map draws, resolved through the
 //! tile layer's exact tiles; custom markers rise from it as pins.
 //!
@@ -116,13 +118,32 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         filter.elev_max_deg.map(f32::to_bits).hash(&mut h);
         h.finish()
     };
-    v3.update_scene(
-        &render_state.device,
-        &render_state.queue,
-        &volume,
-        &filter,
-        sig,
-    );
+    // Playhead policy: every rebuild is a ~1M-vertex mesh plus ~50 MB of
+    // buffer traffic — right for "a new volume arrived", wrong for an 8 fps
+    // playhead. While the timeline plays, the scene holds still (and re-syncs
+    // the moment playback pauses). While paused, scrubbing rebuilds at most
+    // every 250 ms, which stays smooth and still lands the final position.
+    let playing = app.state.loop_state == crate::state::LoopState::Playing;
+    if playing {
+        if !v3.has_scene() {
+            v3.update_scene(
+                &render_state.device,
+                &render_state.queue,
+                &volume,
+                &filter,
+                sig,
+            );
+        }
+    } else {
+        v3.refresh_scene(
+            &render_state.device,
+            &render_state.queue,
+            &volume,
+            &filter,
+            sig,
+            std::time::Duration::from_millis(250),
+        );
+    }
 
     // Threshold lives in the moment's units; keep it inside the table range
     // when the moment changes (a 70 dBZ threshold makes no sense for CC).
@@ -464,8 +485,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         v3.elev_hi_deg(),
         v3.triangles() as f32 / 1000.0,
     );
-    let line3 = "orbit: drag · pan: right-drag or W/A/S/D · zoom: wheel · fit: double-click";
-    for (i, text) in [line1, line2, line3.to_string()].iter().enumerate() {
+    let line3 = if playing {
+        "playback running — the 3D scene holds still and re-syncs when you pause".to_string()
+    } else {
+        "orbit: drag · pan: right-drag or W/A/S/D · zoom: wheel · fit: double-click".to_string()
+    };
+    for (i, text) in [line1, line2, line3].iter().enumerate() {
         painter.text(
             rect.left_top()
                 + Vec2::new(9.0 * scale, 8.0 * scale + (15.0 + i as f32 * 13.0) * scale),

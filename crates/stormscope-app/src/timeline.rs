@@ -10,11 +10,16 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         let playing = app.state.loop_state == LoopState::Playing;
         let label = if playing { "Pause" } else { "Play" };
         if ui.button(label).clicked() {
-            app.state.loop_state = if playing {
-                LoopState::Paused
+            if playing {
+                app.state.loop_state = LoopState::Paused;
+                // Stopping means "show me now": jump to the newest scan.
+                // Looping history is what Play is for; leaving the playhead
+                // parked in the past after a stop read as the app being
+                // stuck on old data.
+                app.state.playhead = app.state.ring.len().saturating_sub(1);
             } else {
-                LoopState::Playing
-            };
+                app.state.loop_state = LoopState::Playing;
+            }
         }
         if ui.button("⏮").clicked() {
             app.state.playhead = 0;

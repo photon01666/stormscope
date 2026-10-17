@@ -59,6 +59,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     forecast::forecast_window(ui.ctx(), app);
     totals::totals_window(ui.ctx(), app);
 
+    // Archive popup (opened from Settings).
+    archive_window(ui.ctx(), app);
+
     // SPC discussion popup (clicking an outlook outline).
     outlook_detail_window(ui.ctx(), app);
     reports::lsr_detail_window(ui.ctx(), app);
@@ -467,108 +470,6 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         );
     }
     ui.add_space(6.0);
-
-    // Mode toggle.
-    ui.horizontal(|ui| {
-        let mut live = app.state.mode == Mode::Live;
-        if ui.selectable_value(&mut live, true, "Live").changed() {
-            app.state.mode = Mode::Live;
-            let _ = app.tx.send(crate::app::DataCmd::EnterLive);
-        }
-        let mut arch = app.state.mode == Mode::Archive;
-        if ui.selectable_value(&mut arch, true, "Archive").changed() {
-            app.state.mode = Mode::Archive;
-        }
-    });
-
-    // Loop the last hour — loads the newest ~13 scans into the ring and
-    // switches to Archive so the playhead doesn't auto-jump as live frames
-    // keep arriving.
-    ui.add_space(4.0);
-    if ui
-        .button("⟳ Loop last hour")
-        .on_hover_text("Load the newest hour of scans and loop them")
-        .clicked()
-    {
-        app.state.mode = Mode::Archive;
-        let _ = app
-            .tx
-            .send(crate::app::DataCmd::LoadLastHour(app.state.site_id.clone()));
-    }
-
-    // Archive date picker — only meaningful in Archive mode.
-    if app.state.mode == Mode::Archive {
-        ui.add_space(6.0);
-        ui.label("Archive day (Central)");
-        ui.horizontal(|ui| {
-            if ui.button("◀").clicked() {
-                app.state.archive_date = app
-                    .state
-                    .archive_date
-                    .pred_opt()
-                    .unwrap_or(app.state.archive_date);
-            }
-            ui.label(
-                egui::RichText::new(app.state.archive_date.format("%a %b %-d, %Y").to_string())
-                    .strong(),
-            );
-            if ui.button("▶").clicked() {
-                let today = chrono::Utc::now()
-                    .with_timezone(crate::timefmt::central())
-                    .date_naive();
-                if app.state.archive_date < today {
-                    app.state.archive_date = app
-                        .state
-                        .archive_date
-                        .succ_opt()
-                        .unwrap_or(app.state.archive_date);
-                }
-            }
-        });
-        if ui.button("Load day").clicked() {
-            let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
-                app.state.site_id.clone(),
-                app.state.archive_date,
-            ));
-        }
-        // Window paging: the day is listed newest-first; a window of
-        // RING_CAPACITY scans is loaded at a time. Page earlier/later through
-        // the whole day.
-        if app.state.archive_total > 0 {
-            ui.add_space(4.0);
-            let first = app.state.archive_start + 1;
-            let last = app.state.archive_start + app.state.archive_len;
-            ui.horizontal(|ui| {
-                let at_oldest = app.state.archive_start == 0;
-                if ui
-                    .add_enabled(at_oldest, egui::Button::new("◀ earlier"))
-                    .clicked()
-                {
-                    let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(-1));
-                }
-                if ui
-                    .add_enabled(last < app.state.archive_total, egui::Button::new("later ▶"))
-                    .clicked()
-                {
-                    let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(1));
-                }
-            });
-            ui.label(
-                egui::RichText::new(format!(
-                    "scans {}–{} of {} (newest first)",
-                    first, last, app.state.archive_total
-                ))
-                .weak()
-                .small(),
-            );
-        } else {
-            ui.label(
-                egui::RichText::new("loads that day's scans oldest→newest; then use Play")
-                    .weak()
-                    .small(),
-            );
-        }
-    }
 
     // Site selector.
     ui.add_space(6.0);
@@ -1161,7 +1062,187 @@ fn settings_menu(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.label(egui::RichText::new("Map appearance").strong());
         ui.add_space(4.0);
         warning_fill_slider(ui, app);
+        ui.separator();
+        ui.label(egui::RichText::new("Data").strong());
+        ui.add_space(4.0);
+        if ui
+            .button("Archive…")
+            .on_hover_text(
+                "Browse the past: pick a day and a time of day, page through \
+                 the day's scans, and loop them",
+            )
+            .clicked()
+        {
+            app.state.archive_popup_open = true;
+        }
+        ui.label(
+            egui::RichText::new(match app.state.mode {
+                Mode::Live => "now: live",
+                Mode::Archive => "now: archive",
+            })
+            .weak()
+            .small(),
+        );
     });
+}
+
+/// The Archive popup (opened from Settings): day + time-of-day pickers, the
+/// load actions, paging, and real feedback — the times of what is loaded and
+/// where the window sits in the day, instead of bare "earlier/later".
+fn archive_window(ctx: &egui::Context, app: &mut StormApp) {
+    if !app.state.archive_popup_open {
+        return;
+    }
+    // Feedback stays fresh while a load streams in.
+    ctx.request_repaint_after(std::time::Duration::from_millis(400));
+    let scale = app.sidebar_scale.max(1.0);
+    let size = popup_size(ctx, scale, 430.0, 470.0);
+    let mut open = app.state.archive_popup_open;
+
+    egui::Window::new("Archive")
+        .id(egui::Id::new("stormscope.archive"))
+        .open(&mut open)
+        .default_size(size)
+        .min_size(egui::vec2(330.0 * scale, 300.0 * scale))
+        .default_pos(centered_popup_pos(ctx, size))
+        .resizable(true)
+        .show(ctx, |ui| {
+            apply_text_scale(ui, scale);
+            // Mode.
+            ui.horizontal(|ui| {
+                let mut live = app.state.mode == Mode::Live;
+                if ui.selectable_value(&mut live, true, "Live").changed() && live {
+                    app.state.mode = Mode::Live;
+                    let _ = app.tx.send(crate::app::DataCmd::EnterLive);
+                }
+                let mut arch = app.state.mode == Mode::Archive;
+                if ui.selectable_value(&mut arch, true, "Archive").changed() && arch {
+                    app.state.mode = Mode::Archive;
+                }
+            });
+            ui.add_space(6.0);
+
+            // Day.
+            ui.label("Day (Central)");
+            ui.horizontal(|ui| {
+                if ui.button("◀").clicked() {
+                    app.state.archive_date = app
+                        .state
+                        .archive_date
+                        .pred_opt()
+                        .unwrap_or(app.state.archive_date);
+                }
+                ui.label(
+                    egui::RichText::new(app.state.archive_date.format("%a %b %-d, %Y").to_string())
+                        .strong(),
+                );
+                if ui.button("▶").clicked() {
+                    let today = chrono::Utc::now()
+                        .with_timezone(crate::timefmt::central())
+                        .date_naive();
+                    if app.state.archive_date < today {
+                        app.state.archive_date = app
+                            .state
+                            .archive_date
+                            .succ_opt()
+                            .unwrap_or(app.state.archive_date);
+                    }
+                }
+            });
+
+            // Time of day.
+            ui.add_space(4.0);
+            ui.label("Time of day (Central)");
+            ui.add(
+                egui::Slider::new(&mut app.state.archive_minute, 0..=1435)
+                    .step_by(5.0)
+                    .custom_formatter(|v, _| {
+                        format!("{:02}:{:02}", (v as u32) / 60, (v as u32) % 60)
+                    }),
+            );
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Load at time")
+                    .on_hover_text("Load the scans around this time")
+                    .clicked()
+                {
+                    app.state.mode = Mode::Archive;
+                    let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
+                        app.state.site_id.clone(),
+                        app.state.archive_date,
+                        Some(app.state.archive_minute),
+                    ));
+                }
+                if ui
+                    .button("Newest first")
+                    .on_hover_text("Load the newest scans of that day")
+                    .clicked()
+                {
+                    app.state.mode = Mode::Archive;
+                    let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
+                        app.state.site_id.clone(),
+                        app.state.archive_date,
+                        None,
+                    ));
+                }
+            });
+            if ui
+                .button("⟳ Loop last hour")
+                .on_hover_text("Load the newest hour of scans and loop them")
+                .clicked()
+            {
+                app.state.mode = Mode::Archive;
+                let _ = app.tx.send(crate::app::DataCmd::LoadLastHour(app.state.site_id.clone()));
+            }
+
+            // Feedback.
+            ui.add_space(6.0);
+            ui.separator();
+            ui.label(egui::RichText::new(&app.state.status_text).weak().small());
+            if let (Some(first), Some(last)) = (app.state.ring.front(), app.state.ring.back()) {
+                let tz = crate::timefmt::central();
+                ui.label(format!(
+                    "loaded {} scans · {} → {} (Central)",
+                    app.state.ring.len(),
+                    first.volume_start.with_timezone(tz).format("%H:%M"),
+                    last.volume_start.with_timezone(tz).format("%H:%M"),
+                ));
+            }
+            if app.state.archive_total > 0 {
+                let window_len = app.state.archive_len.max(1);
+                let windows = app.state.archive_total.div_ceil(window_len);
+                let window_no = app.state.archive_start / window_len + 1;
+                let first = app.state.archive_start + 1;
+                let last = app.state.archive_start + app.state.archive_len;
+                ui.horizontal(|ui| {
+                    let at_oldest = app.state.archive_start == 0;
+                    if ui
+                        .add_enabled(at_oldest, egui::Button::new("◀ earlier"))
+                        .clicked()
+                    {
+                        let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(-1));
+                    }
+                    if ui
+                        .add_enabled(
+                            last < app.state.archive_total,
+                            egui::Button::new("later ▶"),
+                        )
+                        .clicked()
+                    {
+                        let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(1));
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(format!(
+                        "window {window_no} of {windows} · scans {first}–{last} of {} (newest first)",
+                        app.state.archive_total
+                    ))
+                    .weak()
+                    .small(),
+                );
+            }
+        });
+    app.state.archive_popup_open = open;
 }
 
 /// The warning-polygon fill slider, shared by the Settings menu and the

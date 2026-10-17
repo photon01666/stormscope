@@ -33,6 +33,13 @@ pub enum DataMsg {
     Error(String),
     /// Drop every ring frame (mode switch / archive window change).
     ClearFrames,
+    /// Warning-archive backfill status (crawler progress).
+    ArchiveCrawl(radar_data::warnings_archive::CrawlStatus),
+    /// Historical warnings for one Central day (the alerts archive tab).
+    ArchiveWarnings {
+        date: chrono::NaiveDate,
+        warnings: Vec<radar_data::warnings_archive::HistoricWarning>,
+    },
     /// Archive window position: `total` scans in the day, `[start, start+len)`
     /// currently loaded (indices into newest-first order).
     ArchiveInfo {
@@ -52,7 +59,16 @@ pub enum DataMsg {
 /// Commands UI -> background data threads.
 pub enum DataCmd {
     SetSite(String),
-    LoadArchiveDate(String, chrono::NaiveDate),
+    /// Load one archive listing day. `Some(minute)` targets the time of day
+    /// (Central, minutes since midnight) — the loaded window covers it;
+    /// `None` starts from the newest scan of that day.
+    LoadArchiveDate(String, chrono::NaiveDate, Option<u32>),
+    /// Turn the (rate-limited, newest-first) warning-archive backfill on or
+    /// off. Persisted; only the user asks for it.
+    SetArchiveCrawl(bool),
+    /// Load the historical warnings for one Central day (cache-first, one
+    /// or two small day-file requests; never polled).
+    LoadArchiveWarnings(chrono::NaiveDate),
     /// Load the newest ~1 hour of scans into the ring for immediate looping.
     LoadLastHour(String),
     /// Page the loaded archive day earlier (-1) or later (+1).
@@ -480,6 +496,16 @@ impl StormApp {
                     self.prev_tracks.clear();
                     self.marker_etas.clear();
                 }
+                DataMsg::ArchiveCrawl(status) => {
+                    self.state.archive_crawl = Some(status);
+                }
+                DataMsg::ArchiveWarnings { date, warnings } => {
+                    self.state.archive_warning_view =
+                        warnings.iter().map(|w| w.as_warning()).collect();
+                    self.state.archive_warnings = warnings;
+                    self.state.archive_warnings_date = Some(date);
+                    self.state.archive_warnings_requested = None;
+                }
                 DataMsg::ArchiveInfo { total, start, len } => {
                     self.state.archive_total = total;
                     self.state.archive_start = start;
@@ -488,6 +514,29 @@ impl StormApp {
                 DataMsg::CacheInfo { radar, tiles } => {
                     self.state.cache_radar_bytes = Some(radar);
                     self.state.cache_tile_bytes = Some(tiles);
+                }
+            }
+        }
+
+        // Pending archive jump (set by clicking a historical warning): once
+        // the ring holds a frame near the warning's time, park the playhead
+        // there — alongside it the archive date/time it was loaded for.
+        if let Some((target, armed)) = self.state.archive_jump {
+            if armed.elapsed() > std::time::Duration::from_secs(60) {
+                self.state.archive_jump = None;
+            } else if let Some((idx, delta)) = self
+                .state
+                .ring
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (i, (f.volume_start - target).num_seconds().abs()))
+                .min_by_key(|&(_, d)| d)
+            {
+                // Within 12 minutes of the warning's issuance (a scan or
+                // two before/after is the right picture of the warning).
+                if delta <= 12 * 60 {
+                    self.state.playhead = idx;
+                    self.state.archive_jump = None;
                 }
             }
         }
@@ -503,7 +552,12 @@ impl StormApp {
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             self.state.loop_state = match self.state.loop_state {
-                LoopState::Playing => LoopState::Paused,
+                LoopState::Playing => {
+                    // Stopping means "show me now": jump to the newest scan,
+                    // same as the timeline's Pause button.
+                    self.state.playhead = self.state.ring.len().saturating_sub(1);
+                    LoopState::Paused
+                }
                 LoopState::Paused => LoopState::Playing,
             };
         }

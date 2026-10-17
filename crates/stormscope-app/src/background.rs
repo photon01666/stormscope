@@ -112,6 +112,17 @@ struct ArchiveDay {
 /// Entry point for the background "data" thread.
 pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     let cache = DiskCache::with_default_max(DiskCache::default_root());
+    // Warning-archive backfill (opt-in, newest-first, rate-limited). It
+    // lives beside the data cache, not inside it: day-files are immutable.
+    let mut crawl = radar_data::warnings_archive::ArchiveCrawler::new(
+        DiskCache::default_root().join("warnings"),
+    );
+    let _ = out.send(DataMsg::ArchiveCrawl(crawl.status()));
+    // Historical warnings share the day-file cache with the crawler.
+    let warn_archive =
+        std::sync::Arc::new(radar_data::warnings_archive::WarningArchiveSource::new(
+            DiskCache::default_root().join("warnings"),
+        ));
     let source = match S3Source::new(cache) {
         Ok(s) => s,
         Err(e) => {
@@ -197,7 +208,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             )));
             watchdog_enabled = false; // browsing a day, not live
             backfill.clear(); // the archive day replaces the queued refill
-            archive = open_archive_day(&source, &site, date, &mut current_site, &out);
+            archive = open_archive_day(&source, &site, date, None, &mut current_site, &out);
         }
     }
 
@@ -230,11 +241,19 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     // (previously evaluated around a hardcoded Oklahoma point).
                     refresh_alerts(&alerts, &site, &out);
                 }
-                DataCmd::LoadArchiveDate(site, date) => {
-                    let _ = out.send(DataMsg::Status(format!("loading {site} archive {date}…")));
+                DataCmd::LoadArchiveDate(site, date, minute) => {
+                    let _ = out.send(DataMsg::Status(match minute {
+                        Some(m) => format!(
+                            "loading {site} {date} around {:02}:{:02} CDT…",
+                            m / 60,
+                            m % 60
+                        ),
+                        None => format!("loading {site} archive {date}…"),
+                    }));
                     watchdog_enabled = false; // browsing a day, not live
                     backfill.clear(); // the day replaces whatever was queued
-                    archive = open_archive_day(&source, &site, date, &mut current_site, &out);
+                    archive =
+                        open_archive_day(&source, &site, date, minute, &mut current_site, &out);
                 }
                 DataCmd::LoadLastHour(site) => {
                     current_site = site.clone();
@@ -247,6 +266,52 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                         len: 0,
                     });
                     load_last_hour(&source, &site, &out);
+                }
+                DataCmd::SetArchiveCrawl(on) => {
+                    crawl.set_enabled(on);
+                    let _ = out.send(DataMsg::ArchiveCrawl(crawl.status()));
+                }
+                DataCmd::LoadArchiveWarnings(date) => {
+                    // Off-thread: a cold day is one (sometimes two) small
+                    // archive requests plus parsing — never on the loop.
+                    let src = std::sync::Arc::clone(&warn_archive);
+                    let out2 = out.clone();
+                    std::thread::Builder::new()
+                        .name("warn-archive".into())
+                        .spawn(move || {
+                            let _ = out2.send(DataMsg::Status(format!(
+                                "loading warning archive for {date}…"
+                            )));
+                            let (start, end) = central_day_window(date);
+                            let mut days = vec![start.date_naive()];
+                            let last = (end - chrono::Duration::seconds(1)).date_naive();
+                            if last != days[0] {
+                                days.push(last);
+                            }
+                            let mut all: Vec<radar_data::warnings_archive::HistoricWarning> =
+                                Vec::new();
+                            for d in days {
+                                match src.load_day(d) {
+                                    Ok(mut w) => all.append(&mut w),
+                                    Err(e) => {
+                                        let _ = out2.send(DataMsg::Error(format!(
+                                            "warning archive {d}: {e:#}"
+                                        )));
+                                    }
+                                }
+                            }
+                            // The CGI day files are UTC; the UI day is
+                            // Central, so trim to the window and dedupe
+                            // (events spanning midnight appear in both).
+                            all.retain(|w| w.issued >= start && w.issued < end);
+                            all.sort_by(|a, b| b.issued.cmp(&a.issued));
+                            all.dedup_by(|a, b| a.id == b.id);
+                            let _ = out2.send(DataMsg::ArchiveWarnings {
+                                date,
+                                warnings: all,
+                            });
+                        })
+                        .ok();
                 }
                 DataCmd::ArchiveWindowShift(delta) => {
                     backfill.clear();
@@ -380,6 +445,17 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
+        // Warning-archive backfill (opt-in, newest-first, rate-limited):
+        // at most one small day-file per interval; days already cached are
+        // skipped forever, and the daily budget bounds the total.
+        if let Some(res) = crawl.step() {
+            match res {
+                Ok(day) => log::debug!("warning archive: cached {day}"),
+                Err(e) => log::warn!("warning archive fetch: {e:#}"),
+            }
+            let _ = out.send(DataMsg::ArchiveCrawl(crawl.status()));
+        }
+
         // Replay the queued refill one slice at a time. Decoding costs ~1 s
         // per volume, so draining it inside the command handler would stall
         // the next command — and the next site switch — for tens of seconds.
@@ -474,6 +550,7 @@ fn open_archive_day(
     source: &S3Source,
     site: &str,
     date: NaiveDate,
+    target_minute: Option<u32>,
     current_site: &mut String,
     out: &Sender<DataMsg>,
 ) -> Option<ArchiveDay> {
@@ -491,22 +568,69 @@ fn open_archive_day(
     }
     let total = vols.len();
     let window_len = ARCHIVE_MAX_VOLUMES.min(total);
-    // vols is newest-first; the newest window is the head.
-    let day = ArchiveDay {
-        vols,
-        window_start: 0,
-    };
-    // The day *replaces* whatever was on the ring — without this the live
+    // vols is newest-first; default window is the head (newest of the day),
+    // or the one covering the requested time of day.
+    let window_start = target_minute
+        .map(|m| window_start_for_minute(&vols, m, window_len))
+        .unwrap_or(0);
+    let mut day = ArchiveDay { vols, window_start };
+    open_archive_window(source, site, date, &mut day, window_start, window_len, out);
+    Some(day)
+}
+
+/// Window start (newest-first index) whose span covers the given Central
+/// time of day: the closest scan to `minute`, then centered in the window
+/// (clamped to the day's bounds). Circular distance, so 23:50 finds the
+/// 00:00 scan of the same listing day.
+fn window_start_for_minute(
+    vols: &[radar_data::ArchiveVolumeRef],
+    minute: u32,
+    window_len: usize,
+) -> usize {
+    let total = vols.len();
+    if total == 0 {
+        return 0;
+    }
+    use chrono::Timelike;
+    let tz = crate::timefmt::central();
+    let target = i64::from(minute % 1440);
+    let idx = vols
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, v)| {
+            let t = v.volume_start.with_timezone(tz).time();
+            let m = i64::from(t.hour() * 60 + t.minute());
+            let d = (m - target).abs() % 1440;
+            d.min(1440 - d)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let max_start = total.saturating_sub(window_len);
+    idx.saturating_sub(window_len / 2).min(max_start)
+}
+
+/// Clear the ring, stream one window and report its position — the single
+/// path both the day-load and the paging buttons use.
+fn open_archive_window(
+    source: &S3Source,
+    site: &str,
+    date: NaiveDate,
+    day: &mut ArchiveDay,
+    new_start: usize,
+    window_len: usize,
+    out: &Sender<DataMsg>,
+) {
+    day.window_start = new_start;
+    // The window *replaces* whatever was on the ring — without this the live
     // frame still sitting there made every older archive scan look
     // out-of-order and get dropped.
     let _ = out.send(DataMsg::ClearFrames);
-    stream_window(source, site, date, &day, window_len, out);
+    stream_window(source, site, date, day, window_len, out);
     let _ = out.send(DataMsg::ArchiveInfo {
-        total,
-        start: 0,
+        total: day.vols.len(),
+        start: new_start,
         len: window_len,
     });
-    Some(day)
 }
 
 /// Page the archive window earlier (delta<0) or later (delta>0) by one
@@ -529,16 +653,9 @@ fn shift_archive_window(
         let _ = out.send(DataMsg::Status("already at the end of that day".into()));
         return;
     }
-    day.window_start = new_start;
     let site = day.vols[0].site.clone();
     let date = day.vols[0].date;
-    let _ = out.send(DataMsg::ClearFrames);
-    stream_window(source, &site, date, day, window_len, out);
-    let _ = out.send(DataMsg::ArchiveInfo {
-        total,
-        start: new_start,
-        len: window_len,
-    });
+    open_archive_window(source, &site, date, day, new_start, window_len, out);
 }
 
 /// Fetch+emit one window's volumes oldest→newest into the UI ring.
@@ -1037,5 +1154,39 @@ mod tests {
             wend,
             Utc.from_utc_datetime(&winter.succ_opt().unwrap().and_hms_opt(6, 0, 0).unwrap())
         );
+    }
+
+    /// Time-of-day targeting: the window covers the requested (Central)
+    /// minute, wraps across midnight, and clamps at the day's edges.
+    #[test]
+    fn archive_window_covers_the_requested_time_of_day() {
+        use chrono::TimeZone;
+        // 18 scans, Central hours 00:00..17:00. Central is UTC-5 (CDT), so
+        // UTC hour = h + 5 on the same date.
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        let mut vols: Vec<radar_data::ArchiveVolumeRef> = (0..18)
+            .map(|h| radar_data::ArchiveVolumeRef {
+                site: "KTWX".into(),
+                date,
+                key: format!("2026/10/14/KTWX/KTWX20261014_{:02}0000_V06", h + 5),
+                volume_start: chrono::Utc
+                    .with_ymd_and_hms(2026, 10, 14, (h as u32) + 5, 0, 0)
+                    .unwrap(),
+                size_bytes: 0,
+            })
+            .collect();
+        vols.sort_by(|a, b| b.volume_start.cmp(&a.volume_start)); // newest-first
+
+        // 09:00 is the 9th-newest entry (index 8); centered in a 6-wide window.
+        assert_eq!(
+            window_start_for_minute(&vols, 9 * 60, 6),
+            8usize.saturating_sub(3)
+        );
+        // 00:30 wraps to the 00:00 scan (newest index 17) and clamps low.
+        assert_eq!(window_start_for_minute(&vols, 30, 6), 12);
+        // 23:50 is circularly closest to 00:00 as well.
+        assert_eq!(window_start_for_minute(&vols, 23 * 60 + 50, 6), 12);
+        // Degenerate input.
+        assert_eq!(window_start_for_minute(&[], 600, 6), 0);
     }
 }

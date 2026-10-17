@@ -5,8 +5,9 @@
 //! Clicking a row centers the map on that alert.
 
 use crate::app::StormApp;
-use crate::state::{AlertsTab, STATION_ALERT_RADIUS_KM};
+use crate::state::{AlertsTab, Mode, STATION_ALERT_RADIUS_KM};
 use radar_core::warnings::Warning;
+use radar_data::warnings_archive::HistoricWarning;
 
 /// How many rows to render at most (a nationwide list can run to hundreds;
 /// the filter box narrows it down).
@@ -291,6 +292,19 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let all = &state.all_alerts;
     let station: Vec<&Warning> = station_alerts(all, site_lat, site_lon, STATION_ALERT_RADIUS_KM);
 
+    // Archive tab (historical warnings). Rendered from split borrows, so the
+    // data and the UI actions travel separately: the window collects one
+    // action, the code after it applies the action with full access to app.
+    let archive_day = state.archive_date;
+    let archive_requested = state.archive_warnings_requested;
+    let archive_crawl = state.archive_crawl.clone();
+    let archive_view: Vec<&HistoricWarning> = if *tab == AlertsTab::Archive {
+        state.archive_warnings.iter().collect()
+    } else {
+        Vec::new()
+    };
+    let mut archive_action: Option<ArchiveAction> = None;
+
     // Match the sidebar's high-res scaling: on a 4K panel the window is
     // otherwise unreadable. The size is clamped to the screen so a long
     // alert list cannot push the window off the bottom edge.
@@ -322,7 +336,32 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                     AlertsTab::Station,
                     format!("{site_id} only ({})", station.len()),
                 );
+                ui.selectable_value(
+                    tab,
+                    AlertsTab::Archive,
+                    format!("Archive ({})", archive_view.len()),
+                )
+                .on_hover_text(
+                    "Historical warnings for the archive day (IEM VTEC archive).                      Click a warning to load the radar at its time.",
+                );
             });
+
+            if *tab == AlertsTab::Archive {
+                archive_tab_ui(
+                    ui,
+                    archive_day,
+                    &archive_view,
+                    archive_requested,
+                    archive_crawl.as_ref(),
+                    site_lat,
+                    site_lon,
+                    site_id,
+                    scale,
+                    &mut archive_action,
+                );
+                super::fill_popup_height(ui);
+                return;
+            }
             ui.label(
                 egui::RichText::new(format!(
                     "source api.weather.gov · nationwide sweep every 5 min, station alerts every 60 s (within {} km of the site)",
@@ -359,6 +398,8 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
             let source: Vec<&Warning> = match *tab {
                 AlertsTab::All => all.iter().collect(),
                 AlertsTab::Station => station.clone(),
+                // Handled above (the archive tab renders its own body).
+                AlertsTab::Archive => Vec::new(),
             };
             let rows: Vec<&Warning> = source
                 .into_iter()
@@ -460,6 +501,292 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
         }
         app.select_site(&site_id);
     }
+
+    if let Some(action) = archive_action {
+        match action {
+            ArchiveAction::SetDay(day) => {
+                app.state.archive_date = day;
+            }
+            ArchiveAction::Load(day) => {
+                let _ = app.tx.send(crate::app::DataCmd::LoadArchiveWarnings(day));
+                app.state.archive_warnings_requested = Some((day, std::time::Instant::now()));
+            }
+            ArchiveAction::ToggleCrawl(on) => {
+                let _ = app.tx.send(crate::app::DataCmd::SetArchiveCrawl(on));
+            }
+            ArchiveAction::Jump(idx) => jump_to_warning(app, idx),
+        }
+    }
+
+    // Lazy day load: only while the archive tab is open, once per day and on
+    // day changes — an explicit user action each time, never a poll. The
+    // in-flight stamp bounds retries to one per minute.
+    if app.state.alerts_tab == AlertsTab::Archive {
+        let day = app.state.archive_date;
+        let fresh = app.state.archive_warnings_date == Some(day);
+        let in_flight = app
+            .state
+            .archive_warnings_requested
+            .is_some_and(|(d, at)| d == day && at.elapsed() < std::time::Duration::from_secs(60));
+        if !fresh && !in_flight {
+            let _ = app.tx.send(crate::app::DataCmd::LoadArchiveWarnings(day));
+            app.state.archive_warnings_requested = Some((day, std::time::Instant::now()));
+        }
+    }
+}
+
+/// What the archive tab asked for, applied after the window closure (where
+/// the app is freely borrowable again).
+enum ArchiveAction {
+    SetDay(chrono::NaiveDate),
+    Load(chrono::NaiveDate),
+    ToggleCrawl(bool),
+    Jump(usize),
+}
+
+/// Row color for a historical warning (the archive has no severity field).
+fn archive_color(w: &HistoricWarning) -> egui::Color32 {
+    if w.event.contains("Tornado") {
+        egui::Color32::from_rgb(255, 60, 120)
+    } else if w.event.contains("Severe Thunderstorm") {
+        egui::Color32::from_rgb(255, 220, 60)
+    } else if w.event.contains("Flash Flood") {
+        egui::Color32::from_rgb(90, 220, 120)
+    } else {
+        egui::Color32::from_rgb(150, 200, 255)
+    }
+}
+
+/// Mean of the exterior ring, in (lat, lon).
+fn ring_centroid(rings: &Option<Vec<Vec<(f64, f64)>>>) -> Option<(f64, f64)> {
+    let ring = rings.as_ref()?.first()?;
+    if ring.is_empty() {
+        return None;
+    }
+    let n = ring.len() as f64;
+    let (mut slon, mut slat) = (0.0f64, 0.0f64);
+    for (lon, lat) in ring {
+        slon += lon;
+        slat += lat;
+    }
+    Some((slat / n, slon / n))
+}
+
+/// The archive tab's body: day picker, backfill status, and the clickable
+/// list of that day's warnings.
+#[allow(clippy::too_many_arguments)]
+fn archive_tab_ui(
+    ui: &mut egui::Ui,
+    day: chrono::NaiveDate,
+    view: &[&HistoricWarning],
+    requested: Option<(chrono::NaiveDate, std::time::Instant)>,
+    crawl: Option<&radar_data::warnings_archive::CrawlStatus>,
+    site_lat: f64,
+    site_lon: f64,
+    site_id: &str,
+    scale: f32,
+    action: &mut Option<ArchiveAction>,
+) {
+    ui.horizontal(|ui| {
+        ui.label("Day (Central)");
+        if ui.button("◀").clicked() {
+            if let Some(p) = day.pred_opt() {
+                *action = Some(ArchiveAction::SetDay(p));
+            }
+        }
+        ui.label(egui::RichText::new(day.format("%a %b %-d, %Y").to_string()).strong());
+        if ui.button("▶").clicked() {
+            let today = chrono::Utc::now()
+                .with_timezone(crate::timefmt::central())
+                .date_naive();
+            if day < today {
+                if let Some(s) = day.succ_opt() {
+                    *action = Some(ArchiveAction::SetDay(s));
+                }
+            }
+        }
+        if ui
+            .button("Load")
+            .on_hover_text("Fetch this day's warnings (cached after the first time)")
+            .clicked()
+        {
+            *action = Some(ArchiveAction::Load(day));
+        }
+    });
+    ui.label(
+        egui::RichText::new(
+            "Historical warnings (IEM VTEC archive): polygon-based from 2002,              everything else from late 2005 · one small request per day, cached              forever",
+        )
+        .weak()
+        .small(),
+    );
+    if let Some((d, _)) = requested {
+        if d == day {
+            ui.label(egui::RichText::new("loading this day…").weak().small());
+        }
+    }
+
+    // Backfill controls + progress (the crawl fetches warnings only; radar
+    // data is never pulled until you click a warning below).
+    if let Some(c) = crawl {
+        let mut on = c.enabled;
+        if ui
+            .checkbox(&mut on, "Backfill history (newest first)")
+            .on_hover_text(
+                "Walks backward from today, one small day-file per second at                  most, up to 800 per day, and never re-fetches a cached day.                  A 2002→now crawl is ~8,800 requests spread over days.",
+            )
+            .changed()
+        {
+            *action = Some(ArchiveAction::ToggleCrawl(on));
+        }
+        ui.label(
+            egui::RichText::new(format!(
+                "{} days cached (~{:.0} MB) · next {} · {}/{} fetches today{}",
+                c.cached_days,
+                c.cached_days as f64 * 0.15,
+                c.next,
+                c.done_today,
+                c.budget,
+                if c.complete {
+                    " · complete (2002 reached)"
+                } else {
+                    ""
+                },
+            ))
+            .weak()
+            .small(),
+        );
+    }
+    ui.separator();
+
+    if view.is_empty() {
+        ui.label(egui::RichText::new("No warnings loaded for this day (yet).").weak());
+        return;
+    }
+    ui.label(
+        egui::RichText::new(format!(
+            "{} warnings — click one to load the radar at its time",
+            view.len()
+        ))
+        .weak()
+        .small(),
+    );
+    egui::ScrollArea::vertical()
+        .max_height((ui.available_height() - 24.0 * scale).max(120.0))
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for (i, w) in view.iter().enumerate() {
+                let tz = crate::timefmt::central();
+                let issued = w.issued.with_timezone(tz).format("%H:%M");
+                let expires = w.expires.with_timezone(tz).format("%H:%M");
+                let dist = ring_centroid(&w.polygon)
+                    .map(|(lat, lon)| {
+                        radar_render::surface_distance_m(lon, lat, site_lon, site_lat) / 1000.0
+                    })
+                    .map(|d| format!(" · {d:.0} km from {site_id}"))
+                    .unwrap_or_default();
+                let county = if w.polygon.is_some() {
+                    ""
+                } else {
+                    " · county-based"
+                };
+                let resp = egui::Frame::NONE
+                    .fill(ui.visuals().faint_bg_color)
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                archive_color(w),
+                                egui::RichText::new("●").size(11.0 * scale),
+                            );
+                            ui.strong(&w.event);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "⏪ radar at {}",
+                                            issued
+                                        ))
+                                        .small(),
+                                    );
+                                },
+                            );
+                        });
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "WFO {} · {issued} → {expires} CDT{dist}{county}",
+                                w.office
+                            ))
+                            .weak()
+                            .small(),
+                        );
+                    })
+                    .response;
+                let resp = resp.interact(egui::Sense::click());
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if resp.clicked() {
+                    *action = Some(ArchiveAction::Jump(i));
+                }
+                resp.on_hover_text(
+                    "Load this warning's date/time: switches to the radar that                      covered it and pulls the archive data around its issuance",
+                );
+                ui.add_space(2.0);
+            }
+        });
+}
+
+/// Clicking a historical warning: snap to the radar that covered it, load
+/// the archive data around its issuance, and park the playhead there.
+fn jump_to_warning(app: &mut StormApp, idx: usize) {
+    let Some(w) = app.state.archive_warnings.get(idx).cloned() else {
+        return;
+    };
+    use chrono::Timelike;
+    let local = w.issued.with_timezone(crate::timefmt::central());
+    let date = local.date_naive();
+    let minute = local.hour() * 60 + local.minute();
+
+    if let Some((lat, lon)) = ring_centroid(&w.polygon) {
+        // The nearest radar to the warning polygon is the one whose 3D/level
+        // data covered it.
+        let nearest = radar_core::sites::SITES.iter().min_by(|a, b| {
+            let da = radar_render::surface_distance_m(lon, lat, a.longitude, a.latitude);
+            let db = radar_render::surface_distance_m(lon, lat, b.longitude, b.latitude);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if let Some(site) = nearest {
+            if app.state.site_id != site.id {
+                app.state.site_id = site.id.to_string();
+                // Manual-site-switch bookkeeping, minus the live reload — the
+                // archive load below is what kicks the data thread.
+                app.prev_tracks.clear();
+                app.marker_etas.clear();
+            }
+        }
+        app.state.view.center_lat = lat;
+        app.state.view.center_lon = lon;
+        if app.state.view.zoom < 8.5 {
+            app.state.view.zoom = 8.5;
+        }
+    }
+
+    app.state.mode = Mode::Archive;
+    app.state.archive_date = date;
+    app.state.archive_minute = minute;
+    app.state.archive_popup_open = true; // visible feedback while it loads
+    app.state.loop_state = crate::state::LoopState::Paused;
+    app.state.archive_jump = Some((w.issued, std::time::Instant::now()));
+    let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
+        app.state.site_id.clone(),
+        date,
+        Some(minute),
+    ));
 }
 
 /// The NOAA detail popup: the full CAP text for one alert. Opened by the

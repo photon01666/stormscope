@@ -39,7 +39,9 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use radar_core::{Moment, Volume};
-use radar_render::volume3d::{Camera, MeshFilter, build_ground_grid, build_volume_mesh};
+use radar_render::volume3d::{
+    Camera, MeshFilter, VolumeMesh, build_ground_grid, build_volume_mesh,
+};
 
 /// Offscreen target format. Must stay `Rgba8Unorm` — the only format
 /// egui-wgpu accepts for user-registered textures.
@@ -95,8 +97,22 @@ pub struct Volume3d {
 
     /// Scene identity the current buffers were built from.
     scene_sig: Option<u64>,
+    /// Mesh builds happen on a worker thread: playback asks for the frame it
+    /// needs, keeps drawing the last one, and swaps the moment the build
+    /// lands. The UI thread never waits on a mesh (a Fine rebuild is ~50 ms
+    /// — far too much for an 8 fps tick, and it never has to be paid on the
+    /// UI thread at all).
+    job_tx: std::sync::mpsc::Sender<MeshJob>,
+    done_rx: std::sync::mpsc::Receiver<MeshDone>,
+    wanted: Option<MeshJob>,
+    in_flight: Option<u64>,
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
+    /// Allocated capacities: playback rebuilds the scene every tick, and
+    /// same-shaped scans produce identical sizes — so the buffers are
+    /// written into instead of re-allocated once they fit.
+    vbuf_cap: u64,
+    ibuf_cap: u64,
     /// Index ranges of the cuts, ascending elevation.
     tilt_ranges: Vec<Range<u32>>,
     /// Index range of the ground grid (drawn before the cuts).
@@ -396,6 +412,20 @@ impl Volume3d {
             })
         };
 
+        let (job_tx, job_rx) = std::sync::mpsc::channel::<MeshJob>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<MeshDone>();
+        std::thread::Builder::new()
+            .name("stormscope-3dmesh".into())
+            .spawn(move || {
+                while let Ok(job) = job_rx.recv() {
+                    let mesh = build_volume_mesh(&job.volume, &job.filter);
+                    if done_tx.send(MeshDone { sig: job.sig, mesh }).is_err() {
+                        break; // pane gone
+                    }
+                }
+            })
+            .expect("spawn 3d mesh thread");
+
         let empty = |label: &str, usage: wgpu::BufferUsages, size: u64| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -416,8 +446,14 @@ impl Volume3d {
             dummy_bg,
             ground_sampler,
             scene_sig: None,
+            job_tx,
+            done_rx,
+            wanted: None,
+            in_flight: None,
             vbuf: empty("stormscope.volume3d.vbuf", wgpu::BufferUsages::VERTEX, 4),
             ibuf: empty("stormscope.volume3d.ibuf", wgpu::BufferUsages::INDEX, 4),
+            vbuf_cap: 4,
+            ibuf_cap: 4,
             tilt_ranges: Vec::new(),
             grid_range: 0..0,
             tile_bgs: HashMap::new(),
@@ -455,7 +491,7 @@ impl Volume3d {
         }
     }
 
-    /// Rebuild the scene when identity/moment/detail/tilt-filter changed.
+    /// Rebuild the scene synchronously (tests and one-off loads).
     /// Returns true when the GPU buffers were replaced.
     pub fn update_scene(
         &mut self,
@@ -469,6 +505,69 @@ impl Volume3d {
             return false;
         }
         let mesh = build_volume_mesh(volume, filter);
+        self.upload_mesh(device, queue, mesh);
+        self.scene_sig = Some(sig);
+        self.moment_seen = Some(filter.moment);
+        self.scene_built_at = std::time::Instant::now();
+        // New geometry: the cached frame (if any) is stale.
+        self.last_key = None;
+        true
+    }
+
+    /// Ask the worker for `sig` (idempotent: the newest request wins and
+    /// stale intermediate requests are never started).
+    pub fn request_scene(&mut self, volume: std::sync::Arc<Volume>, filter: MeshFilter, sig: u64) {
+        if self.scene_sig == Some(sig)
+            || self.in_flight == Some(sig)
+            || self.wanted.as_ref().map(|j| j.sig) == Some(sig)
+        {
+            return;
+        }
+        self.wanted = Some(MeshJob {
+            sig,
+            volume,
+            filter,
+        });
+        self.start_wanted();
+    }
+
+    fn start_wanted(&mut self) {
+        if self.in_flight.is_some() {
+            return;
+        }
+        if let Some(job) = self.wanted.take() {
+            self.in_flight = Some(job.sig);
+            if self.job_tx.send(job).is_err() {
+                self.in_flight = None;
+            }
+        }
+    }
+
+    /// Collect finished builds: the newest is uploaded into the (reused)
+    /// buffers, stale ones are dropped — fast scrubbing skips intermediates
+    /// instead of queueing them. Returns whether a scene was uploaded.
+    pub fn pump_scene(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+        let mut uploaded = false;
+        while let Ok(done) = self.done_rx.try_recv() {
+            self.in_flight = None;
+            let wanted_sig = self.wanted.as_ref().map(|j| j.sig);
+            let stale = wanted_sig.is_some_and(|w| w != done.sig);
+            if !stale {
+                self.upload_mesh(device, queue, done.mesh);
+                self.scene_sig = Some(done.sig);
+                self.last_key = None;
+                uploaded = true;
+            }
+            if wanted_sig == Some(done.sig) {
+                self.wanted = None;
+            }
+            self.start_wanted();
+        }
+        uploaded
+    }
+
+    /// Upload a built mesh into the persistent (capacity-grown) buffers.
+    fn upload_mesh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, mesh: VolumeMesh) {
         let (mut grid_verts, grid_indices) = build_ground_grid(mesh.max_range_km.max(50.0));
 
         let volume_vertex_count = mesh.vertices.len() as u32;
@@ -499,71 +598,29 @@ impl Volume3d {
 
         let vert_bytes: &[u8] = bytemuck::cast_slice(&vertices);
         let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
-        let make = |label: &str, size: u64, usage: wgpu::BufferUsages, bytes: &[u8]| {
-            let size = size.max(4);
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: usage | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            if !bytes.is_empty() {
-                queue.write_buffer(&buf, 0, bytes);
-            }
-            buf
-        };
-        self.vbuf = make(
+        upload_into(
+            device,
+            queue,
+            &mut self.vbuf,
+            &mut self.vbuf_cap,
             "stormscope.volume3d.vbuf",
-            vert_bytes.len() as u64,
             wgpu::BufferUsages::VERTEX,
             vert_bytes,
         );
-        self.ibuf = make(
+        upload_into(
+            device,
+            queue,
+            &mut self.ibuf,
+            &mut self.ibuf_cap,
             "stormscope.volume3d.ibuf",
-            index_bytes.len() as u64,
             wgpu::BufferUsages::INDEX,
             index_bytes,
         );
-
-        self.scene_sig = Some(sig);
-        self.moment_seen = Some(filter.moment);
-        self.scene_built_at = std::time::Instant::now();
-        // New geometry: the cached frame (if any) is stale.
-        self.last_key = None;
-        true
     }
 
     /// Whether any scene has been built yet.
     pub fn has_scene(&self) -> bool {
         self.scene_sig.is_some()
-    }
-
-    /// Rebuild the scene when `sig` is stale, rate-limited to one rebuild per
-    /// `min_interval` (the first scene is exempt). Scrub-dragging then costs
-    /// a few rebuilds a second instead of one per pointer event, and it
-    /// self-heals: the stale signature keeps the request alive until the
-    /// final position is built, even if intermediate positions were skipped.
-    pub fn refresh_scene(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        volume: &Volume,
-        filter: &MeshFilter,
-        sig: u64,
-        min_interval: std::time::Duration,
-    ) -> bool {
-        if self.scene_sig == Some(sig) {
-            return false;
-        }
-        let since_ms = self.scene_built_at.elapsed().as_millis() as u64;
-        if !scene_decision(
-            self.scene_sig.is_some(),
-            since_ms,
-            min_interval.as_millis() as u64,
-        ) {
-            return false;
-        }
-        self.update_scene(device, queue, volume, filter, sig)
     }
 
     /// Set the ground quads for this frame: `(egui texture, [x0, y0, x1, y1])`
@@ -1086,6 +1143,48 @@ fn gfs_main(in: GroundOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// One outstanding mesh build.
+struct MeshJob {
+    sig: u64,
+    volume: std::sync::Arc<Volume>,
+    filter: MeshFilter,
+}
+
+/// A finished mesh on its way back to the UI thread.
+struct MeshDone {
+    sig: u64,
+    mesh: VolumeMesh,
+}
+
+/// Write `bytes` into `buf`, growing the allocation (to 1.5x what is
+/// needed, so same-shaped scans reuse it) only when it no longer fits.
+/// Playback rebuilds the scene on every tick; re-allocating ~20 MB of
+/// buffers eight times a second is churn nobody needs.
+fn upload_into(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buf: &mut wgpu::Buffer,
+    cap: &mut u64,
+    label: &str,
+    usage: wgpu::BufferUsages,
+    bytes: &[u8],
+) {
+    let need = bytes.len() as u64;
+    if need > *cap {
+        let size = ((need.max(*cap * 3 / 2)) + 3) & !3;
+        *buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        *cap = size;
+    }
+    if !bytes.is_empty() {
+        queue.write_buffer(buf, 0, bytes);
+    }
+}
+
 /// Multiplier the settled frame renders at (motion frames render at 1x).
 const SUPERSAMPLE: f32 = 1.6;
 
@@ -1172,31 +1271,5 @@ mod tests {
             render_decision(Some(7), Some(7), 8, 0),
             RenderDecision::Interactive
         );
-    }
-}
-
-/// Whether a stale scene should rebuild now: never for the first scene,
-/// otherwise at most one per `min_interval` (the caller only asks when the
-/// signature is stale, so a skipped rebuild is re-asked next frame).
-fn scene_decision(has_scene: bool, since_build_ms: u64, min_interval_ms: u64) -> bool {
-    !has_scene || since_build_ms >= min_interval_ms
-}
-
-#[cfg(test)]
-mod scene_tests {
-    use super::scene_decision;
-
-    #[test]
-    fn first_scene_builds_immediately() {
-        assert!(scene_decision(false, 0, 250));
-    }
-
-    #[test]
-    fn scrub_rebuilds_are_rate_limited_and_self_healing() {
-        // Just built: skip the intermediate scrub positions...
-        assert!(!scene_decision(true, 10, 250));
-        assert!(!scene_decision(true, 249, 250));
-        // ...and the stale request lands as soon as the window passes.
-        assert!(scene_decision(true, 250, 250));
     }
 }

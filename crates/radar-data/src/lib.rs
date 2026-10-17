@@ -9,6 +9,7 @@ pub mod mcds;
 pub mod outlooks;
 pub mod s3;
 pub mod sites_gen;
+pub mod warnings_archive;
 
 pub use alerts::AlertSource;
 pub use cache::DiskCache;

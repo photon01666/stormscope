@@ -88,6 +88,8 @@ pub enum AlertsTab {
     All,
     /// Only alerts whose polygon lies near the selected radar site.
     Station,
+    /// Historical warnings for the archive day (IEM VTEC archive).
+    Archive,
 }
 
 /// Union of the sweep set and the point set, deduped by alert id (the sweep
@@ -146,8 +148,26 @@ pub struct Frame {
 
 pub struct AppState {
     pub mode: Mode,
-    /// Selected archive day (Central-date; the ◀/▶ controls in Archive mode).
+    /// Selected archive day (Central-date; edited in the Archive popup).
     pub archive_date: chrono::NaiveDate,
+    /// The Archive popup (opened from Settings), and the time of day
+    /// (Central, minutes since midnight) the user wants to pull from.
+    pub archive_popup_open: bool,
+    pub archive_minute: u32,
+    /// Warning-archive backfill progress (from the background crawler).
+    pub archive_crawl: Option<radar_data::warnings_archive::CrawlStatus>,
+    /// Historical warnings loaded for the archive tab (Central day), and the
+    /// same list presented as live-alert-shaped values (index aligned).
+    pub archive_warnings: Vec<radar_data::warnings_archive::HistoricWarning>,
+    pub archive_warning_view: Vec<radar_core::warnings::Warning>,
+    /// Which Central day `archive_warnings` holds.
+    pub archive_warnings_date: Option<chrono::NaiveDate>,
+    /// In-flight request (day + when sent): dedupes tab clicks and bounds
+    /// retries, exactly like the totals window does.
+    pub archive_warnings_requested: Option<(chrono::NaiveDate, std::time::Instant)>,
+    /// Pending "park the playhead at this moment once the radar lands"
+    /// (armed by clicking a historical warning; consumed in the pump).
+    pub archive_jump: Option<(chrono::DateTime<chrono::Utc>, std::time::Instant)>,
     pub loop_state: LoopState,
     pub fps: f32,
 
@@ -384,6 +404,18 @@ impl Default for AppState {
             archive_date: chrono::Utc::now()
                 .with_timezone(crate::timefmt::central())
                 .date_naive(),
+            archive_popup_open: false,
+            archive_crawl: None,
+            archive_warnings: Vec::new(),
+            archive_warning_view: Vec::new(),
+            archive_warnings_date: None,
+            archive_warnings_requested: None,
+            archive_jump: None,
+            archive_minute: {
+                use chrono::Timelike;
+                let now = chrono::Utc::now().with_timezone(crate::timefmt::central());
+                now.hour() * 60 + now.minute()
+            },
             loop_state: LoopState::Paused,
             fps: 8.0,
             site_id: site.id.to_string(),

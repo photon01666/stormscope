@@ -6,9 +6,9 @@
 //! 2D map is for finding the point (pan/zoom, warnings, reports), the 3D
 //! pane is for seeing the vertical structure there (overhang, hail core,
 //! mesocyclone depth). Both follow the same selection — site, moment, and
-//! the timeline playhead — except while playback runs: rebuilding the
-//! volume mesh on every playhead tick would starve the UI, so the scene
-//! holds still during playback and re-syncs the moment it pauses.
+//! the timeline playhead — and playback animates both: meshes build on a
+//! worker thread, so the 3D view follows the loop at full detail without
+//! ever stalling the UI (it lags a frame when builds can't keep up).
 //! The ground is the same basemap the 2D map draws, resolved through the
 //! tile layer's exact tiles; custom markers rise from it as pins.
 //!
@@ -99,6 +99,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         elev_min_deg: app.state.view3d_tilt_lo,
         elev_max_deg: app.state.view3d_tilt_hi,
     };
+    let playing = app.state.loop_state == crate::state::LoopState::Playing;
     let v3 = app.view3d.get_or_insert_with(|| {
         crate::render3d::Volume3d::new(&render_state.device, &render_state.queue)
     });
@@ -118,32 +119,13 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         filter.elev_max_deg.map(f32::to_bits).hash(&mut h);
         h.finish()
     };
-    // Playhead policy: every rebuild is a ~1M-vertex mesh plus ~50 MB of
-    // buffer traffic — right for "a new volume arrived", wrong for an 8 fps
-    // playhead. While the timeline plays, the scene holds still (and re-syncs
-    // the moment playback pauses). While paused, scrubbing rebuilds at most
-    // every 250 ms, which stays smooth and still lands the final position.
-    let playing = app.state.loop_state == crate::state::LoopState::Playing;
-    if playing {
-        if !v3.has_scene() {
-            v3.update_scene(
-                &render_state.device,
-                &render_state.queue,
-                &volume,
-                &filter,
-                sig,
-            );
-        }
-    } else {
-        v3.refresh_scene(
-            &render_state.device,
-            &render_state.queue,
-            &volume,
-            &filter,
-            sig,
-            std::time::Duration::from_millis(250),
-        );
-    }
+    // Scenes build on the pane's worker thread: playback (and fast scrubbing)
+    // ask for the frame they need, keep drawing the last one, and swap the
+    // moment the build lands — at full (Fine) detail, because the UI thread
+    // never pays for the build. If ticks outpace builds, the 3D view lags a
+    // frame instead of stalling anything.
+    v3.pump_scene(&render_state.device, &render_state.queue);
+    v3.request_scene(volume.clone(), filter, sig);
 
     // Threshold lives in the moment's units; keep it inside the table range
     // when the moment changes (a 70 dBZ threshold makes no sense for CC).
@@ -496,7 +478,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         v3.triangles() as f32 / 1000.0,
     );
     let line3 = if playing {
-        "playback running — the 3D scene holds still and re-syncs when you pause".to_string()
+        "playback running — the 3D scene follows at full detail (meshes build off-thread)"
+            .to_string()
     } else {
         "orbit: drag · pan: right-drag or W/A/S/D · zoom: wheel · fit: double-click".to_string()
     };

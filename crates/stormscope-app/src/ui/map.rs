@@ -1758,6 +1758,26 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
         pulse: false,
     });
 
+    // Back to live radar, right next to Forecast: red and pulsing while
+    // browsing archive/replay (it wants the click), dim green "● LIVE" as a
+    // status pill while already on the newest scan.
+    let live = app.state.mode == crate::state::Mode::Live
+        && app.state.playhead + 1 >= app.state.ring.len().max(1);
+    badges.push(TopBadge {
+        text: if live {
+            "● LIVE".to_string()
+        } else {
+            "GO LIVE".to_string()
+        },
+        color: if live {
+            egui::Color32::from_rgb(120, 230, 140)
+        } else {
+            egui::Color32::from_rgb(255, 130, 130)
+        },
+        kind: BadgeKind::Live,
+        pulse: !live,
+    });
+
     // Flash phase for pulsing badges (also drives the repaint below).
     let now = ui.ctx().input(|i| i.time);
     let flash = (0.55 + 0.45 * (now * 4.0).sin()) as f32;
@@ -1821,7 +1841,10 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     // Interactive pills: alerts opens the browser, forecast opens the window.
     let mut hovered_kind = None;
     for (kind, bg) in rects {
-        if !matches!(kind, BadgeKind::Alerts | BadgeKind::Forecast) {
+        if !matches!(
+            kind,
+            BadgeKind::Alerts | BadgeKind::Forecast | BadgeKind::Live
+        ) {
             continue;
         }
         let resp = ui.interact(
@@ -1843,6 +1866,13 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
             BadgeKind::Forecast => {
                 "NWS forecast for the selected station — click to open".to_string()
             }
+            BadgeKind::Live => {
+                if live {
+                    "Watching the newest scan".to_string()
+                } else {
+                    "Leave archive/replay and snap to the newest radar (L)".to_string()
+                }
+            }
             _ => String::new(),
         };
         if resp.on_hover_text(hover_text).clicked() {
@@ -1853,6 +1883,11 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
                     // Fetch now if what is loaded is not what the window will
                     // show (station follow, or a stale point).
                     super::forecast::request_forecast_if_stale(app);
+                }
+                BadgeKind::Live => {
+                    if !live {
+                        app.snap_to_live();
+                    }
                 }
                 _ => {}
             }
@@ -1867,6 +1902,7 @@ fn badge_id(kind: BadgeKind) -> &'static str {
         BadgeKind::Age => "age",
         BadgeKind::Alerts => "alerts",
         BadgeKind::Forecast => "forecast",
+        BadgeKind::Live => "live",
     }
 }
 

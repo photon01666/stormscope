@@ -79,6 +79,9 @@ pub enum BadgeKind {
     Age,
     Alerts,
     Forecast,
+    /// The "go live" pill: red and pulsing while browsing history, a dim
+    /// green status dot while already live.
+    Live,
 }
 
 /// Which set the alerts browser is showing.

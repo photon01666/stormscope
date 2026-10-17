@@ -315,6 +315,17 @@ impl StormApp {
         }
     }
 
+    /// Leave archive/replay and return to live radar: the mode flips,
+    /// playback stops, and the data thread clears the ring and refills from
+    /// the newest scans. Shared by the timeline's "GO LIVE" pill and the L
+    /// key.
+    pub fn snap_to_live(&mut self) {
+        self.state.mode = crate::state::Mode::Live;
+        self.state.loop_state = crate::state::LoopState::Paused;
+        self.state.archive_jump = None;
+        let _ = self.tx.send(crate::app::DataCmd::EnterLive);
+    }
+
     /// Select a radar site from the map (or controls) and tell the data
     /// thread to load it. Mirrors what the controls panel does on change.
     pub fn select_site(&mut self, id: &str) {
@@ -567,11 +578,8 @@ impl StormApp {
             };
         }
         if ctx.input(|i| i.key_pressed(egui::Key::L)) {
-            // Same as the bottom-center "go live" pill.
-            self.state.mode = crate::state::Mode::Live;
-            self.state.loop_state = LoopState::Paused;
-            self.state.archive_jump = None;
-            let _ = self.tx.send(crate::app::DataCmd::EnterLive);
+            // Same as the timeline's "GO LIVE" pill.
+            self.snap_to_live();
         }
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
             self.state.step_forward();

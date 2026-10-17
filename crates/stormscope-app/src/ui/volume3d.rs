@@ -275,6 +275,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
                 (app.state.view3d_pitch - d.y * 0.25).clamp(PITCH_MIN, PITCH_MAX);
         }
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        app.view3d_interact_at = std::time::Instant::now();
     }
 
     // WASD free movement while the pointer rests on the pane (never while a
@@ -332,6 +333,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             app.state.view3d_target_x_km = (app.state.view3d_target_x_km + dx).clamp(-limit, limit);
             app.state.view3d_target_y_km = (app.state.view3d_target_y_km + dy).clamp(-limit, limit);
             app.state.view3d_target_z_km = (app.state.view3d_target_z_km + dz).clamp(0.0, z_limit);
+            app.view3d_interact_at = std::time::Instant::now();
             ui.ctx().request_repaint();
         }
     }
@@ -348,6 +350,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             let d = (f64::from(app.state.view3d_dist_km).max(1.0) * factor)
                 .clamp(max_r_f * 0.08, max_r_f * 8.0);
             app.state.view3d_dist_km = d as f32;
+            app.view3d_interact_at = std::time::Instant::now();
         }
     }
     if resp.double_clicked() {

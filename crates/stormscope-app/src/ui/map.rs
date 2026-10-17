@@ -429,9 +429,15 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     }
                     let burst =
                         app.radar_view_change_at.elapsed() < std::time::Duration::from_millis(150);
+                    // Motion includes the 3D pane's camera: while the user
+                    // is flying the 3D view, an active playback loop would
+                    // otherwise re-raster this pane every 125 ms tick and
+                    // spike the UI thread under their fingers.
                     let motion = response.dragged()
                         || burst
-                        || app.state.loop_state == crate::state::LoopState::Playing;
+                        || app.state.loop_state == crate::state::LoopState::Playing
+                            && app.view3d_interact_at.elapsed()
+                                < std::time::Duration::from_millis(150);
                     let raster_scale: f32 = if motion { 0.5 } else { 1.0 };
 
                     use std::hash::{Hash, Hasher};

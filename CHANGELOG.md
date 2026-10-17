@@ -3,6 +3,20 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.3 — 2026-10-17
+
+**Panning the 3D pane no longer competes with the playback raster**
+- With the timeline playing, the 2D pane re-rasterizes the radar on every
+  tick (~125 ms). The raster gate only treats *its own* drags as motion, so
+  flying the 3D camera counted as idle: every playback tick fired a full
+  raster spike on the UI thread right under the user's fingers.
+- The gate now also counts 3D-camera motion (drag, wheel, WASD) as motion —
+  while the 3D view is being flown the radar raster holds, then lands as
+  soon as the camera settles (150 ms).
+- (Separately: the v1.2.2 git tag had been created at the wrong commit by
+  the release tooling after the repo went public mid-push; it now points at
+  the v1.2.2 release commit.)
+
 ## v1.2.2 — 2026-10-17
 
 **Playing the timeline no longer drags the 3D pane down with it**

@@ -144,6 +144,11 @@ pub struct StormApp {
     /// skips while the pointer is on it (the wheel adjusts the slider under
     /// the pointer instead).
     pub view3d_bar_rect: Option<egui::Rect>,
+    /// When the 3D camera last moved (drag/wheel/WASD). The map's raster gate
+    /// treats this as motion: while the user is flying the 3D pane, the
+    /// radar raster must not fire on every playback tick and spike the UI
+    /// thread — it settles as soon as the 3D camera does.
+    pub view3d_interact_at: std::time::Instant,
     /// Sub-notch wheel residue (points) for the Min-dBZ bar, so touchpad
     /// scrolls accumulate into whole steps instead of being dropped.
     pub min_dbz_scroll_acc: f32,
@@ -270,6 +275,7 @@ impl StormApp {
             view3d: None,
             min_dbz_bar_rect: None,
             view3d_bar_rect: None,
+            view3d_interact_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
             min_dbz_scroll_acc: 0.0,
             top_badge_hovered: None,
             map_alert_cycle: None,

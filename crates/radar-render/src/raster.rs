@@ -362,7 +362,7 @@ pub enum RowMap {
 /// `tol_rad * range / meters_per_px`, and range grows in lockstep with
 /// meters_per_px as you zoom out — so this stays sub-pixel at every zoom
 /// (measured: real consecutive volumes are exact rotations within 0.03-0.11°).
-const REMAP_TOL_DEG: f32 = 0.15;
+const REMAP_TOL_DEG: f32 = 0.26;
 
 /// Cached per-gate geometry for one sweep *shape* at one site.
 ///
@@ -404,14 +404,18 @@ impl GateGeometry {
         radar_lat.to_bits().hash(&mut h);
         radar_lon.to_bits().hash(&mut h);
         quantize(sweep.elevation_deg, 0.01).hash(&mut h);
-        quantize(sweep.elevation_measured_deg, 0.01).hash(&mut h);
         quantize(sweep.azimuth_width_deg, 0.01).hash(&mut h);
-        sweep.azimuths_deg.len().hash(&mut h);
+        // Deliberately *not* in the key: the measured elevation (jitters by
+        // scan — the table's ground placement moves less than a metre per
+        // 0.01°), the ray count, and the azimuth-list length (L2 volumes
+        // drop or gain a ray at the scan start). Those are absorbed by
+        // `reuse_for`'s tolerant row mapping; a scan-to-scan difference that
+        // big would otherwise rebuild this table (~90 ms!) on every playback
+        // frame. Gate layout is index-strided, so it stays in the key.
         if let Some(md) = sweep.moments.first() {
             md.range_start_m.to_bits().hash(&mut h);
             md.gate_size_m.to_bits().hash(&mut h);
             md.gate_count.hash(&mut h);
-            md.ray_count.hash(&mut h);
         }
         h.finish()
     }
@@ -481,30 +485,61 @@ impl GateGeometry {
             return None;
         }
         let az = &sweep.azimuths_deg;
-        let n = self.azimuths.len().min(az.len());
-        if n != self.ray_count || n == 0 {
+        let n = self.ray_count;
+        if az.is_empty() || n == 0 {
             return None;
         }
         // Same phase (up to last-bit jitter): identity mapping.
-        if self
-            .azimuths
-            .iter()
-            .zip(az.iter())
-            .all(|(a, b)| angle_delta(*a, *b).abs() <= 0.001)
+        if az.len() == n
+            && self
+                .azimuths
+                .iter()
+                .zip(az.iter())
+                .all(|(a, b)| angle_delta(*a, *b).abs() <= 0.001)
         {
             return Some(RowMap::Identity);
         }
-        // Rotated layout (consecutive volumes start at a different azimuth):
-        // find the shift where ray 0 of the table lands, then verify the
-        // whole ring. A near-miss falls through to a rebuild.
-        let k = (0..n).find(|&j| angle_delta(self.azimuths[0], az[j]).abs() <= REMAP_TOL_DEG)?;
-        let mut rows = vec![0u32; n];
-        for i in 0..n {
-            let j = (k + i) % n;
-            if angle_delta(self.azimuths[i], az[j]).abs() > REMAP_TOL_DEG {
-                return None; // not a rotation of the cached layout
+        // Otherwise walk both rings together: each axis ray takes the
+        // *nearest* table row at or just after the previous pick. This
+        // absorbs the three scan-to-scan realities — azimuth jitter, a
+        // rotated scan start, and a ray dropped/added at the start (looking
+        // a few rows ahead) — while a genuinely different layout blows past
+        // the tolerance. Repeat picks are fine (a table row drawn twice is
+        // invisible); skipping ahead is what a dropped axis ray looks like.
+        let nearest_to = |target: f32| {
+            let mut best = 0usize;
+            let mut best_d = angle_delta(self.azimuths[0], target).abs();
+            for (i, a) in self.azimuths.iter().enumerate().skip(1) {
+                let d = angle_delta(*a, target).abs();
+                if d < best_d {
+                    best = i;
+                    best_d = d;
+                }
             }
-            rows[j] = i as u32;
+            (best, best_d)
+        };
+        let (mut cursor, first_d) = nearest_to(az[0]);
+        if first_d > REMAP_TOL_DEG {
+            return None;
+        }
+        let mut rows = vec![0u32; az.len()];
+        for (j, a) in az.iter().enumerate() {
+            let mut best_d = angle_delta(self.azimuths[cursor], *a).abs();
+            for step in 1..=3 {
+                let i = (cursor + step) % n;
+                let d = angle_delta(self.azimuths[i], *a).abs();
+                if d < best_d {
+                    cursor = i;
+                    best_d = d;
+                }
+            }
+            if best_d > REMAP_TOL_DEG {
+                return None; // not this layout
+            }
+            rows[j] = cursor as u32;
+        }
+        if rows.iter().enumerate().all(|(j, &i)| i as usize == j) {
+            return Some(RowMap::Identity);
         }
         Some(RowMap::Remapped(rows))
     }
@@ -1371,6 +1406,53 @@ mod tests {
             assert!(px > last_px, "gates must march eastward");
             last_px = px;
             assert!(img.pixel(px as usize, view.lonlat_to_view_px(glon, glat).1 as usize)[3] > 0);
+        }
+    }
+    /// The playback case this tolerant mapping exists for: consecutive
+    /// volumes differ in measured elevation and drop a ray at the scan
+    /// start. Both must reuse the table instead of rebuilding it (~90 ms).
+    #[test]
+    fn reuse_absorbs_measured_elevation_jitter_and_a_missing_start_ray() {
+        use radar_core::{MomentCalibration, MomentData, Sweep};
+        let cal = MomentCalibration {
+            scale: 1.0,
+            offset: 2.0,
+            threshold: 0.0,
+        };
+        let mk = |azimuths: Vec<f32>, measured: f32| Sweep {
+            elevation_deg: 0.5,
+            elevation_measured_deg: measured,
+            azimuth_width_deg: 0.5,
+            azimuths_deg: azimuths.clone(),
+            moments: vec![MomentData {
+                kind: radar_core::Moment::Reflectivity,
+                calibration: cal,
+                range_start_m: 2125.0,
+                gate_size_m: 250.0,
+                gate_count: 64,
+                ray_count: azimuths.len(),
+                data: vec![7; azimuths.len() * 64],
+            }],
+        };
+        // 8 rays, 45° apart.
+        let a: Vec<f32> = (0..8).map(|i| i as f32 * 45.0).collect();
+        let geom = GateGeometry::build(&mk(a.clone(), 0.51), 35.0, -97.0);
+
+        // Measured elevation jitter alone: still the identity.
+        let jittered = mk(a.clone(), 0.53);
+        assert_eq!(
+            geom.reuse_for(&jittered, 35.0, -97.0),
+            Some(RowMap::Identity),
+            "0.02° of measured-elevation jitter must not rebuild"
+        );
+
+        // A dropped first ray: the rest must map onto rows 1..=7.
+        let missing: Vec<f32> = (1..8).map(|i| i as f32 * 45.0).collect();
+        match geom.reuse_for(&mk(missing, 0.52), 35.0, -97.0) {
+            Some(RowMap::Remapped(rows)) => {
+                assert_eq!(rows, vec![1, 2, 3, 4, 5, 6, 7], "ray -> table row");
+            }
+            other => panic!("expected a remapped reuse, got {other:?}"),
         }
     }
 }

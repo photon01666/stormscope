@@ -270,9 +270,11 @@ fn bench_pane_resolution_cost() {
         target_km: [0.0, 0.0, 13.0 * ve * 0.42],
     };
 
+    // The app's real sizes: the pane supersamples 1.6x when settled and
+    // 0.8x while the camera moves (1920x2120 frame -> 3072x3392 / 1536x1696).
     for (label, size) in [
-        ("full 1917x2118", [1917u32, 2118]),
-        ("half  959x1059", [959, 1059]),
+        ("settled 3072x3392 (1.6x)", [3072u32, 3392]),
+        ("motion  1536x1696 (0.8x)", [1536, 1696]),
     ] {
         // Warm up (pipeline/lazy texture creation), then measure.
         for _ in 0..3 {

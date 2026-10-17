@@ -102,9 +102,13 @@ expensive raster work happens only when something actually changes:
 
 - Gate geolocation is cached as *zoom-independent* world coordinates and
   reused across pans, zooms, moment switches and playback frames; rotated
-  scan layouts are handled by remapping rows instead of rebuilding.
+  scan layouts, measured-elevation jitter and a dropped axis ray are handled
+  by remapping rows instead of rebuilding (the rebuild is ~90 ms, so a cache
+  miss per playback frame used to be the stutter).
 - Drags, playback and wheel-zoom bursts rasterize at half resolution with a
   full-resolution pass when the gesture stops.
+- The 3D pane supersamples 1.6x when settled (egui downsamples linearly —
+  anti-aliased edges and no tile shimmer) and 0.8x while the camera moves.
 - The 3D pane renders on demand: only when its camera, settings, volume,
   ground tiles or size changed. Motion frames draw at half resolution and one
   sharp frame lands 160 ms after the motion stops — idle wakes cost a texture

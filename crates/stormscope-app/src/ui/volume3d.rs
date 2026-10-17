@@ -208,10 +208,21 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     // Render + present as an egui image. Feet → km for the altitude slab.
     let alt_lo_km = app.state.view3d_alt_lo_ft / FT_PER_KM;
     let alt_hi_km = app.state.view3d_alt_hi_ft / FT_PER_KM;
+    // Supersampling: 1.6x the displayed size, filtered back down by egui's
+    // LINEAR sampling. That smooths both geometry edges and — the reason
+    // this beat 4x MSAA here — the ground tiles' minification shimmer
+    // (MSAA measured 17.8 ms/pass on the A310 and does nothing for
+    // texture aliasing). While the camera moves, render_if_needed halves
+    // this, i.e. 0.8x on screen.
+    const SUPERSAMPLE: f32 = 1.6;
     let ppp = ui.ctx().pixels_per_point();
     let size = [
-        (rect.width() * ppp).round().clamp(64.0, 4096.0) as u32,
-        (rect.height() * ppp).round().clamp(64.0, 4096.0) as u32,
+        (rect.width() * ppp * SUPERSAMPLE)
+            .round()
+            .clamp(64.0, 8192.0) as u32,
+        (rect.height() * ppp * SUPERSAMPLE)
+            .round()
+            .clamp(64.0, 8192.0) as u32,
     ];
     let ground_key = {
         use std::hash::{Hash, Hasher};

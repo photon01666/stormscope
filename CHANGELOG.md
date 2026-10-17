@@ -3,6 +3,31 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.4 — 2026-10-17
+
+**The playback stutter was ~90 ms gate-table rebuilds — now reused across scans**
+- The app's log showed 68 "radar geometry rebuilt in ~90 ms" events clustered
+  in playback windows: the geometry cache keyed on the *measured* elevation
+  (which jitters by scan) and demanded exact ray counts (L2 volumes drop or
+  gain a ray at the scan start), so consecutive playback frames missed it and
+  stalled the UI thread ~90 ms per miss. That was the "weird jumpy lag" while
+  playing frames, panning the map, or flying the 3D view.
+- The cache now keys only on what actually changes the table layout (site,
+  nominal tilt, azimuth width, gate layout) and `reuse_for` walks both rings
+  with a tolerant nearest-azimuth mapping: scan-to-scan jitter, a rotated
+  scan start, and a dropped/extra start ray all reuse the table. A genuinely
+  different layout still rebuilds. Covered by tests (jitter, missing start
+  ray, rotated remap).
+
+**3D pane anti-aliasing — by supersampling, not MSAA**
+- 4× MSAA was measured on the development A310 at 17.8 ms/pass — more than
+  the whole frame budget — and wouldn't fix what actually shimmers: the
+  ground tiles have no mipmaps, so their aliasing is texture minification,
+  which MSAA ignores.
+- Instead the pane renders at 1.6× its display size and egui's linear
+  filtering downsamples it (2.2 ms/pass measured), while camera motion draws
+  at 0.8× (1.1 ms/pass). Edges smooth, tile shimmer smooth, budget intact.
+
 ## v1.2.3 — 2026-10-17
 
 **Panning the 3D pane no longer competes with the playback raster**

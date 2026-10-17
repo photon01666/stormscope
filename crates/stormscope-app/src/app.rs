@@ -35,6 +35,13 @@ pub enum DataMsg {
     ClearFrames,
     /// Warning-archive backfill status (crawler progress).
     ArchiveCrawl(radar_data::warnings_archive::CrawlStatus),
+    /// Bulk radar load progress (counts only; the UI shows a pill while a
+    /// live prime refill or archive window streams).
+    LoadProgress {
+        label: String,
+        done: u32,
+        total: u32,
+    },
     /// One historical warning's raw NWS product text (`None` = the fetch
     /// failed; an Error message accompanies it).
     ArchiveText {
@@ -515,6 +522,23 @@ impl StormApp {
                 }
                 DataMsg::ArchiveCrawl(status) => {
                     self.state.archive_crawl = Some(status);
+                }
+                DataMsg::LoadProgress { label, done, total } => {
+                    if done >= total && total > 0 {
+                        self.state.load_progress = Some(crate::state::LoadProgress {
+                            label,
+                            done,
+                            total,
+                            at: std::time::Instant::now(),
+                        });
+                    } else {
+                        self.state.load_progress = Some(crate::state::LoadProgress {
+                            label,
+                            done,
+                            total,
+                            at: std::time::Instant::now(),
+                        });
+                    }
                 }
                 DataMsg::ArchiveText { id, text } => {
                     self.state.archive_text_requested.remove(&id);

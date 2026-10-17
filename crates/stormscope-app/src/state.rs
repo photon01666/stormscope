@@ -84,6 +84,17 @@ pub enum BadgeKind {
     Live,
 }
 
+/// An in-flight bulk radar load (a live prime refill or an archive window):
+/// what is downloading, and how far along. The map shows it as a prominent
+/// pill so a multi-second download never reads as the app being stuck.
+#[derive(Clone, Debug)]
+pub struct LoadProgress {
+    pub label: String,
+    pub done: u32,
+    pub total: u32,
+    pub at: std::time::Instant,
+}
+
 /// Which set the alerts browser is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertsTab {
@@ -176,6 +187,8 @@ pub struct AppState {
     pub archive_detail: Option<String>,
     pub archive_texts: std::collections::HashMap<String, Option<String>>,
     pub archive_text_requested: std::collections::HashSet<String>,
+    /// The in-flight bulk radar load, if any (see [`LoadProgress`]).
+    pub load_progress: Option<LoadProgress>,
     /// Last site whose volumes were dropped as "not the selected station"
     /// (logs once per distinct site so a desync is visible).
     pub site_mismatch_logged: Option<String>,
@@ -433,6 +446,7 @@ impl Default for AppState {
             archive_warnings_date: None,
             archive_warnings_requested: None,
             archive_jump: None,
+            load_progress: None,
             site_mismatch_logged: None,
             archive_detail: None,
             archive_texts: std::collections::HashMap::new(),

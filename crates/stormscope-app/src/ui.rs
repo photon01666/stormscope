@@ -48,6 +48,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Floating auto-hide sidebar, drawn over the map.
     sidebar_overlay(ui.ctx(), app, middle);
 
+    // Bulk radar download/stream progress (top-center, above the map).
+    load_progress_pill(ui.ctx(), app, middle);
+
     // Alerts browser (its own floating window).
     alerts::alerts_popup(ui.ctx(), app);
 
@@ -78,6 +81,59 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // the panels so it isn't clipped by them; the Settings menu closes
     // itself before opening this.
     confirm_clear_dialog(ui.ctx(), app);
+}
+
+/// The bulk radar load pill: spinner, what is downloading, and a progress
+/// bar — a multi-second prime or archive window must never read as a stuck
+/// app. Auto-hides shortly after completion (or if the stream goes quiet).
+fn load_progress_pill(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) {
+    let Some(p) = app.state.load_progress.clone() else {
+        return;
+    };
+    let finished = p.total > 0 && p.done >= p.total;
+    let stale = p.at.elapsed() > std::time::Duration::from_secs(8);
+    if stale || (finished && p.at.elapsed() > std::time::Duration::from_millis(1500)) {
+        app.state.load_progress = None;
+        return;
+    }
+    let scale = app.sidebar_scale.max(1.0);
+    egui::Area::new(egui::Id::new("stormscope.load_progress"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(
+            middle.center().x - 220.0 * scale,
+            middle.min.y + 46.0 * scale,
+        ))
+        .constrain(true)
+        .interactable(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(egui::Color32::from_black_alpha(220))
+                .show(ui, |ui| {
+                    ui.set_min_width(440.0 * scale);
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(18.0 * scale));
+                        ui.label(
+                            egui::RichText::new(if finished {
+                                format!("{} — rendering", p.label)
+                            } else {
+                                format!("Downloading {}", p.label)
+                            })
+                            .strong()
+                            .size(13.0 * scale),
+                        );
+                        if p.total > 0 {
+                            ui.add(
+                                egui::ProgressBar::new(p.done as f32 / p.total as f32)
+                                    .desired_width(150.0 * scale)
+                                    .text(format!("{}/{}", p.done, p.total)),
+                            );
+                        }
+                    });
+                });
+        });
+    // Keep the spinner spinning and the bar moving while the load runs.
+    ctx.request_repaint_after(std::time::Duration::from_millis(100));
 }
 
 /// The central area: 2D map alone, or side-by-side with the 3D volume pane.

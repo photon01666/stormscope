@@ -190,6 +190,11 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
     // Volumes waiting to replay into the ring; drained a few per loop tick so
     // commands stay responsive during the refill.
     let mut backfill: VecDeque<radar_data::ArchiveVolumeRef> = queued;
+    // Progress bookkeeping for the pill (counts only; reset when a fill
+    // completes so the next one starts clean).
+    let mut fill_total: u32 = 0;
+    let mut fill_done: u32 = 0;
+    let mut fill_label = String::new();
     // Alerts + SPC outlook are fetched by the first loop iteration (timers
     // start pre-expired), so startup never blocks on the network.
 
@@ -483,15 +488,38 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
         // per volume, so draining it inside the command handler would stall
         // the next command — and the next site switch — for tens of seconds.
         if !backfill.is_empty() {
+            if fill_total == 0 {
+                fill_total = backfill.len() as u32;
+                fill_done = 0;
+                fill_label = format!("{current_site} live radar");
+                let _ = out.send(DataMsg::LoadProgress {
+                    label: fill_label.clone(),
+                    done: 0,
+                    total: fill_total,
+                });
+            }
             const BACKFILL_SLICE: Duration = Duration::from_millis(150);
             let deadline = std::time::Instant::now() + BACKFILL_SLICE;
             while let Some(r) = backfill.pop_front() {
                 let _ = emit_volume(&source, &r, &out);
+                fill_done += 1;
+                let _ = out.send(DataMsg::LoadProgress {
+                    label: fill_label.clone(),
+                    done: fill_done,
+                    total: fill_total,
+                });
                 if std::time::Instant::now() >= deadline {
                     break;
                 }
             }
             if backfill.is_empty() {
+                let _ = out.send(DataMsg::LoadProgress {
+                    label: fill_label.clone(),
+                    done: fill_total,
+                    total: fill_total,
+                });
+                fill_total = 0;
+                fill_done = 0;
                 if let Some(ts) = last_delivered {
                     let _ = out.send(DataMsg::Status(format!(
                         "live · {}",
@@ -699,7 +727,14 @@ fn stream_window(
         day.window_start + 1,
         day.window_start + window_len
     )));
-    for r in slice.iter().rev() {
+    let label = format!("{site} archive · {}", date.format("%b %-d"));
+    let total = slice.len() as u32;
+    for (i, r) in slice.iter().rev().enumerate() {
+        let _ = out.send(DataMsg::LoadProgress {
+            label: label.clone(),
+            done: i as u32,
+            total,
+        });
         match source.fetch_archive(r) {
             Ok(volume) => {
                 let _ = out.send(DataMsg::Volume(volume));
@@ -711,6 +746,11 @@ fn stream_window(
         }
         std::thread::sleep(Duration::from_millis(120));
     }
+    let _ = out.send(DataMsg::LoadProgress {
+        label,
+        done: total,
+        total,
+    });
 }
 
 /// Is this volume already in the on-disk cache? Purely a filesystem stat —

@@ -3,6 +3,26 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.9 — 2026-10-17
+
+**The 3D loop stopped skipping frames**
+- Two bugs stacked: a finished mesh was discarded whenever the playhead had
+  moved past it (so a pane whose builds are slower than the tick showed only
+  the frames that happened to win the race — "plays a few, then pauses"),
+  and completions were only collected on UI frames, which during playback
+  arrive once per tick. Builds now upload whenever they are newer than what
+  is displayed (strictly monotonic; a frame one behind is the intended
+  playback behavior, unit-tested), and while a build is pending the pane
+  asks for a repaint 30 ms out so meshes land the moment they are ready.
+  The 3D pass itself stays on-demand.
+
+**Alerts group by category**
+- Both the live lists (All US / station) and the Archive tab render
+  per-event sections with counts, ordered convective-first: Tornado,
+  Severe Thunderstorm, Flash Flood, Flood, Marine, then winter / wind /
+  heat / fog / fire, then everything else alphabetically. Within a section
+  the existing ordering is preserved, and the filter still narrows first.
+
 ## v1.2.8 — 2026-10-17
 
 **The warning backfill was fetching tornado warnings only**

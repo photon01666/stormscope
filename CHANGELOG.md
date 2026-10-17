@@ -3,6 +3,51 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.7 — 2026-10-17
+
+*(Rolls up the 1.2.5/1.2.6 fixes with the new alerts archive — those two
+patch releases were withdrawn unpublished.)*
+
+**Alerts archive: browse 20+ years of warnings**
+- The alerts browser has an **Archive tab**: historical NWS warnings from
+  the IEM VTEC archive (api.weather.gov only serves *active* alerts).
+  Coverage: storm-based polygons from 1 Jan 2002, all other VTEC products
+  from 12 Nov 2005, county-based listings back to 1986 (shown as
+  "county-based", nothing to draw).
+- One small day-file (~100–300 KB) per day viewed, cached forever and
+  loaded only when you open the tab or change its day — never polled.
+- **Click a historical warning** (list row or its polygon on the map) and
+  stormscope snaps to the radar that covered it, loads the archive radar
+  for that date/time, zooms to the polygon, and parks the playhead at the
+  warning's issuance once the data lands. The day's polygons also draw on
+  the map in a calmer style than live warnings, with a dwell tooltip that
+  labels them "historical" and says what a click will do.
+- **Opt-in backfill**: a crawler walks the archive newest-first (today →
+  2002) at ≤1 day-file per 850 ms, 800/day, skipping anything cached,
+  backing off on failures and pausing itself if they persist. Progress
+  lives in `warnings/crawl.json` and shows in the tab.
+- The parsers (zip → DBF + shapefile) are in `radar-data::warnings_archive`
+  and verified against real archive days (59 warnings, polygons intact).
+
+**The 3D pane runs the timeline with you — at full detail**
+- Volume meshes now build on a worker thread: playback animates the 3D
+  view at the user's detail (Fine) instead of holding still, and the UI
+  thread never waits on a ~50 ms mesh build. Scene buffers are reused
+  across frames, so timeline playback costs no per-tick allocation.
+
+**Fixes (the withdrawn 1.2.5/1.2.6 content)**
+- Playback stutter: radar gate-geometry tables are reused across scans
+  again — measured-elevation jitter and a dropped axis ray no longer
+  force a ~90 ms rebuild on every playback frame.
+- Ring/line flicker: the 3D ground grid's rings and spokes hold a
+  minimum on-screen width (and the pane never renders below display
+  resolution while moving); the 2D map's range rings tessellate to their
+  on-screen radius instead of a fixed 96 points.
+- Ground-map shimmer at steep angles: mip emulation in the 3D ground
+  shader (adaptive multi-tap as the texel footprint exceeds a pixel).
+- Pausing (button or Space) jumps the playhead to the newest scan:
+  stopping means "show me now".
+
 ## v1.2.6 — 2026-10-17
 
 **Range rings and spokes hold a screen-space width — no more flicker**

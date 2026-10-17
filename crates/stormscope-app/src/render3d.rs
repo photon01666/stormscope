@@ -66,6 +66,9 @@ struct Uniforms {
     /// `[min altitude km, max altitude km, unused, unused]`. The grid/ground
     /// get `0..1e9` so they can never be discarded by the slab.
     params2: [f32; 4],
+    /// `[eye.x, eye.y, eye.z, viewport height px]` — the ground grid's
+    /// screen-space minimum line width is derived from these.
+    params3: [f32; 4],
 }
 
 /// One ground-quad vertex (km, scene-local ENU; uv into the tile texture).
@@ -742,10 +745,13 @@ impl Volume3d {
         self.render_count += 1;
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         let view_proj = camera.view_proj(aspect, self.max_range_km.max(1.0));
+        let eye = camera.eye();
+        let viewport_h = size[1].max(1) as f32;
         let volume_uniforms = Uniforms {
             view_proj,
             params: [vertical_exaggeration, opacity, threshold, 0.0],
             params2: [alt_min_km, alt_max_km, 0.0, 0.0],
+            params3: [eye[0], eye[1], eye[2], viewport_h],
         };
         // Grid/ground: NO_THRESHOLD_VALUE passes any threshold, and the
         // altitude slab is opened wide so they can never vanish.
@@ -753,6 +759,7 @@ impl Volume3d {
             view_proj,
             params: [vertical_exaggeration, 1.0, threshold, 0.0],
             params2: [0.0, 1.0e9, 0.0, 0.0],
+            params3: [eye[0], eye[1], eye[2], viewport_h],
         };
         queue.write_buffer(&self.volume_ub, 0, bytemuck::bytes_of(&volume_uniforms));
         queue.write_buffer(&self.grid_ub, 0, bytemuck::bytes_of(&grid_uniforms));
@@ -959,6 +966,7 @@ struct Cam {
     view_proj: mat4x4<f32>,
     params: vec4<f32>,   // x: vertical exaggeration, y: opacity, z: threshold
     params2: vec4<f32>,  // x/y: altitude slab km (min/max)
+    params3: vec4<f32>,  // xyz: eye km, w: viewport height px
 };
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(1) @binding(0) var ground_tex: texture_2d<f32>;
@@ -982,7 +990,19 @@ struct VsOut {
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
-    let p = vec3<f32>(in.pos.x, in.pos.y, in.pos.z * cam.params.x);
+    var p = vec3<f32>(in.pos.x, in.pos.y, in.pos.z * cam.params.x);
+    // Ground-grid ribbons (tagged with NO_THRESHOLD_VALUE) arrive as
+    // centerlines with their perpendicular in the normal: give them a
+    // screen-space minimum width so rings and spokes cannot alias down to
+    // sub-pixel flicker at distance or steep pitch.
+    if (in.value > 1.0e29) {
+        let perp = normalize(in.nrm.xy);
+        let dist = length(cam.params3.xy - in.pos.xy);
+        // World km covered by one pixel at that distance (fov 40 deg).
+        let px_world = 2.0 * 0.36397023 * dist / max(cam.params3.w, 1.0);
+        let half = max(0.5 * px_world, 0.12);
+        p = vec3<f32>(p.xy + perp * half, p.z);
+    }
     out.clip = cam.view_proj * vec4<f32>(p, 1.0);
     out.nrm = in.nrm;
     out.col = in.col;
@@ -999,10 +1019,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (in.alt < cam.params2.x || in.alt > cam.params2.y) {
         discard;
     }
-    let n = normalize(in.nrm);
-    let l = normalize(vec3<f32>(0.40, -0.55, 0.75));
-    let shade = 0.62 + 0.38 * abs(dot(n, l));
     let a = clamp(in.col.a * cam.params.y, 0.0, 1.0);
+    var shade = 0.62 + 0.38 * abs(dot(normalize(in.nrm), normalize(vec3<f32>(0.40, -0.55, 0.75))));
+    if (in.value > 1.0e29) {
+        // The grid's normals carry the ribbon perpendicular (not a surface
+        // normal), so shade it flat.
+        shade = 0.95;
+    }
     return vec4<f32>(in.col.rgb * shade * cam.params.y, a);
 }
 

@@ -477,15 +477,17 @@ pub fn ground_tile_bounds_km(key: (u8, u32, u32), site_lat: f64, site_lon: f64) 
     ]
 }
 
-/// Ground reference grid: the mile range rings plus 12 spokes, as flat
-/// ribbons so they can share a pipeline (lines are second-class on some
-/// drivers; ribbons are not).
+/// Ground reference grid: the mile range rings plus 12 spokes, emitted as
+/// *centerlines* (two verts per path point, the ribbon's perpendicular in
+/// the normal) so the vertex shader can regenerate the width on screen. Thin
+/// baked ribbons alias into flicker once the view compresses them below a
+/// pixel — a screen-space minimum width keeps rings and spokes stable at any
+/// pitch and distance, which MSAA-style fixes cannot do cheaply here.
 pub fn build_ground_grid(max_range_km: f32) -> (Vec<MeshVertex>, Vec<u32>) {
     let mut verts = Vec::new();
     let mut indices = Vec::new();
     // Dim gray, premultiplied by 0.42.
     let color = [52u8, 56, 63, 107];
-    let half_width = 0.45f32;
 
     for r_mi in ring_radii_mi(max_range_km) {
         let r = r_mi as f32 * KM_PER_MILE;
@@ -494,9 +496,9 @@ pub fn build_ground_grid(max_range_km: f32) -> (Vec<MeshVertex>, Vec<u32>) {
         for s in 0..=segments {
             let a = s as f32 / segments as f32 * std::f32::consts::TAU;
             let (sin_a, cos_a) = a.sin_cos();
-            let (inner, outer) = ((r - half_width).max(0.0), r + half_width);
-            verts.push(grid_vertex([inner * sin_a, inner * cos_a, 0.0], color));
-            verts.push(grid_vertex([outer * sin_a, outer * cos_a, 0.0], color));
+            let p = [r * sin_a, r * cos_a, 0.0];
+            verts.push(grid_vertex(p, color, [sin_a, cos_a]));
+            verts.push(grid_vertex(p, color, [-sin_a, -cos_a]));
         }
         for s in 0..segments {
             let i = start + s as u32 * 2;
@@ -507,15 +509,15 @@ pub fn build_ground_grid(max_range_km: f32) -> (Vec<MeshVertex>, Vec<u32>) {
     for k in 0..12 {
         let a = k as f32 * 30.0f32.to_radians();
         let (sin_a, cos_a) = a.sin_cos();
-        // Perpendicular for the ribbon width.
-        let (px, py) = (-cos_a * half_width, sin_a * half_width);
+        // Unit perpendicular to the spoke.
+        let (px, py) = (-cos_a, sin_a);
         let steps = ((max_range_km / 10.0).ceil() as u32).max(1);
         let start = verts.len() as u32;
         for s in 0..=steps {
             let r = max_range_km * s as f32 / steps as f32;
-            let (x, y) = (r * sin_a, r * cos_a);
-            verts.push(grid_vertex([x + px, y + py, 0.0], color));
-            verts.push(grid_vertex([x - px, y - py, 0.0], color));
+            let p = [r * sin_a, r * cos_a, 0.0];
+            verts.push(grid_vertex(p, color, [px, py]));
+            verts.push(grid_vertex(p, color, [-px, -py]));
         }
         for s in 0..steps {
             let i = start + s * 2;
@@ -526,12 +528,14 @@ pub fn build_ground_grid(max_range_km: f32) -> (Vec<MeshVertex>, Vec<u32>) {
     (verts, indices)
 }
 
-fn grid_vertex(pos_km: [f32; 3], color: [u8; 4]) -> MeshVertex {
+fn grid_vertex(pos_km: [f32; 3], color: [u8; 4], perp: [f32; 2]) -> MeshVertex {
     MeshVertex {
         // 20 m above the ground tiles: the ground writes depth, and this
         // keeps the grid from z-fighting with it at grazing angles.
         pos_km: [pos_km[0], pos_km[1], 0.02],
-        normal: [0.0, 0.0, 1.0],
+        // The ribbon perpendicular lives in the normal; the shader widens
+        // the line along it and shades the grid unlit.
+        normal: [perp[0], perp[1], 0.0],
         color,
         value: NO_THRESHOLD_VALUE,
     }
@@ -869,6 +873,10 @@ mod tests {
             assert!((i as usize) < verts.len());
         }
         assert!(verts.iter().all(|v| v.value == NO_THRESHOLD_VALUE));
+        assert!(
+            verts.iter().all(|v| v.normal[0].hypot(v.normal[1]) > 0.9),
+            "grid normals must carry the ribbon perpendicular"
+        );
         let (verts_small, _) = build_ground_grid(60.0);
         assert!(verts_small.len() < verts.len());
     }

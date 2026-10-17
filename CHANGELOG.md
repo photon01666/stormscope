@@ -3,6 +3,20 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.6 — 2026-10-17
+
+**Range rings and spokes hold a screen-space width — no more flicker**
+- The grid was baked as fixed ~1 km-wide ribbons, so at distance or steep
+  pitch it compressed to sub-pixel width and the rasterizer's coverage
+  flipped frame to frame while the camera moved: flickering, jagged rings.
+- The rings and spokes are now emitted as *centerlines* (their
+  perpendicular rides in the vertex normal) and the vertex shader expands
+  them to a minimum on-screen width using the per-vertex distance to the
+  eye — the standard screen-space-line technique. Lines are pixel-stable
+  at any pitch, at any zoom, in any pane size; the grid also shades unlit
+  now (its normals are line perpendiculars, not surface normals).
+- Volume pass cost measured unchanged (2.0 ms settled / 0.96 ms motion).
+
 ## v1.2.5 — 2026-10-17
 
 **Ground-map flicker at steep camera angles, fixed with mip emulation**

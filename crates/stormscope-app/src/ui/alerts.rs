@@ -13,6 +13,92 @@ use radar_data::warnings_archive::HistoricWarning;
 /// the filter box narrows it down).
 const MAX_ROWS: usize = 200;
 
+/// Sort bucket for grouping: convective warnings first (they are what the
+/// radar layers and the archive jump care about), then a rough severity
+/// order, then everything else alphabetically inside the same bucket.
+pub(super) fn event_group_rank(event: &str) -> u8 {
+    if event.contains("Tornado") {
+        0
+    } else if event.contains("Severe Thunderstorm") {
+        1
+    } else if event.contains("Flash Flood") {
+        2
+    } else if event.contains("Flood") {
+        3
+    } else if event.contains("Marine") {
+        4
+    } else if event.contains("Snow Squall") {
+        5
+    } else if event.contains("Winter")
+        || event.contains("Ice")
+        || event.contains("Snow")
+        || event.contains("Blizzard")
+        || event.contains("Freez")
+    {
+        6
+    } else if event.contains("Wind") {
+        7
+    } else if event.contains("Heat") {
+        8
+    } else if event.contains("Fog") || event.contains("Smoke") {
+        9
+    } else if event.contains("Red Flag") || event.contains("Fire") {
+        10
+    } else {
+        11
+    }
+}
+
+/// Group rows by event name, ordered so the convective set leads. Stable
+/// inside a group (the caller's ordering is preserved).
+pub(super) fn group_by_event<'a>(rows: &[&'a Warning]) -> Vec<(String, Vec<&'a Warning>)> {
+    let mut sorted: Vec<&Warning> = rows.to_vec();
+    sorted.sort_by(|a, b| {
+        event_group_rank(&a.event)
+            .cmp(&event_group_rank(&b.event))
+            .then_with(|| a.event.cmp(&b.event))
+    });
+    let mut groups: Vec<(String, Vec<&Warning>)> = Vec::new();
+    for w in sorted {
+        match groups.last_mut() {
+            Some((name, items)) if name == &w.event => items.push(w),
+            _ => groups.push((w.event.clone(), vec![w])),
+        }
+    }
+    groups
+}
+
+/// The same grouping for the archive list, keeping each row's index (the
+/// jump action addresses rows by their position in `archive_warning_view`).
+fn group_archive<'a>(
+    rows: &[(usize, &'a HistoricWarning)],
+) -> Vec<(String, Vec<(usize, &'a HistoricWarning)>)> {
+    let mut sorted = rows.to_vec();
+    sorted.sort_by(|(_, a), (_, b)| {
+        event_group_rank(&a.event)
+            .cmp(&event_group_rank(&b.event))
+            .then_with(|| a.event.cmp(&b.event))
+    });
+    let mut groups: Vec<(String, Vec<(usize, &HistoricWarning)>)> = Vec::new();
+    for (i, w) in sorted {
+        match groups.last_mut() {
+            Some((name, items)) if name == &w.event => items.push((i, w)),
+            _ => groups.push((w.event.clone(), vec![(i, w)])),
+        }
+    }
+    groups
+}
+
+/// One group header: event name + count (the list is long enough that the
+/// sections are what makes it scannable).
+fn alert_group_header(ui: &mut egui::Ui, event: &str, count: usize, scale: f32) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(event).strong().size(12.5 * scale));
+        ui.label(egui::RichText::new(format!("×{count}")).weak().small());
+    });
+}
+
 /// Map/popup color for an alert by event type (matches the polygon colors).
 pub(super) fn warning_color(w: &Warning) -> egui::Color32 {
     if w.is_tornado() {
@@ -439,7 +525,15 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                 )
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for w in rows.iter().take(MAX_ROWS) {
+                    let groups = group_by_event(&rows);
+                    let mut shown = 0usize;
+                    'groups: for (event, items) in &groups {
+                        alert_group_header(ui, event, items.len(), scale);
+                        for &w in items {
+                            if shown >= MAX_ROWS {
+                                break 'groups;
+                            }
+                            shown += 1;
                         let dist = distance_km(w, site_lat, site_lon);
                         let (is_hovered, is_clicked, wants_details) = alert_row(
                             ui,
@@ -471,6 +565,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                         }
                         if wants_details {
                             detail = Some(w.id.clone());
+                        }
                         }
                     }
                 });
@@ -676,67 +771,71 @@ fn archive_tab_ui(
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (i, w) in view.iter().enumerate() {
-                let tz = crate::timefmt::central();
-                let issued = w.issued.with_timezone(tz).format("%H:%M");
-                let expires = w.expires.with_timezone(tz).format("%H:%M");
-                let dist = ring_centroid(&w.polygon)
-                    .map(|(lat, lon)| {
-                        radar_render::surface_distance_m(lon, lat, site_lon, site_lat) / 1000.0
-                    })
-                    .map(|d| format!(" · {d:.0} km from {site_id}"))
-                    .unwrap_or_default();
-                let county = if w.polygon.is_some() {
-                    ""
-                } else {
-                    " · county-based"
-                };
-                let resp = egui::Frame::NONE
-                    .fill(ui.visuals().faint_bg_color)
-                    .corner_radius(4.0)
-                    .inner_margin(egui::Margin::symmetric(6, 4))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.colored_label(
-                                archive_color(w),
-                                egui::RichText::new("●").size(11.0 * scale),
+            let indexed: Vec<(usize, &HistoricWarning)> =
+                view.iter().enumerate().map(|(i, w)| (i, *w)).collect();
+            let groups = group_archive(&indexed);
+            for (event, items) in &groups {
+                alert_group_header(ui, event, items.len(), scale);
+                for &(i, w) in items {
+                    let tz = crate::timefmt::central();
+                    let issued = w.issued.with_timezone(tz).format("%H:%M");
+                    let expires = w.expires.with_timezone(tz).format("%H:%M");
+                    let dist = ring_centroid(&w.polygon)
+                        .map(|(lat, lon)| {
+                            radar_render::surface_distance_m(lon, lat, site_lon, site_lat) / 1000.0
+                        })
+                        .map(|d| format!(" · {d:.0} km from {site_id}"))
+                        .unwrap_or_default();
+                    let county = if w.polygon.is_some() {
+                        ""
+                    } else {
+                        " · county-based"
+                    };
+                    let resp = egui::Frame::NONE
+                        .fill(ui.visuals().faint_bg_color)
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::symmetric(6, 4))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.colored_label(
+                                    archive_color(w),
+                                    egui::RichText::new("●").size(11.0 * scale),
+                                );
+                                ui.strong(&w.event);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("⏪ radar at {}", issued))
+                                                .small(),
+                                        );
+                                    },
+                                );
+                            });
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "WFO {} · {issued} → {expires} CDT{dist}{county}",
+                                    w.office
+                                ))
+                                .weak()
+                                .small(),
                             );
-                            ui.strong(&w.event);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "⏪ radar at {}",
-                                            issued
-                                        ))
-                                        .small(),
-                                    );
-                                },
-                            );
-                        });
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "WFO {} · {issued} → {expires} CDT{dist}{county}",
-                                w.office
-                            ))
-                            .weak()
-                            .small(),
-                        );
-                    })
-                    .response;
-                let resp = resp.interact(egui::Sense::click());
-                if resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        })
+                        .response;
+                    let resp = resp.interact(egui::Sense::click());
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        *action = Some(ArchiveAction::Jump(i));
+                    }
+                    resp.on_hover_text(
+                        "Load this warning's date/time: switches to the radar that \
+                     covered it and pulls the archive data around its issuance",
+                    );
+                    ui.add_space(2.0);
                 }
-                if resp.clicked() {
-                    *action = Some(ArchiveAction::Jump(i));
-                }
-                resp.on_hover_text(
-                    "Load this warning's date/time: switches to the radar that                      covered it and pulls the archive data around its issuance",
-                );
-                ui.add_space(2.0);
             }
         });
 }

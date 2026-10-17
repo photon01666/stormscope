@@ -63,8 +63,9 @@ struct Uniforms {
     view_proj: [[f32; 4]; 4],
     /// `[vertical exaggeration, opacity, value threshold, unused]`.
     params: [f32; 4],
-    /// `[min altitude km, max altitude km, unused, unused]`. The grid/ground
-    /// get `0..1e9` so they can never be discarded by the slab.
+    /// `[min altitude km, max altitude km, grid line half-width (render px),
+    /// unused]`. The grid/ground get `0..1e9` so they can never be discarded
+    /// by the slab.
     params2: [f32; 4],
     /// `[eye.x, eye.y, eye.z, viewport height px]` — the ground grid's
     /// screen-space minimum line width is derived from these.
@@ -740,6 +741,7 @@ impl Volume3d {
         threshold: f32,
         alt_min_km: f32,
         alt_max_km: f32,
+        min_half_render_px: f32,
     ) {
         self.ensure_targets(device, size);
         self.render_count += 1;
@@ -750,15 +752,16 @@ impl Volume3d {
         let volume_uniforms = Uniforms {
             view_proj,
             params: [vertical_exaggeration, opacity, threshold, 0.0],
-            params2: [alt_min_km, alt_max_km, 0.0, 0.0],
+            params2: [alt_min_km, alt_max_km, min_half_render_px, 0.0],
             params3: [eye[0], eye[1], eye[2], viewport_h],
         };
-        // Grid/ground: NO_THRESHOLD_VALUE passes any threshold, and the
-        // altitude slab is opened wide so they can never vanish.
+        // Grid/ground: NO_THRESHOLD_VALUE passes any threshold, the altitude
+        // slab is opened wide, and the line width is the screen-space
+        // minimum expressed in this pass's pixels.
         let grid_uniforms = Uniforms {
             view_proj,
             params: [vertical_exaggeration, 1.0, threshold, 0.0],
-            params2: [0.0, 1.0e9, 0.0, 0.0],
+            params2: [0.0, 1.0e9, min_half_render_px, 0.0],
             params3: [eye[0], eye[1], eye[2], viewport_h],
         };
         queue.write_buffer(&self.volume_ub, 0, bytemuck::bytes_of(&volume_uniforms));
@@ -843,7 +846,7 @@ impl Volume3d {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        size: [u32; 2],
+        screen_px: [u32; 2],
         camera: &Camera,
         vertical_exaggeration: f32,
         opacity: f32,
@@ -851,6 +854,7 @@ impl Volume3d {
         alt_min_km: f32,
         alt_max_km: f32,
         ground_key: u64,
+        min_half_screen_px: f32,
     ) {
         use std::hash::{Hash, Hasher};
         let key = {
@@ -870,7 +874,7 @@ impl Volume3d {
             ] {
                 v.to_bits().hash(&mut h);
             }
-            size.hash(&mut h);
+            screen_px.hash(&mut h);
             self.scene_sig.hash(&mut h);
             ground_key.hash(&mut h);
             h.finish()
@@ -880,6 +884,11 @@ impl Volume3d {
             RenderDecision::Skip => {}
             RenderDecision::Full => {
                 if self.color.is_some() {
+                    // Settled: supersample — AA for edges and tiles alike.
+                    let size = [
+                        ((screen_px[0] as f32) * SUPERSAMPLE).round() as u32,
+                        ((screen_px[1] as f32) * SUPERSAMPLE).round() as u32,
+                    ];
                     self.render(
                         device,
                         queue,
@@ -890,6 +899,7 @@ impl Volume3d {
                         threshold,
                         alt_min_km,
                         alt_max_km,
+                        min_half_screen_px * SUPERSAMPLE,
                     );
                     self.last_full_key = Some(key);
                 }
@@ -897,17 +907,21 @@ impl Volume3d {
             RenderDecision::Interactive => {
                 self.last_key = Some(key);
                 self.last_change = std::time::Instant::now();
-                let half = [(size[0] / 2).max(64), (size[1] / 2).max(64)];
+                // Moving: exact display resolution. Never *below* it — sub-
+                // pixel lines (grid rings, spokes) flicker as coverage flips
+                // frame to frame, which is exactly when the user is looking.
+                let size = [(screen_px[0]).max(64), (screen_px[1]).max(64)];
                 self.render(
                     device,
                     queue,
-                    half,
+                    size,
                     camera,
                     vertical_exaggeration,
                     opacity,
                     threshold,
                     alt_min_km,
                     alt_max_km,
+                    min_half_screen_px,
                 );
             }
         }
@@ -1000,7 +1014,7 @@ fn vs_main(in: VsIn) -> VsOut {
         let dist = length(cam.params3.xy - in.pos.xy);
         // World km covered by one pixel at that distance (fov 40 deg).
         let px_world = 2.0 * 0.36397023 * dist / max(cam.params3.w, 1.0);
-        let half = max(0.5 * px_world, 0.12);
+        let half = max(cam.params2.z * px_world, 0.10);
         p = vec3<f32>(p.xy + perp * half, p.z);
     }
     out.clip = cam.view_proj * vec4<f32>(p, 1.0);
@@ -1071,6 +1085,9 @@ fn gfs_main(in: GroundOut) -> @location(0) vec4<f32> {
     return vec4<f32>(c.rgb, 1.0);
 }
 "#;
+
+/// Multiplier the settled frame renders at (motion frames render at 1x).
+const SUPERSAMPLE: f32 = 1.6;
 
 /// How long after the last change the full-resolution frame lands.
 const SETTLE_MS: u64 = 160;

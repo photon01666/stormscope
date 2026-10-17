@@ -148,7 +148,7 @@ fn renders_a_synthetic_supercell_to_a_png() {
         target_km: [0.0, 0.0, 13.0 * ve * 0.42],
     };
     // The app's default height scale and the full altitude slab.
-    v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0);
+    v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0, 1.2);
 
     // Read the rendered frame back.
     let texture = v3.color_texture().expect("render created the target");
@@ -278,7 +278,7 @@ fn bench_pane_resolution_cost() {
     ] {
         // Warm up (pipeline/lazy texture creation), then measure.
         for _ in 0..3 {
-            v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0);
+            v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0, 1.2);
             device
                 .poll(wgpu::PollType::wait_indefinitely())
                 .expect("poll");
@@ -286,12 +286,114 @@ fn bench_pane_resolution_cost() {
         let frames = 40;
         let t0 = std::time::Instant::now();
         for _ in 0..frames {
-            v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0);
+            v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0, 1.2);
             device
                 .poll(wgpu::PollType::wait_indefinitely())
                 .expect("poll");
         }
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / f64::from(frames);
         eprintln!("{label}: {ms:.2} ms/pass ({} tris)", v3.triangles());
+    }
+}
+
+/// Real-data cost check: load the newest cached Level II volume (if any) and
+/// time the supersampled pane pass at its real geometry. The synthetic bench
+/// understates Fine-detail volumes (which reach ~1M vertices).
+#[test]
+#[ignore = "needs a GPU adapter and a warm radar cache; --ignored --nocapture"]
+fn bench_pane_cost_with_a_real_volume() {
+    let dir = radar_data::DiskCache::default_root().join("l2");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        eprintln!("no radar cache at {} — skipped", dir.display());
+        return;
+    };
+    // Layout is l2/<SITE>/<file>.gz — scan one level down.
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    let mut consider = |p: std::path::PathBuf| {
+        let name = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !name.ends_with(".gz") {
+            return;
+        }
+        if let Ok(md) = std::fs::metadata(&p) {
+            if let Ok(t) = md.modified() {
+                if best.as_ref().is_none_or(|(bt, _)| t > *bt) {
+                    best = Some((t, p));
+                }
+            }
+        }
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if let Ok(sub) = std::fs::read_dir(&p) {
+                for f in sub.flatten() {
+                    consider(f.path());
+                }
+            }
+        } else {
+            consider(p);
+        }
+    }
+    let Some((_, path)) = best else {
+        eprintln!("cache empty — skipped");
+        return;
+    };
+    eprintln!("volume: {}", path.display());
+    let bytes = std::fs::read(&path).expect("read volume");
+    let vol = radar_decode::decode_volume_file(&bytes).expect("decode");
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("adapter");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("device");
+    let mut v3 = Volume3d::new(&device, &queue);
+    let filter = MeshFilter::new(Moment::Reflectivity, MeshDetail::Fine);
+    let t0 = std::time::Instant::now();
+    v3.update_scene(&device, &queue, &vol, &filter, 9);
+    eprintln!(
+        "scene build: {:?} ({} tris, {} tilts)",
+        t0.elapsed(),
+        v3.triangles(),
+        v3.tilt_count()
+    );
+    let ve = 20.0f32;
+    let half_h = 13.0 * ve / 2.0;
+    let camera = Camera {
+        yaw_deg: 25.0,
+        pitch_deg: 30.0,
+        distance_km: (v3.max_range_km() * 1.35).max(half_h / 20.0f32.to_radians().tan() * 1.4),
+        target_km: [0.0, 0.0, 13.0 * ve * 0.42],
+    };
+    for (label, size) in [
+        ("settled 1.6x", [3072u32, 3392]),
+        ("1.0x (old motion)", [1920, 2120]),
+    ] {
+        for _ in 0..3 {
+            v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0, 1.2);
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("poll");
+        }
+        let frames = 30;
+        let t = std::time::Instant::now();
+        for _ in 0..frames {
+            v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0, 1.2);
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("poll");
+        }
+        eprintln!(
+            "{label}: {:.2} ms/pass",
+            t.elapsed().as_secs_f64() * 1000.0 / f64::from(frames)
+        );
     }
 }

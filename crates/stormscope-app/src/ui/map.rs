@@ -916,10 +916,34 @@ fn draw_range_rings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView,
         return;
     };
     let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60));
+    let (cx, cy) = view.lonlat_to_view_px(site.longitude, site.latitude);
+    let view_rect = egui::Rect::from_min_size(
+        origin,
+        egui::vec2(view.width() as f32, view.height() as f32),
+    );
     for km in [50u32, 100, 150, 200, 250] {
-        let mut pts = Vec::with_capacity(96);
-        for i in 0..=96 {
-            let az = i as f32 * 360.0 / 96.0;
+        // Screen radius of this ring (one sampled point is enough).
+        let (lat, lon) =
+            radar_render::gate_latlon(site.latitude, site.longitude, 0.0, 0.0, km as f32 * 1000.0);
+        let (px, py) = view.lonlat_to_view_px(lon, lat);
+        let radius = ((px - cx).hypot(py - cy)).max(1.0);
+        let center = egui::pos2(origin.x + cx as f32, origin.y + cy as f32);
+        let ring_bbox = egui::Rect::from_center_size(
+            center,
+            egui::vec2(radius as f32 * 2.0, radius as f32 * 2.0),
+        );
+        if !view_rect.intersects(ring_bbox) {
+            continue; // fully off-screen (zoomed in past a ring)
+        }
+        // Tessellate to the *screen* radius, not a fixed 96 points: at storm
+        // zoom a 50 km ring spans hundreds of pixels and a fixed count turns
+        // the circle into visible straight chords that shimmer while the map
+        // pans. Sagitta kept under a third of a pixel.
+        let n = ((std::f64::consts::PI / (1.0 - 0.3 / radius).max(-1.0).acos()).ceil() as usize)
+            .clamp(96, 2048);
+        let mut pts = Vec::with_capacity(n + 1);
+        for i in 0..=n {
+            let az = i as f32 * 360.0 / n as f32;
             let (lat, lon) = radar_render::gate_latlon(
                 site.latitude,
                 site.longitude,

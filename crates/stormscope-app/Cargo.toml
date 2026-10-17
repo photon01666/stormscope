@@ -36,6 +36,8 @@ eframe = { version = "0.36", default-features = false, features = [
     "x11",
 ] }
 egui = "0.36"
+egui_extras.workspace = true
+jiff.workspace = true
 # Same wgpu line eframe uses, so there is a single GPU/Vulkan context and
 # egui_wgpu::RenderState can name the device handed to the renderer.
 egui-wgpu = "0.36"

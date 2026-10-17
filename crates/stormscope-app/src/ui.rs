@@ -334,6 +334,19 @@ fn control_window_wheel(
     }
 }
 
+/// chrono → jiff for the date picker (egui_extras 0.36's datepicker speaks
+/// jiff civil dates; the rest of the app is chrono).
+fn jiff_from_naive(d: chrono::NaiveDate) -> jiff::civil::Date {
+    use chrono::Datelike;
+    jiff::civil::Date::new(d.year() as i16, d.month() as i8, d.day() as i8)
+        .expect("valid civil date")
+}
+
+/// jiff → chrono, `None` for out-of-range dates (the picker clamps anyway).
+fn naive_from_jiff(d: jiff::civil::Date) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::from_ymd_opt(d.year() as i32, d.month() as u32, d.day() as u32)
+}
+
 /// The 2D map's display controls (its bottom-right "Controls" chip).
 fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     if !app.state.map_controls_open {
@@ -1348,7 +1361,7 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp) {
             });
             ui.add_space(6.0);
 
-            // Day.
+            // Day (the same shared archive day as the alerts Archive tab).
             ui.label("Day (Central)");
             ui.horizontal(|ui| {
                 if ui.button("◀").clicked() {
@@ -1358,14 +1371,19 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp) {
                         .pred_opt()
                         .unwrap_or(app.state.archive_date);
                 }
-                ui.label(
-                    egui::RichText::new(app.state.archive_date.format("%a %b %-d, %Y").to_string())
-                        .strong(),
-                );
+                // Clickable date: calendar picking, like the alerts tab.
+                let today = chrono::Utc::now()
+                    .with_timezone(crate::timefmt::central())
+                    .date_naive();
+                let mut picked = jiff_from_naive(app.state.archive_date);
+                ui.add(egui_extras::DatePickerButton::new(&mut picked))
+                    .on_hover_text("Pick a day from the calendar");
+                if let Some(picked) = naive_from_jiff(picked) {
+                    if picked != app.state.archive_date {
+                        app.state.archive_date = picked.min(today);
+                    }
+                }
                 if ui.button("▶").clicked() {
-                    let today = chrono::Utc::now()
-                        .with_timezone(crate::timefmt::central())
-                        .date_naive();
                     if app.state.archive_date < today {
                         app.state.archive_date = app
                             .state

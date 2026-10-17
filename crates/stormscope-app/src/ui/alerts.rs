@@ -682,6 +682,9 @@ fn archive_tab_ui(
     scale: f32,
     action: &mut Option<ArchiveAction>,
 ) {
+    let today = chrono::Utc::now()
+        .with_timezone(crate::timefmt::central())
+        .date_naive();
     ui.horizontal(|ui| {
         ui.label("Day (Central)");
         if ui.button("◀").clicked() {
@@ -689,11 +692,17 @@ fn archive_tab_ui(
                 *action = Some(ArchiveAction::SetDay(p));
             }
         }
-        ui.label(egui::RichText::new(day.format("%a %b %-d, %Y").to_string()).strong());
+        // Clickable date: the calendar picks any month/day directly; the
+        // arrows are just for stepping a day at a time.
+        let mut picked = super::jiff_from_naive(day);
+        ui.add(egui_extras::DatePickerButton::new(&mut picked))
+            .on_hover_text("Pick a day from the calendar");
+        if let Some(picked) = super::naive_from_jiff(picked) {
+            if picked != day {
+                *action = Some(ArchiveAction::SetDay(picked.min(today)));
+            }
+        }
         if ui.button("▶").clicked() {
-            let today = chrono::Utc::now()
-                .with_timezone(crate::timefmt::central())
-                .date_naive();
             if day < today {
                 if let Some(s) = day.succ_opt() {
                     *action = Some(ArchiveAction::SetDay(s));

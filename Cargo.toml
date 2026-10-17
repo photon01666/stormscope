@@ -28,6 +28,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
+# egui companion: the archive day picker's calendar widget. Its datepicker
+# speaks jiff's civil dates (not chrono), so that type crosses the boundary.
+egui_extras = { version = "0.36", features = ["datepicker"] }
+jiff = "0.2"
 wgpu = "30"
 # Zero-copy casting for the 3D mesh vertex buffers ([`MeshVertex`] → GPU).
 bytemuck = { version = "1", features = ["derive"] }

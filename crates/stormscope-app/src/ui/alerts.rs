@@ -743,7 +743,7 @@ fn archive_tab_ui(
 
 /// Clicking a historical warning: snap to the radar that covered it, load
 /// the archive data around its issuance, and park the playhead there.
-fn jump_to_warning(app: &mut StormApp, idx: usize) {
+pub(super) fn jump_to_warning(app: &mut StormApp, idx: usize) {
     let Some(w) = app.state.archive_warnings.get(idx).cloned() else {
         return;
     };

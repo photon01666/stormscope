@@ -168,6 +168,10 @@ pub struct AppState {
     /// Pending "park the playhead at this moment once the radar lands"
     /// (armed by clicking a historical warning; consumed in the pump).
     pub archive_jump: Option<(chrono::DateTime<chrono::Utc>, std::time::Instant)>,
+    /// Historical warning under the map pointer, and when its hover began
+    /// (the overlay's tooltip dwell).
+    pub archive_hover: Option<String>,
+    pub archive_hover_at: f64,
     pub loop_state: LoopState,
     pub fps: f32,
 
@@ -411,6 +415,8 @@ impl Default for AppState {
             archive_warnings_date: None,
             archive_warnings_requested: None,
             archive_jump: None,
+            archive_hover: None,
+            archive_hover_at: 0.0,
             archive_minute: {
                 use chrono::Timelike;
                 let now = chrono::Utc::now().with_timezone(crate::timefmt::central());

@@ -159,6 +159,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             app.state.alerts_focus = Some(w.id.clone());
                             app.state.alerts_focus_at = ui.input(|i| i.time);
                             app.map_alert_cycle = Some((at, ids, idx));
+                        } else if let Some(idx) = archive_click_target(app, &view, lon, lat, cx, cy)
+                        {
+                            // Historical-warning overlay: clicking one loads
+                            // the radar at its time (the live feed has
+                            // nothing here; the overlay is the era shown).
+                            super::alerts::jump_to_warning(app, idx);
+                            app.map_alert_cycle = None;
                         } else {
                             // Clicked off the warnings: the next click on a
                             // stack starts from the top of it again.
@@ -282,6 +289,40 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     if !app.state.alerts_map_stack.is_empty() && !response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+
+    // Historical-warning overlay hover (the live feed always wins the
+    // pointer): dwell, then the tooltip drawn with the layer below.
+    let archive_hover: Option<String> = if archive_overlay_active(app)
+        && app.state.alerts_map_stack.is_empty()
+        && !response.dragged()
+    {
+        map_pointer.and_then(|p| {
+            let (cx, cy) = viewport_pos(rect, p);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            super::alerts::warning_stack_at(
+                &app.state.archive_warning_view,
+                lon,
+                lat,
+                |lo, la| view.lonlat_to_view_px(lo, la),
+                cx,
+                cy,
+                WARNING_EDGE_PX,
+            )
+            .first()
+            .map(|w| w.id.clone())
+        })
+    } else {
+        None
+    };
+    if archive_hover != app.state.archive_hover {
+        app.state.archive_hover = archive_hover;
+        app.state.archive_hover_at = ui.input(|i| i.time);
+    }
+    if app.state.archive_hover.is_some() && !response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    // --- Storm reports / discussion areas under the pointer ---------------
 
     // --- Storm reports / discussion areas under the pointer ---------------
     // Reports are small dots (nearest within reach wins), discussion areas
@@ -655,6 +696,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // --- Layer 4: warning polygons ----------------------------------------
     draw_warnings(&painter, origin, &view, app);
+    draw_archive_warnings(&painter, origin, &view, app);
 
     // --- Derived storm tracks (cell arrows + 30-min nowcast) ---------------
     // Tracks always refresh (marker ETAs ride on them); only the arrows are
@@ -1157,6 +1199,125 @@ pub(super) fn triangulate(rings: &[Vec<egui::Pos2>], color: egui::Color32) -> Op
 }
 
 /// NWS warning polygons, colored by event type.
+/// Whether the historical-warning overlay belongs on screen: a day is
+/// loaded that matches the selected archive day, and the user is either
+/// browsing that day's list or looking at that era's radar.
+fn archive_overlay_active(app: &StormApp) -> bool {
+    if !app.state.show_alerts {
+        return false;
+    }
+    let Some(day) = app.state.archive_warnings_date else {
+        return false;
+    };
+    if day != app.state.archive_date {
+        return false;
+    }
+    let browsing =
+        app.state.alerts_popup_open && app.state.alerts_tab == crate::state::AlertsTab::Archive;
+    browsing || app.state.mode == crate::state::Mode::Archive
+}
+
+/// Index (into `state.archive_warnings`) of the historical polygon under a
+/// map point, when the overlay is active.
+fn archive_click_target(
+    app: &StormApp,
+    view: &MapView,
+    lon: f64,
+    lat: f64,
+    cx: f64,
+    cy: f64,
+) -> Option<usize> {
+    if !archive_overlay_active(app) {
+        return None;
+    }
+    let hit = super::alerts::warning_stack_at(
+        &app.state.archive_warning_view,
+        lon,
+        lat,
+        |lo, la| view.lonlat_to_view_px(lo, la),
+        cx,
+        cy,
+        WARNING_EDGE_PX,
+    );
+    let id = hit.first()?.id.as_str();
+    app.state
+        .archive_warning_view
+        .iter()
+        .position(|w| w.id == id)
+}
+
+/// The historical warnings of the selected archive day: calm outlines
+/// (the live warnings own the loud styling), a hover highlight, and a
+/// dwell tooltip that names the event and what a click will do.
+fn draw_archive_warnings(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+) {
+    if !archive_overlay_active(app) {
+        return;
+    }
+    let now = painter.ctx().input(|i| i.time);
+    let hovered_id = app.state.archive_hover.as_deref();
+    for w in &app.state.archive_warning_view {
+        let Some(rings) = &w.polygon else { continue };
+        let hovered = hovered_id == Some(w.id.as_str());
+        let color = super::alerts::warning_color(w);
+        let stroke = egui::Stroke::new(
+            if hovered { 2.4 } else { 1.2 },
+            if hovered {
+                color
+            } else {
+                color.gamma_multiply(0.65)
+            },
+        );
+        for ring in rings {
+            let pts = project_ring(ring, view, origin);
+            if pts.len() >= 3 {
+                painter.add(egui::Shape::closed_line(pts, stroke));
+            }
+        }
+    }
+
+    // Dwell tooltip, drawn last so it sits over the outlines.
+    if let Some(id) = hovered_id
+        && now - app.state.archive_hover_at >= 1.0
+        && let Some(w) = app.state.archive_warning_view.iter().find(|w| w.id == id)
+    {
+        let tz = crate::timefmt::central();
+        let Some(issued) = app
+            .state
+            .archive_warnings
+            .iter()
+            .find(|h| h.id == id)
+            .map(|h| {
+                h.issued
+                    .with_timezone(tz)
+                    .format("%b %-d %H:%M")
+                    .to_string()
+            })
+        else {
+            return;
+        };
+        let expires = w.expires.with_timezone(tz).format("%H:%M");
+        let text = format!(
+            "historical · {} · WFO {} · {} → {} CDT · click: load this radar",
+            w.event, w.office, issued, expires
+        );
+        if let Some(p) = painter.ctx().pointer_hover_pos() {
+            draw_tag_label(
+                painter,
+                p + egui::vec2(12.0, 10.0),
+                egui::Align2::LEFT_TOP,
+                &text,
+                egui::FontId::proportional(12.0),
+                super::alerts::warning_color(w),
+            );
+        }
+    }
+}
+
 fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
     if !app.state.show_alerts {
         return;

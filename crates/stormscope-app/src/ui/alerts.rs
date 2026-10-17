@@ -440,11 +440,16 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
         .iter()
         .filter(|w| historic_belongs_to(w, site_id))
         .count();
-    let archive_view: Vec<&HistoricWarning> = if archive_both {
+    // Carrying the *original* index with each row matters: the station tab
+    // is a filtered view, and the jump/text actions address the full list —
+    // filtering without the index made a click load a different warning
+    // (a Midland polygon for a Topeka row, in the field).
+    let archive_view: Vec<(usize, &HistoricWarning)> = if archive_both {
         state
             .archive_warnings
             .iter()
-            .filter(|w| *tab == AlertsTab::Archive || historic_belongs_to(w, site_id))
+            .enumerate()
+            .filter(|(_, w)| *tab == AlertsTab::Archive || historic_belongs_to(w, site_id))
             .collect()
     } else {
         Vec::new()
@@ -765,7 +770,7 @@ fn ring_centroid(rings: &Option<Vec<Vec<(f64, f64)>>>) -> Option<(f64, f64)> {
 fn archive_tab_ui(
     ui: &mut egui::Ui,
     day: chrono::NaiveDate,
-    view: &[&HistoricWarning],
+    view: &[(usize, &HistoricWarning)],
     requested: Option<(chrono::NaiveDate, std::time::Instant)>,
     crawl: Option<&radar_data::warnings_archive::CrawlStatus>,
     site_lat: f64,
@@ -898,9 +903,7 @@ fn archive_tab_ui(
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let indexed: Vec<(usize, &HistoricWarning)> =
-                view.iter().enumerate().map(|(i, w)| (i, *w)).collect();
-            let groups = group_archive(&indexed);
+            let groups = group_archive(view);
             for (event, items) in &groups {
                 alert_group_header(ui, event, items.len(), scale);
                 for &(i, w) in items {

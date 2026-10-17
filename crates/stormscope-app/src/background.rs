@@ -339,10 +339,13 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                         shift_archive_window(&source, day, delta, &out);
                     }
                 }
-                DataCmd::EnterLive => {
+                DataCmd::EnterLive(site) => {
                     // Back to live: drop the archive listing, clear the ring,
                     // and show the newest scan immediately. The live poller
-                    // keeps future scans coming.
+                    // keeps future scans coming. The UI's site travels with
+                    // the command — a desync here used to drop every volume
+                    // silently.
+                    current_site = site;
                     archive = None;
                     watchdog_enabled = true;
                     let _ = out.send(DataMsg::ClearFrames);

@@ -176,6 +176,9 @@ pub struct AppState {
     pub archive_detail: Option<String>,
     pub archive_texts: std::collections::HashMap<String, Option<String>>,
     pub archive_text_requested: std::collections::HashSet<String>,
+    /// Last site whose volumes were dropped as "not the selected station"
+    /// (logs once per distinct site so a desync is visible).
+    pub site_mismatch_logged: Option<String>,
     /// Pending "park the playhead at this moment once the radar lands"
     /// (armed by clicking a historical warning; consumed in the pump).
     pub archive_jump: Option<(chrono::DateTime<chrono::Utc>, std::time::Instant)>,
@@ -430,6 +433,7 @@ impl Default for AppState {
             archive_warnings_date: None,
             archive_warnings_requested: None,
             archive_jump: None,
+            site_mismatch_logged: None,
             archive_detail: None,
             archive_texts: std::collections::HashMap::new(),
             archive_text_requested: std::collections::HashSet::new(),
@@ -643,8 +647,21 @@ impl AppState {
         // station's sweeps would draw in the wrong place. "UNKNOWN" is
         // tolerated because a headerless stream can omit the site id.
         if volume.meta.site_id != self.site_id && volume.meta.site_id != "UNKNOWN" {
+            // Dropping silently is how a UI/stream desync reads in the
+            // field: the map stays empty while the decoder hums along.
+            // One warn per distinct mismatched site, so it is visible.
+            if self.site_mismatch_logged.as_deref() != Some(volume.meta.site_id.as_str()) {
+                log::warn!(
+                    "dropping {} volumes: the app is watching {} — pick {} in the site selector to resync",
+                    volume.meta.site_id,
+                    self.site_id,
+                    volume.meta.site_id
+                );
+                self.site_mismatch_logged = Some(volume.meta.site_id.clone());
+            }
             return;
         }
+        self.site_mismatch_logged = None;
         let start = volume.meta.volume_start;
         if self.ring.iter().any(|f| f.volume_start == start) {
             return; // duplicate

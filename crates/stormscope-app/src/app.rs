@@ -84,7 +84,10 @@ pub enum DataCmd {
     ArchiveWindowShift(i32),
     /// Leave archive mode: clear the ring and refresh with the newest
     /// available scan immediately.
-    EnterLive,
+    /// Leave archive/replay for live radar of the given site — the UI's site
+    /// travels with the command so the prime and poller can never diverge
+    /// from what the app is watching (a silent desync dropped every volume).
+    EnterLive(String),
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
     LoadOutlook(u8, radar_core::outlooks::OutlookType),
@@ -323,7 +326,9 @@ impl StormApp {
         self.state.mode = crate::state::Mode::Live;
         self.state.loop_state = crate::state::LoopState::Paused;
         self.state.archive_jump = None;
-        let _ = self.tx.send(crate::app::DataCmd::EnterLive);
+        let _ = self
+            .tx
+            .send(crate::app::DataCmd::EnterLive(self.state.site_id.clone()));
     }
 
     /// Select a radar site from the map (or controls) and tell the data

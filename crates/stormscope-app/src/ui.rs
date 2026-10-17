@@ -1355,7 +1355,9 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp) {
                 let mut live = app.state.mode == Mode::Live;
                 if ui.selectable_value(&mut live, true, "Live").changed() && live {
                     app.state.mode = Mode::Live;
-                    let _ = app.tx.send(crate::app::DataCmd::EnterLive);
+                    let _ = app
+                        .tx
+                        .send(crate::app::DataCmd::EnterLive(app.state.site_id.clone()));
                 }
                 let mut arch = app.state.mode == Mode::Archive;
                 if ui.selectable_value(&mut arch, true, "Archive").changed() && arch {

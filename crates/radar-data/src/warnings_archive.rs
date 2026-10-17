@@ -944,6 +944,9 @@ mod tests {
 
     #[test]
     fn crawl_floor_is_the_polygon_era() {
-        assert_eq!(polygon_era_start().year(), 2002);
+        assert_eq!(
+            polygon_era_start(),
+            NaiveDate::from_ymd_opt(2002, 1, 1).unwrap()
+        );
     }
 }

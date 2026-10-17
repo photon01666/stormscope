@@ -210,11 +210,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     if response.hovered() {
         // Anchor = pointer position in viewport-relative pixels.
         let pointer = response.hover_pos();
-        // The Min-dBZ bar floats over the map and owns the wheel there.
-        let over_min_dbz_bar = match (pointer, app.min_dbz_bar_rect) {
-            (Some(p), Some(bar)) => bar.contains(p),
-            _ => false,
-        };
+        // The Min-dBZ slider lives in the map's Controls window now; the
+        // wheel belongs to the zoom wherever the pointer is over the map.
+        let over_min_dbz_bar = false;
         if !over_min_dbz_bar {
             let anchor = pointer
                 .map(|p| ((p.x - rect.min.x) as f64, (p.y - rect.min.y) as f64))
@@ -744,7 +742,6 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     outlook_hover_tooltip(ui, &response, app);
 
     // --- Min dBZ quick-adjust bar at bottom-center --------------------------
-    draw_min_dbz_bar(ui.ctx(), tile_resp.rect, app);
 
     // Label editor popup for the selected/new marker (drawn in its own
     // egui layer; lives here so it has the map context).
@@ -1944,69 +1941,6 @@ pub(super) fn consume_wheel_steps(events: &mut Vec<egui::Event>, acc: &mut f32) 
 /// the map: the same filter as the sidebar control, where the eye is while
 /// watching echoes. Shown only for the REF-family moments it actually
 /// filters — for VEL/SW/ZDR/… the slider would be dead UI.
-fn draw_min_dbz_bar(ctx: &egui::Context, map_rect: egui::Rect, app: &mut StormApp) {
-    use radar_core::Moment;
-    if !matches!(
-        app.state.moment,
-        Moment::Reflectivity | Moment::CompositeReflectivity
-    ) {
-        app.min_dbz_bar_rect = None;
-        return;
-    }
-    let width = 380.0;
-    let pos = egui::pos2(map_rect.center().x - width / 2.0, map_rect.bottom() - 78.0);
-    let area = egui::Area::new(egui::Id::new("stormscope.min_dbz.bar"))
-        .fixed_pos(pos)
-        .movable(false)
-        .interactable(true)
-        .constrain(false)
-        .fade_in(false)
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style())
-                .fill(egui::Color32::from_black_alpha(225))
-                .show(ui, |ui| {
-                    ui.set_min_width(width - 24.0);
-                    ui.spacing_mut().slider_width = 200.0;
-                    ui.horizontal(|ui| {
-                        ui.label("Min dBZ (REF)");
-                        ui.add(
-                            egui::Slider::new(&mut app.state.min_dbz, 0.0..=75.0)
-                                .step_by(5.0)
-                                .drag_value_speed(1.0),
-                        );
-                    });
-                    ui.label(
-                        egui::RichText::new(
-                            "filters weak returns on REF products · scroll to adjust",
-                        )
-                        .weak()
-                        .small(),
-                    );
-                });
-        });
-    let rect = area.response.rect;
-    app.min_dbz_bar_rect = Some(rect);
-
-    // Wheel over the bar = adjust the filter (5 dB per notch), consuming the
-    // wheel events so the map underneath cannot zoom. Driven from the raw
-    // events for one-notch-one-step crispness (see `consume_wheel_steps`).
-    let hovering = ctx.pointer_hover_pos().map_or(false, |p| rect.contains(p));
-    if hovering {
-        let mut acc = app.min_dbz_scroll_acc;
-        let steps = ctx.input_mut(|i| consume_wheel_steps(&mut i.events, &mut acc));
-        if steps != 0.0 || acc != app.min_dbz_scroll_acc {
-            // Kill the smoothed residual the consumed event would otherwise
-            // leave for the map's zoom to pick up.
-            ctx.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-        }
-        app.min_dbz_scroll_acc = acc;
-        if steps != 0.0 {
-            app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);
-        }
-    }
-}
-
 /// Tooltip for the warning polygons under the pointer, shown once the pointer
 /// has rested on them for a second (a passing pointer should not pop text).
 ///

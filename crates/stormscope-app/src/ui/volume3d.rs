@@ -335,13 +335,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         }
     }
     if resp.hovered() {
-        // The slider bar floats over the pane and owns the wheel there.
-        let over_bar = match (resp.hover_pos(), app.view3d_bar_rect) {
-            (Some(p), Some(bar)) => bar.contains(p),
-            _ => false,
-        };
+        // The display sliders live in the pane's Controls window now; the
+        // wheel always zooms the camera.
         let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
-        if !over_bar && scroll != 0.0 {
+        if scroll != 0.0 {
             let max_r_f = f64::from(max_r.max(20.0));
             let factor = (-f64::from(scroll) * 0.0015).exp();
             let d = (f64::from(app.state.view3d_dist_km).max(1.0) * factor)
@@ -503,118 +500,4 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     }
 
     // --- The three display sliders, bottom center --------------------------
-    display_slider_bar(ui, app, rect, scale, (lo, hi), moment);
-}
-
-/// The pane's floating slider bar: echo floor, opacity, height scale — the
-/// three things one monkey with while watching structure form. Mirrors the
-/// map's Min-dBZ bar (same idiom: floating `Area`, wheel owns adjustment).
-fn display_slider_bar(
-    ui: &mut egui::Ui,
-    app: &mut StormApp,
-    pane_rect: Rect,
-    scale: f32,
-    value_range: (f32, f32),
-    moment: radar_core::Moment,
-) {
-    let width = (pane_rect.width() * 0.92).min(760.0 * scale);
-    let pos = egui::pos2(
-        pane_rect.center().x - width / 2.0,
-        pane_rect.bottom() - 66.0 * scale,
-    );
-    let (lo, hi) = value_range;
-    let unit = moment.unit();
-
-    // Slider rects for wheel targeting (filled inside the frame).
-    let mut slider_rects: Vec<(u8, Rect)> = Vec::new();
-    let area = egui::Area::new(egui::Id::new("stormscope.volume3d.bar"))
-        .fixed_pos(pos)
-        .movable(false)
-        .interactable(true)
-        .constrain(false)
-        .fade_in(false)
-        .order(egui::Order::Foreground)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style())
-                .fill(Color32::from_black_alpha(225))
-                .show(ui, |ui| {
-                    ui.set_min_width(width - 24.0);
-                    ui.spacing_mut().slider_width = 118.0 * scale;
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new("Echo ≥")
-                                .small()
-                                .color(Color32::from_gray(200)),
-                        );
-                        let r = ui.add(
-                            egui::Slider::new(&mut app.state.view3d_threshold, lo..=hi)
-                                .step_by(1.0)
-                                .suffix(format!(" {unit}")),
-                        );
-                        slider_rects.push((0, r.rect));
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("Opacity")
-                                .small()
-                                .color(Color32::from_gray(200)),
-                        );
-                        let r = ui.add(
-                            egui::Slider::new(&mut app.state.view3d_alpha, 0.1..=1.0).step_by(0.05),
-                        );
-                        slider_rects.push((1, r.rect));
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("Height ×")
-                                .small()
-                                .color(Color32::from_gray(200)),
-                        );
-                        let r = ui.add(
-                            egui::Slider::new(&mut app.state.view3d_ve, 1.0..=20.0)
-                                .step_by(0.5)
-                                .suffix("×"),
-                        );
-                        slider_rects.push((2, r.rect));
-                    });
-                });
-        });
-    let rect = area.response.rect;
-    app.view3d_bar_rect = Some(rect);
-
-    // Wheel over the bar adjusts the slider under the pointer (and is
-    // consumed so the pane underneath cannot zoom). Raw events, one notch
-    // one step — same as the map's Min-dBZ bar.
-    let hovering = ui
-        .ctx()
-        .pointer_hover_pos()
-        .is_some_and(|p| rect.contains(p));
-    if hovering {
-        let mut acc = 0.0f32;
-        let steps = ui
-            .ctx()
-            .input_mut(|i| super::map::consume_wheel_steps(&mut i.events, &mut acc));
-        if steps != 0.0 {
-            ui.ctx()
-                .input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-            let target = ui.ctx().pointer_hover_pos().and_then(|p| {
-                slider_rects
-                    .iter()
-                    .find(|(_, r)| r.contains(p))
-                    .map(|(k, _)| *k)
-            });
-            match target {
-                Some(0) => {
-                    app.state.view3d_threshold =
-                        (app.state.view3d_threshold + 2.0 * steps).clamp(lo, hi);
-                }
-                Some(1) => {
-                    app.state.view3d_alpha =
-                        (app.state.view3d_alpha + 0.05 * steps).clamp(0.1, 1.0);
-                }
-                Some(2) => {
-                    app.state.view3d_ve = (app.state.view3d_ve + 0.5 * steps).clamp(1.0, 20.0);
-                }
-                _ => {}
-            }
-        }
-    }
 }

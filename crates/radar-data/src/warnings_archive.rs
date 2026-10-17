@@ -575,7 +575,6 @@ struct CrawlState {
 /// background politeness, not a flood.
 pub struct ArchiveCrawler {
     source: WarningArchiveSource,
-    dir: PathBuf,
     state_path: PathBuf,
     state: CrawlState,
     cached_days: usize,
@@ -601,8 +600,7 @@ impl ArchiveCrawler {
             });
         let cached_days = cached_day_count(&scope_dir(&dir));
         Self {
-            source: WarningArchiveSource::new(dir.clone()),
-            dir,
+            source: WarningArchiveSource::new(dir),
             state_path,
             state,
             cached_days,

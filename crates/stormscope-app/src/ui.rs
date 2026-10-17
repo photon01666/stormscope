@@ -62,6 +62,10 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Archive popup (opened from Settings).
     archive_window(ui.ctx(), app);
 
+    // Per-pane control windows (opened from each pane's bottom-right chip).
+    map_controls_window(ui.ctx(), app);
+    view3d_controls_window(ui.ctx(), app);
+
     // SPC discussion popup (clicking an outlook outline).
     outlook_detail_window(ui.ctx(), app);
     reports::lsr_detail_window(ui.ctx(), app);
@@ -88,6 +92,7 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
         // 3D closed: the map, with a small opener chip for discoverability.
         (false, _) => {
             crate::ui::map::map(ui, app);
+            app.map_rect_at = Some(full);
             let chip = pane_chip(
                 ui,
                 egui::pos2(full.max.x - 8.0 * scale, chip_y(full)),
@@ -99,11 +104,17 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
                 app.state.view3d_open = true;
                 app.state.pane_max = PaneMax::None;
             }
+            let controls = pane_chip_bottom(ui, bottom_right(full, scale), "Controls", scale)
+                .on_hover_text("Map display controls (Min dBZ, opacity)");
+            if controls.clicked() {
+                app.state.map_controls_open = !app.state.map_controls_open;
+            }
         }
         // The 3D pane maximized: volume fills the middle, "Split" brings the
         // map back and "Fit" re-frames the camera.
         (true, PaneMax::View3d) => {
             crate::ui::volume3d::show_pane(ui, app, full);
+            app.view3d_rect_at = Some(full);
             let fit = pane_chip(
                 ui,
                 egui::pos2(full.max.x - 8.0 * scale, chip_y(full)),
@@ -124,10 +135,16 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             if split.clicked() {
                 app.state.pane_max = PaneMax::None;
             }
+            let controls = pane_chip_bottom(ui, bottom_right(full, scale), "Controls", scale)
+                .on_hover_text("3D display controls (echo, opacity, height, tilt, altitude)");
+            if controls.clicked() {
+                app.state.view3d_controls_open = !app.state.view3d_controls_open;
+            }
         }
         // The map maximized (3D still on, one click away).
         (true, PaneMax::Map) => {
             crate::ui::map::map(ui, app);
+            app.map_rect_at = Some(full);
             let split = pane_chip(
                 ui,
                 egui::pos2(full.max.x - 8.0 * scale, chip_y(full)),
@@ -137,6 +154,11 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             .on_hover_text("Show the 3D view beside the map again");
             if split.clicked() {
                 app.state.pane_max = PaneMax::None;
+            }
+            let controls = pane_chip_bottom(ui, bottom_right(full, scale), "Controls", scale)
+                .on_hover_text("Map display controls (Min dBZ, opacity)");
+            if controls.clicked() {
+                app.state.map_controls_open = !app.state.map_controls_open;
             }
         }
         // Side-by-side split with a draggable divider.
@@ -207,7 +229,315 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             if v3_max.clicked() {
                 app.state.pane_max = PaneMax::View3d;
             }
+            app.map_rect_at = Some(map_rect);
+            app.view3d_rect_at = Some(v3_rect);
+            let map_controls =
+                pane_chip_bottom(ui, bottom_right(map_rect, scale), "Controls", scale)
+                    .on_hover_text("Map display controls (Min dBZ, opacity)");
+            let v3_controls = pane_chip_bottom(ui, bottom_right(v3_rect, scale), "Controls", scale)
+                .on_hover_text("3D display controls (echo, opacity, height, tilt, altitude)");
+            if map_controls.clicked() {
+                app.state.map_controls_open = !app.state.map_controls_open;
+            }
+            if v3_controls.clicked() {
+                app.state.view3d_controls_open = !app.state.view3d_controls_open;
+            }
         }
+    }
+}
+
+/// Bottom-right anchor for a pane's chips.
+fn bottom_right(rect: egui::Rect, scale: f32) -> egui::Pos2 {
+    egui::pos2(rect.max.x - 8.0 * scale, rect.max.y - 8.0 * scale)
+}
+
+/// Like [`pane_chip`], but pinned by its bottom-right corner.
+fn pane_chip_bottom(
+    ui: &mut egui::Ui,
+    right_bottom: egui::Pos2,
+    label: &str,
+    scale: f32,
+) -> egui::Response {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE);
+    let size = galley.size() + egui::vec2(16.0 * scale, 9.0 * scale);
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(right_bottom.x - size.x, right_bottom.y - size.y),
+        size,
+    );
+    ui.put(
+        rect,
+        egui::Button::new(egui::RichText::new(label).small())
+            .fill(egui::Color32::from_black_alpha(170)),
+    )
+}
+
+/// Place a controls window near the matching pane's bottom-right, clamped
+/// into the screen. `pane` is the pane's last drawn rect (None before first
+/// layout: falls back to the screen corner).
+fn anchored_pos(
+    ctx: &egui::Context,
+    pane: Option<egui::Rect>,
+    size: egui::Vec2,
+    scale: f32,
+) -> egui::Pos2 {
+    let screen = ctx.content_rect();
+    let margin = 12.0 * scale;
+    let want = match pane {
+        Some(r) => egui::pos2(
+            r.max.x - size.x - margin,
+            r.max.y - size.y - margin - 26.0 * scale,
+        ),
+        None => egui::pos2(
+            screen.max.x - size.x - margin,
+            screen.max.y - size.y - margin,
+        ),
+    };
+    egui::pos2(
+        want.x.clamp(
+            screen.min.x + margin,
+            (screen.max.x - size.x - margin).max(screen.min.x + margin),
+        ),
+        want.y.clamp(
+            screen.min.y + margin,
+            (screen.max.y - size.y - margin).max(screen.min.y + margin),
+        ),
+    )
+}
+
+/// Wheel over one of a control window's sliders adjusts it (one notch, one
+/// step) and consumes the event, so the pane underneath cannot zoom.
+fn control_window_wheel(
+    ui: &egui::Ui,
+    sliders: &[(u8, egui::Rect)],
+    mut apply: impl FnMut(u8, f32),
+) {
+    let Some(pointer) = ui.ctx().pointer_hover_pos() else {
+        return;
+    };
+    if !sliders.iter().any(|(_, r)| r.contains(pointer)) {
+        return;
+    }
+    let mut acc = 0.0f32;
+    let steps = ui
+        .ctx()
+        .input_mut(|i| map::consume_wheel_steps(&mut i.events, &mut acc));
+    if steps == 0.0 {
+        return;
+    }
+    ui.ctx()
+        .input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+    if let Some((target, _)) = sliders.iter().find(|(_, r)| r.contains(pointer)) {
+        apply(*target, steps);
+    }
+}
+
+/// The 2D map's display controls (its bottom-right "Controls" chip).
+fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
+    if !app.state.map_controls_open {
+        return;
+    }
+    let scale = app.sidebar_scale.max(1.0);
+    let size = egui::vec2(300.0 * scale, 132.0 * scale);
+    let mut open = true;
+    egui::Window::new("Map controls")
+        .id(egui::Id::new("stormscope.map_controls"))
+        .open(&mut open)
+        .resizable(false)
+        .default_size(size)
+        .default_pos(anchored_pos(ctx, app.map_rect_at, size, scale))
+        .show(ctx, |ui| {
+            apply_text_scale(ui, scale);
+            let mut sliders: Vec<(u8, egui::Rect)> = Vec::new();
+            let ref_moment = matches!(
+                app.state.moment,
+                Moment::Reflectivity | Moment::CompositeReflectivity
+            );
+            if ref_moment {
+                let r = ui.add(
+                    egui::Slider::new(&mut app.state.min_dbz, 0.0..=75.0)
+                        .step_by(5.0)
+                        .text("Min dBZ"),
+                );
+                sliders.push((0, r.rect));
+                ui.label(
+                    egui::RichText::new("filters weak returns on REF products · scroll to adjust")
+                        .weak()
+                        .small(),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("Min dBZ applies to REF products only")
+                        .weak()
+                        .small(),
+                );
+            }
+            let r = ui.add(egui::Slider::new(&mut app.state.opacity, 0.0..=1.0).text("Opacity"));
+            sliders.push((1, r.rect));
+            control_window_wheel(ui, &sliders, |target, steps| match target {
+                0 => {
+                    app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);
+                }
+                1 => {
+                    app.state.opacity = (app.state.opacity + 0.05 * steps).clamp(0.0, 1.0);
+                }
+                _ => {}
+            });
+        });
+    if !open {
+        app.state.map_controls_open = false;
+    }
+}
+
+/// The 3D pane's display controls (its bottom-right "Controls" chip).
+fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
+    if !app.state.view3d_controls_open || !app.state.view3d_open {
+        return;
+    }
+    let scale = app.sidebar_scale.max(1.0);
+    let size = egui::vec2(330.0 * scale, 260.0 * scale);
+    let mut open = true;
+    egui::Window::new("3D controls")
+        .id(egui::Id::new("stormscope.view3d_controls"))
+        .open(&mut open)
+        .resizable(false)
+        .default_size(size)
+        .default_pos(anchored_pos(ctx, app.view3d_rect_at, size, scale))
+        .show(ctx, |ui| {
+            apply_text_scale(ui, scale);
+            let mut sliders: Vec<(u8, egui::Rect)> = Vec::new();
+            let (lo, hi) = radar_render::ColorTable::for_moment(app.state.moment).range();
+            ui.horizontal(|ui| {
+                ui.label("Echo ≥");
+                let r = ui
+                    .add(egui::Slider::new(&mut app.state.view3d_threshold, lo..=hi).step_by(1.0));
+                sliders.push((0, r.rect));
+            });
+            let r =
+                ui.add(egui::Slider::new(&mut app.state.view3d_alpha, 0.1..=1.0).text("Opacity"));
+            sliders.push((1, r.rect));
+            let r = ui.add(
+                egui::Slider::new(&mut app.state.view3d_ve, 1.0..=20.0)
+                    .step_by(0.5)
+                    .text("Height ×"),
+            );
+            sliders.push((2, r.rect));
+
+            let mut tilts: Vec<f32> = app
+                .state
+                .current()
+                .map(|f| {
+                    f.volume
+                        .sweeps
+                        .iter()
+                        .filter(|sw| sw.moment(app.state.moment).is_some())
+                        .map(|sw| sw.elevation_deg)
+                        .collect()
+                })
+                .unwrap_or_default();
+            tilts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            tilts.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+            ui.horizontal(|ui| {
+                ui.label("Tilt");
+                let label =
+                    |v: Option<f32>| v.map_or_else(|| "all".to_string(), |t| format!("{t:.1}°"));
+                egui::ComboBox::from_id_salt("view3d-tilt-lo")
+                    .selected_text(label(app.state.view3d_tilt_lo))
+                    .width(64.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut app.state.view3d_tilt_lo, None, "all");
+                        for t in &tilts {
+                            ui.selectable_value(
+                                &mut app.state.view3d_tilt_lo,
+                                Some(*t),
+                                format!("{t:.1}°"),
+                            );
+                        }
+                    });
+                ui.label("to");
+                egui::ComboBox::from_id_salt("view3d-tilt-hi")
+                    .selected_text(label(app.state.view3d_tilt_hi))
+                    .width(64.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut app.state.view3d_tilt_hi, None, "all");
+                        for t in &tilts {
+                            ui.selectable_value(
+                                &mut app.state.view3d_tilt_hi,
+                                Some(*t),
+                                format!("{t:.1}°"),
+                            );
+                        }
+                    });
+            });
+            if let (Some(lo), Some(hi)) = (app.state.view3d_tilt_lo, app.state.view3d_tilt_hi) {
+                if lo > hi {
+                    app.state.view3d_tilt_hi = Some(lo);
+                }
+            }
+
+            let r = ui.add(
+                egui::Slider::new(&mut app.state.view3d_alt_lo_ft, 0.0..=65_000.0)
+                    .step_by(1_000.0)
+                    .text("Altitude from")
+                    .suffix(" ft"),
+            );
+            sliders.push((3, r.rect));
+            let r = ui.add(
+                egui::Slider::new(&mut app.state.view3d_alt_hi_ft, 0.0..=65_000.0)
+                    .step_by(1_000.0)
+                    .text("Altitude to")
+                    .suffix(" ft"),
+            );
+            sliders.push((4, r.rect));
+            if app.state.view3d_alt_lo_ft > app.state.view3d_alt_hi_ft {
+                app.state.view3d_alt_hi_ft = app.state.view3d_alt_lo_ft;
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("Detail");
+                egui::ComboBox::from_id_salt("view3d-detail")
+                    .selected_text(app.state.view3d_detail.label())
+                    .show_ui(ui, |ui| {
+                        for d in radar_render::MeshDetail::ALL {
+                            ui.selectable_value(&mut app.state.view3d_detail, d, d.label());
+                        }
+                    });
+                if ui
+                    .button("Fit view")
+                    .on_hover_text("Re-fit the camera to this volume")
+                    .clicked()
+                {
+                    crate::ui::volume3d::fit_view(&mut app.state);
+                }
+            });
+
+            control_window_wheel(ui, &sliders, |target, steps| match target {
+                0 => {
+                    app.state.view3d_threshold =
+                        (app.state.view3d_threshold + 2.0 * steps).clamp(lo, hi);
+                }
+                1 => {
+                    app.state.view3d_alpha =
+                        (app.state.view3d_alpha + 0.05 * steps).clamp(0.1, 1.0);
+                }
+                2 => {
+                    app.state.view3d_ve = (app.state.view3d_ve + 0.5 * steps).clamp(1.0, 20.0);
+                }
+                3 => {
+                    app.state.view3d_alt_lo_ft = (app.state.view3d_alt_lo_ft + 1_000.0 * steps)
+                        .clamp(0.0, app.state.view3d_alt_hi_ft);
+                }
+                4 => {
+                    app.state.view3d_alt_hi_ft = (app.state.view3d_alt_hi_ft + 1_000.0 * steps)
+                        .clamp(app.state.view3d_alt_lo_ft, 65_000.0);
+                }
+                _ => {}
+            });
+        });
+    if !open {
+        app.state.view3d_controls_open = false;
     }
 }
 
@@ -545,21 +875,8 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         app.state.tilt_deg = *t;
     }
 
-    // Opacity.
-    ui.add_space(6.0);
-    ui.label("Opacity");
-    ui.add(egui::Slider::new(&mut app.state.opacity, 0.0..=1.0));
-
-    // Min dBZ filter — suppresses weak returns (clear-air clutter/noise).
-    // Only affects Reflectivity-family products.
-    ui.add_space(6.0);
-    ui.label("Min dBZ (REF)");
-    ui.add(egui::Slider::new(&mut app.state.min_dbz, 0.0..=75.0).step_by(5.0));
-    ui.label(
-        egui::RichText::new("filters weak returns on REF products")
-            .weak()
-            .small(),
-    );
+    // The radar display sliders (opacity / Min dBZ) moved into the map's
+    // "Controls" window, bottom-right of the map itself.
 
     // Alerts toggle.
     ui.add_space(6.0);
@@ -608,9 +925,10 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         .on_hover_text(
             "All elevation cuts of the current scan as one rotatable volume, \
              beside the map: drag the 3D pane to orbit, right-drag (or \
-             middle-drag) to pan freely, wheel to zoom, double-click (or Fit) \
-             to re-frame. The \"Max\" chip maximizes either pane; the divider \
-             between them drags",
+             middle-drag) to pan freely, wheel to zoom, double-click (or \
+             Fit) to re-frame, and the bottom-right \"Controls\" chip opens \
+             the display sliders. The \"Max\" chip maximizes either pane; \
+             the divider between them drags",
         )
         .changed()
     {
@@ -619,100 +937,8 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.pane_max = crate::state::PaneMax::None;
         }
     }
-    if app.state.view3d_open {
-        let (lo, hi) = radar_render::ColorTable::for_moment(app.state.moment).range();
-        // Quick controls (echo floor / opacity / height) live at the pane's
-        // bottom center too; these stay as the settings home.
-        ui.horizontal(|ui| {
-            ui.label("Echo ≥");
-            ui.add(egui::Slider::new(&mut app.state.view3d_threshold, lo..=hi).step_by(1.0));
-        });
-        ui.add(egui::Slider::new(&mut app.state.view3d_alpha, 0.1..=1.0).text("3D opacity"));
-        ui.add(egui::Slider::new(&mut app.state.view3d_ve, 1.0..=20.0).text("Height ×"));
-
-        // Tilt range: which cuts the 3D scene includes (all of them by
-        // default). Options come from the volume on screen.
-        let mut tilts: Vec<f32> = app
-            .state
-            .current()
-            .map(|f| {
-                f.volume
-                    .sweeps
-                    .iter()
-                    .filter(|s| s.moment(app.state.moment).is_some())
-                    .map(|s| s.elevation_deg)
-                    .collect()
-            })
-            .unwrap_or_default();
-        tilts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        tilts.dedup_by(|a, b| (*a - *b).abs() < 0.01);
-        ui.horizontal(|ui| {
-            ui.label("Tilt");
-            let label =
-                |v: Option<f32>| v.map_or_else(|| "all".to_string(), |t| format!("{t:.1}°"));
-            egui::ComboBox::from_id_salt("view3d-tilt-lo")
-                .selected_text(label(app.state.view3d_tilt_lo))
-                .width(64.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut app.state.view3d_tilt_lo, None, "all");
-                    for t in &tilts {
-                        ui.selectable_value(
-                            &mut app.state.view3d_tilt_lo,
-                            Some(*t),
-                            format!("{t:.1}°"),
-                        );
-                    }
-                });
-            ui.label("to");
-            egui::ComboBox::from_id_salt("view3d-tilt-hi")
-                .selected_text(label(app.state.view3d_tilt_hi))
-                .width(64.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut app.state.view3d_tilt_hi, None, "all");
-                    for t in &tilts {
-                        ui.selectable_value(
-                            &mut app.state.view3d_tilt_hi,
-                            Some(*t),
-                            format!("{t:.1}°"),
-                        );
-                    }
-                });
-        });
-        if let (Some(lo), Some(hi)) = (app.state.view3d_tilt_lo, app.state.view3d_tilt_hi) {
-            if lo > hi {
-                app.state.view3d_tilt_hi = Some(lo);
-            }
-        }
-
-        // Altitude slab, in feet (the 3D pane speaks miles and feet).
-        ui.add(
-            egui::Slider::new(&mut app.state.view3d_alt_lo_ft, 0.0..=65_000.0)
-                .step_by(1_000.0)
-                .text("Altitude from")
-                .suffix(" ft"),
-        );
-        ui.add(
-            egui::Slider::new(&mut app.state.view3d_alt_hi_ft, 0.0..=65_000.0)
-                .step_by(1_000.0)
-                .text("Altitude to")
-                .suffix(" ft"),
-        );
-        if app.state.view3d_alt_lo_ft > app.state.view3d_alt_hi_ft {
-            app.state.view3d_alt_hi_ft = app.state.view3d_alt_lo_ft;
-        }
-
-        ui.horizontal(|ui| {
-            ui.label("Detail");
-            egui::ComboBox::from_id_salt("view3d-detail")
-                .selected_text(app.state.view3d_detail.label())
-                .show_ui(ui, |ui| {
-                    for d in radar_render::MeshDetail::ALL {
-                        ui.selectable_value(&mut app.state.view3d_detail, d, d.label());
-                    }
-                });
-        });
-    }
-
+    // The 3D display controls (echo / opacity / height / tilt / altitude /
+    // detail) live in the pane's own "Controls" window now.
     // --- SPC convective outlook overlay ------------------------------------
     ui.add_space(6.0);
     let toggled = ui

@@ -152,22 +152,15 @@ pub struct StormApp {
     /// GPU resources of the 3D volume pane, created on first use (see
     /// [`crate::render3d`]).
     pub view3d: Option<crate::render3d::Volume3d>,
-    /// Last frame's rect of the floating Min-dBZ bar over the map (screen
-    /// coords). The map's wheel-zoom skips while the pointer is inside it, so
-    /// a scroll there adjusts the filter instead of zooming the map.
-    pub min_dbz_bar_rect: Option<egui::Rect>,
-    /// Same, for the 3D pane's display-slider bar: the pane's wheel-zoom
-    /// skips while the pointer is on it (the wheel adjusts the slider under
-    /// the pointer instead).
-    pub view3d_bar_rect: Option<egui::Rect>,
+    /// Last frame's rects of the two panes (screen coords): the pane control
+    /// windows anchor themselves near the matching pane's bottom-right.
+    pub map_rect_at: Option<egui::Rect>,
+    pub view3d_rect_at: Option<egui::Rect>,
     /// When the 3D camera last moved (drag/wheel/WASD). The map's raster gate
     /// treats this as motion: while the user is flying the 3D pane, the
     /// radar raster must not fire on every playback tick and spike the UI
     /// thread — it settles as soon as the 3D camera does.
     pub view3d_interact_at: std::time::Instant,
-    /// Sub-notch wheel residue (points) for the Min-dBZ bar, so touchpad
-    /// scrolls accumulate into whole steps instead of being dropped.
-    pub min_dbz_scroll_acc: f32,
     /// Cache section awaiting the user's "yes" in the clear-cache dialog.
     /// Set by the Settings menu, cleared when the dialog is dismissed.
     pub confirm_clear: Option<ClearTarget>,
@@ -289,10 +282,9 @@ impl StormApp {
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
             view3d: None,
-            min_dbz_bar_rect: None,
-            view3d_bar_rect: None,
+            map_rect_at: None,
+            view3d_rect_at: None,
             view3d_interact_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
-            min_dbz_scroll_acc: 0.0,
             top_badge_hovered: None,
             map_alert_cycle: None,
             frame_count: 0,

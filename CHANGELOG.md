@@ -5,7 +5,7 @@ log; entries start at the first public release.
 
 ## v1.2.9 — 2026-10-17
 
-**The 3D loop stopped skipping frames**
+**The 3D loop stops skipping frames**
 - Two bugs stacked: a finished mesh was discarded whenever the playhead had
   moved past it (so a pane whose builds are slower than the tick showed only
   the frames that happened to win the race — "plays a few, then pauses"),
@@ -14,14 +14,49 @@ log; entries start at the first public release.
   is displayed (strictly monotonic; a frame one behind is the intended
   playback behavior, unit-tested), and while a build is pending the pane
   asks for a repaint 30 ms out so meshes land the moment they are ready.
-  The 3D pass itself stays on-demand.
 
-**Alerts group by category**
-- Both the live lists (All US / station) and the Archive tab render
-  per-event sections with counts, ordered convective-first: Tornado,
-  Severe Thunderstorm, Flash Flood, Flood, Marine, then winter / wind /
-  heat / fog / fire, then everything else alphabetically. Within a section
-  the existing ordering is preserved, and the filter still narrows first.
+**The alerts archive grows up**
+- New **`Archive: <SITE>`** tab: the archive day restricted to warnings the
+  station *owns* — it is the radar nearest the warning's polygon. Neighbors'
+  warnings (Tulsa's, Omaha's) stay in their own tabs; county-based events
+  carry no coordinates and never appear in a station-restricted view.
+- Clicking a historical warning's polygon on the map opens its **archived
+  NWS text** — the day-files carry metadata and polygons only, so the full
+  bulletin is fetched once from IEM's product archive (on demand, cached
+  forever, deduped); the popup also carries "load radar at this time" and
+  "center map".
+- Row-index fix: rows in the station tab carried *filtered* positions into
+  the jump action (which addresses the full list), so a click could load a
+  different warning entirely — a Topeka row opened a Midland polygon, in
+  the field. Rows now carry their true indices.
+
+**Alerts UI speaks miles and reads clearly**
+- Rows read "42.1 mi SSW of KTWX" (brief tooltips and archive rows too),
+  the station radius shows "~250 mi", the station tab label carries the
+  city ("KTWX Topeka"), and its header names the station, city and area.
+- Every list groups by category: per-event sections with counts, ordered
+  convective-first (Tornado → Severe Thunderstorm → Flash Flood → Flood →
+  Marine → winter / wind / heat / fog / fire → everything else).
+
+**Pane controls get their own windows**
+- Each pane has a bottom-right **"Controls"** chip opening that pane's
+  display settings: 3D (echo floor, opacity, height scale, tilt range,
+  altitude slab in feet, mesh detail, fit view) and map (Min dBZ, opacity).
+  Scrolling over a slider adjusts it one step. The old floating bars are
+  gone; everything else stays in the side panel.
+- The archive day is a **clickable calendar** in both the alerts Archive
+  tab and the Settings archive popup (month navigation, clamped to today).
+
+**Going live is obvious — and reliable**
+- **"GO LIVE" / "● LIVE"** sits in the badge row right of Forecast: red and
+  pulsing while browsing history, dim green on the newest scan. GO LIVE now
+  carries the UI's selected site with it, and a mismatched volume stream
+  logs a loud warning naming the site to pick — a silent site desync used
+  to drop every volume (an empty map while the decoder hummed along).
+- A top-center **download progress pill** shows bulk loads with a spinner
+  and real counts ("Downloading KTWX live radar · 13/24", archive windows
+  included), flipping to "rendering" at 100% and fading out — a
+  multi-second fill no longer reads as a stall.
 
 ## v1.2.8 — 2026-10-17
 

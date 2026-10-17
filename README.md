@@ -11,12 +11,6 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/photon01666/stormscope)](https://github.com/photon01666/stormscope/releases)
 
-<!--
-Screenshot regeneration: focus stormscope, then
-    grim -g "$(hyprctl -j clients | jq -r '.[] | select(.class=="stormscope") | "\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')" /tmp/shot.png
-    magick /tmp/shot.png -resize 1600x docs/screenshot.png
--->
-![stormscope: the full-US view with station totals on the map, storm reports, SPC outlook outlines and the alerts badge](docs/screenshot.png)
 
 ## Features
 

@@ -126,6 +126,14 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     // frame instead of stalling anything.
     v3.pump_scene(&render_state.device, &render_state.queue);
     v3.request_scene(volume.clone(), filter, sig);
+    // Waking only on the playback tick made completions wait up to a full
+    // tick to be shown (and drove the old discard behavior). Ask for a
+    // repaint shortly while a build is in flight so the finished mesh lands
+    // the moment it is ready; the 3D pass itself stays on-demand.
+    if v3.has_pending() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(30));
+    }
 
     // Threshold lives in the moment's units; keep it inside the table range
     // when the moment changes (a 70 dBZ threshold makes no sense for CC).

@@ -106,6 +106,14 @@ pub struct Volume3d {
     done_rx: std::sync::mpsc::Receiver<MeshDone>,
     wanted: Option<MeshJob>,
     in_flight: Option<u64>,
+    /// Monotonic request sequence (playback requests them in playhead order)
+    /// and the sequence currently on screen. A finished build uploads when it
+    /// is *newer than what is displayed*, even if the playhead has since
+    /// moved on — a frame one behind is the intended playback behavior, and
+    /// discarding it (the old rule) made the pane skip every frame whose
+    /// build didn't beat the next tick.
+    job_seq: u64,
+    displayed_seq: u64,
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     /// Allocated capacities: playback rebuilds the scene every tick, and
@@ -419,7 +427,14 @@ impl Volume3d {
             .spawn(move || {
                 while let Ok(job) = job_rx.recv() {
                     let mesh = build_volume_mesh(&job.volume, &job.filter);
-                    if done_tx.send(MeshDone { sig: job.sig, mesh }).is_err() {
+                    if done_tx
+                        .send(MeshDone {
+                            sig: job.sig,
+                            seq: job.seq,
+                            mesh,
+                        })
+                        .is_err()
+                    {
                         break; // pane gone
                     }
                 }
@@ -450,6 +465,8 @@ impl Volume3d {
             done_rx,
             wanted: None,
             in_flight: None,
+            job_seq: 0,
+            displayed_seq: 0,
             vbuf: empty("stormscope.volume3d.vbuf", wgpu::BufferUsages::VERTEX, 4),
             ibuf: empty("stormscope.volume3d.ibuf", wgpu::BufferUsages::INDEX, 4),
             vbuf_cap: 4,
@@ -523,8 +540,10 @@ impl Volume3d {
         {
             return;
         }
+        self.job_seq += 1;
         self.wanted = Some(MeshJob {
             sig,
+            seq: self.job_seq,
             volume,
             filter,
         });
@@ -551,10 +570,16 @@ impl Volume3d {
         while let Ok(done) = self.done_rx.try_recv() {
             self.in_flight = None;
             let wanted_sig = self.wanted.as_ref().map(|j| j.sig);
-            let stale = wanted_sig.is_some_and(|w| w != done.sig);
-            if !stale {
+            // The old rule discarded any build whose frame the playhead had
+            // moved past: a pane whose builds are slower than the tick then
+            // showed *nothing* new while playing (a marginal one showed only
+            // the lucky frames). Now every finished build newer than the
+            // displayed one is shown; only out-of-order older completions
+            // are dropped.
+            if scene_should_upload(self.displayed_seq, done.seq) {
                 self.upload_mesh(device, queue, done.mesh);
                 self.scene_sig = Some(done.sig);
+                self.displayed_seq = done.seq;
                 self.last_key = None;
                 uploaded = true;
             }
@@ -564,6 +589,13 @@ impl Volume3d {
             self.start_wanted();
         }
         uploaded
+    }
+
+    /// Whether a scene build (or a request) is still pending — the pane uses
+    /// this to pump completions promptly instead of waiting for the next
+    /// playback tick.
+    pub fn has_pending(&self) -> bool {
+        self.in_flight.is_some() || self.wanted.is_some()
     }
 
     /// Upload a built mesh into the persistent (capacity-grown) buffers.
@@ -1146,6 +1178,7 @@ fn gfs_main(in: GroundOut) -> @location(0) vec4<f32> {
 /// One outstanding mesh build.
 struct MeshJob {
     sig: u64,
+    seq: u64,
     volume: std::sync::Arc<Volume>,
     filter: MeshFilter,
 }
@@ -1153,7 +1186,14 @@ struct MeshJob {
 /// A finished mesh on its way back to the UI thread.
 struct MeshDone {
     sig: u64,
+    seq: u64,
     mesh: VolumeMesh,
+}
+
+/// Show a finished build when it is newer than what is on screen (strictly
+/// monotonic: a late older completion must not replace a newer frame).
+fn scene_should_upload(displayed_seq: u64, done_seq: u64) -> bool {
+    done_seq > displayed_seq
 }
 
 /// Write `bytes` into `buf`, growing the allocation (to 1.5x what is
@@ -1224,7 +1264,21 @@ fn render_decision(
 
 #[cfg(test)]
 mod tests {
-    use super::{RenderDecision, SETTLE_MS, render_decision};
+    use super::{RenderDecision, SETTLE_MS, render_decision, scene_should_upload};
+
+    #[test]
+    fn playback_uploads_forward_only() {
+        // First build ever: shown.
+        assert!(scene_should_upload(0, 1));
+        // The playhead moved on while building: the finished frame is still
+        // newer than what is displayed, so it is shown (one frame behind —
+        // the intended playback behavior).
+        assert!(scene_should_upload(4, 5));
+        assert!(scene_should_upload(4, 9));
+        // An older completion (out of order) never replaces a newer frame.
+        assert!(!scene_should_upload(9, 8));
+        assert!(!scene_should_upload(9, 9));
+    }
 
     #[test]
     fn first_frame_is_interactive() {

@@ -35,6 +35,12 @@ pub enum DataMsg {
     ClearFrames,
     /// Warning-archive backfill status (crawler progress).
     ArchiveCrawl(radar_data::warnings_archive::CrawlStatus),
+    /// One historical warning's raw NWS product text (`None` = the fetch
+    /// failed; an Error message accompanies it).
+    ArchiveText {
+        id: String,
+        text: Option<String>,
+    },
     /// Historical warnings for one Central day (the alerts archive tab).
     ArchiveWarnings {
         date: chrono::NaiveDate,
@@ -69,6 +75,9 @@ pub enum DataCmd {
     /// Load the historical warnings for one Central day (cache-first, one
     /// or two small day-file requests; never polled).
     LoadArchiveWarnings(chrono::NaiveDate),
+    /// Fetch one archived warning's NWS product text (cache-first; the
+    /// request happens only when the user opens that warning's details).
+    LoadArchiveText(String),
     /// Load the newest ~1 hour of scans into the ring for immediate looping.
     LoadLastHour(String),
     /// Page the loaded archive day earlier (-1) or later (+1).
@@ -490,6 +499,10 @@ impl StormApp {
                 }
                 DataMsg::ArchiveCrawl(status) => {
                     self.state.archive_crawl = Some(status);
+                }
+                DataMsg::ArchiveText { id, text } => {
+                    self.state.archive_text_requested.remove(&id);
+                    self.state.archive_texts.insert(id, text);
                 }
                 DataMsg::ArchiveWarnings { date, warnings } => {
                     self.state.archive_warning_view =

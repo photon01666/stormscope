@@ -161,10 +161,12 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             app.map_alert_cycle = Some((at, ids, idx));
                         } else if let Some(idx) = archive_click_target(app, &view, lon, lat, cx, cy)
                         {
-                            // Historical-warning overlay: clicking one loads
-                            // the radar at its time (the live feed has
-                            // nothing here; the overlay is the era shown).
-                            super::alerts::jump_to_warning(app, idx);
+                            // Historical-warning overlay: clicking one opens
+                            // its archived NWS text (fetched once, on demand);
+                            // the popup carries the radar-at-this-time button.
+                            if let Some(w) = app.state.archive_warnings.get(idx) {
+                                app.state.archive_detail = Some(w.id.clone());
+                            }
                             app.map_alert_cycle = None;
                         } else {
                             // Clicked off the warnings: the next click on a
@@ -1209,8 +1211,11 @@ fn archive_overlay_active(app: &StormApp) -> bool {
     if day != app.state.archive_date {
         return false;
     }
-    let browsing =
-        app.state.alerts_popup_open && app.state.alerts_tab == crate::state::AlertsTab::Archive;
+    let browsing = app.state.alerts_popup_open
+        && matches!(
+            app.state.alerts_tab,
+            crate::state::AlertsTab::Archive | crate::state::AlertsTab::ArchiveStation
+        );
     browsing || app.state.mode == crate::state::Mode::Archive
 }
 
@@ -1299,7 +1304,7 @@ fn draw_archive_warnings(
         };
         let expires = w.expires.with_timezone(tz).format("%H:%M");
         let text = format!(
-            "historical · {} · WFO {} · {} → {} CDT · click: load this radar",
+            "historical · {} · WFO {} · {} → {} CDT · click: NWS text + radar",
             w.event, w.office, issued, expires
         );
         if let Some(p) = painter.ctx().pointer_hover_pos() {
@@ -1982,7 +1987,7 @@ fn warning_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormAp
             // per-panel scaling; give the text the same monitor-aware scale
             // as the sidebar and the windows.
             super::apply_text_scale(ui, app.sidebar_scale.max(1.0));
-            super::alerts::brief_alert_ui(ui, w, site_lat, site_lon);
+            super::alerts::brief_alert_ui(ui, w, site_lat, site_lon, &app.state.site_id);
             if !behind.is_empty() {
                 ui.label(
                     egui::RichText::new(format!("stacked here as well: {}", behind.join(", ")))

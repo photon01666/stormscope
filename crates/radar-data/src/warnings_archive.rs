@@ -115,6 +115,9 @@ pub fn scope_dir(root: &std::path::Path) -> PathBuf {
 pub struct WarningArchiveSource {
     client: reqwest::blocking::Client,
     cache_dir: PathBuf,
+    /// Raw NWS product texts (one file per PRODUCT_ID) — the day files carry
+    /// metadata + polygons only.
+    text_dir: PathBuf,
 }
 
 impl WarningArchiveSource {
@@ -123,6 +126,7 @@ impl WarningArchiveSource {
     /// scope are removed (they were fetched with a different filter).
     pub fn new(root: PathBuf) -> Self {
         let cache_dir = scope_dir(&root);
+        let text_dir = root.join("text");
         if !cache_dir.exists() {
             std::fs::create_dir_all(&cache_dir).ok();
             if let Ok(entries) = std::fs::read_dir(&root) {
@@ -135,10 +139,10 @@ impl WarningArchiveSource {
                 log::info!("warning archive: cache scope bumped, old day-files removed");
             }
         }
-        Self::with_dir(cache_dir)
+        Self::with_dir(cache_dir, text_dir)
     }
 
-    fn with_dir(cache_dir: PathBuf) -> Self {
+    fn with_dir(cache_dir: PathBuf, text_dir: PathBuf) -> Self {
         let client = reqwest::blocking::Client::builder()
             .user_agent(concat!(
                 "stormscope/",
@@ -149,7 +153,11 @@ impl WarningArchiveSource {
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("warning archive http client");
-        Self { client, cache_dir }
+        Self {
+            client,
+            cache_dir,
+            text_dir,
+        }
     }
 
     /// All warnings for one Central... no: one **UTC** day (the archive's
@@ -202,13 +210,19 @@ impl WarningArchiveSource {
             next.format("%-m"),
             next.format("%-d"),
         );
+        self.get_bytes(&url)
+    }
+
+    /// GET with the shared politeness: two retries with growing backoff (a
+    /// rate-limit response gets the longest one). Used for day files and for
+    /// the on-demand product texts.
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
         let mut last_err: Option<anyhow::Error> = None;
         for (attempt, backoff) in [0u32, 1, 2].iter().enumerate() {
             if attempt > 0 {
-                // Backoff, longer on rate-limit responses.
                 std::thread::sleep(std::time::Duration::from_secs(2 + 6 * u64::from(*backoff)));
             }
-            match self.client.get(&url).send() {
+            match self.client.get(url).send() {
                 Ok(resp) if resp.status().is_success() => match resp.bytes() {
                     Ok(b) if !b.is_empty() => return Ok(b.to_vec()),
                     Ok(_) => last_err = Some(anyhow!("empty archive response")),
@@ -224,6 +238,25 @@ impl WarningArchiveSource {
             }
         }
         Err(last_err.unwrap_or_else(|| anyhow!("archive fetch failed")))
+    }
+
+    /// The raw NWS product text for one archived warning, by `PROD_ID`
+    /// (e.g. `202610170121-PGUM-WHMY50-SMWGUM`). Fetched once, cached
+    /// forever — the archive is immutable. The request only happens when
+    /// the user opens a historical warning's details.
+    pub fn product_text(&self, product_id: &str) -> Result<String> {
+        let path = self.text_dir.join(format!("{product_id}.txt"));
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            return Ok(text);
+        }
+        let url = format!("https://mesonet.agron.iastate.edu/api/1/nwstext/{product_id}");
+        let bytes = self.get_bytes(&url)?;
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        std::fs::create_dir_all(&self.text_dir).ok();
+        let tmp = path.with_extension("txt.part");
+        std::fs::write(&tmp, &text).ok();
+        std::fs::rename(&tmp, &path).ok();
+        Ok(text)
     }
 }
 

@@ -71,6 +71,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     reports::lsr_detail_window(ui.ctx(), app);
     reports::mcd_detail_window(ui.ctx(), app);
 
+    // Archived NWS text for a historical warning (clicked on the map).
+    alerts::archive_detail_popup(ui.ctx(), app);
+
     // "Really clear …?" confirmation, drawn over everything. Rendered after
     // the panels so it isn't clipped by them; the Settings menu closes
     // itself before opening this.

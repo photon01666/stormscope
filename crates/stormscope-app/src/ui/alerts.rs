@@ -13,6 +13,40 @@ use radar_data::warnings_archive::HistoricWarning;
 /// the filter box narrows it down).
 const MAX_ROWS: usize = 200;
 
+/// Mile distance + 16-wind bearing from the selected station to a warning's
+/// polygon: "42.1 mi SSW of KTWX" — the units the 3D pane and RadarScope
+/// use, and the direction is what makes the row's location legible.
+fn station_relative(w: &Warning, site_lat: f64, site_lon: f64, site_id: &str) -> Option<String> {
+    let (lat, lon) = w.centroid()?;
+    let km = radar_core::sites::haversine_km(lat, lon, site_lat, site_lon);
+    let brg = radar_render::initial_bearing_deg(site_lon, site_lat, lon, lat);
+    Some(format!(
+        "{} {} of {site_id}",
+        super::map::format_miles(km * 0.621_371),
+        super::map::compass16(brg)
+    ))
+}
+
+/// Is a historical warning's polygon within the station's alert radius?
+/// County-based events (no polygon) carry no coordinates to measure, so
+/// they never appear in a station-restricted view.
+fn historic_near_station(w: &HistoricWarning, site_lat: f64, site_lon: f64) -> bool {
+    let Some(ring) = w.polygon.as_ref().and_then(|r| r.first()) else {
+        return false;
+    };
+    if ring.is_empty() {
+        return false;
+    }
+    let n = ring.len() as f64;
+    let (mut slon, mut slat) = (0.0f64, 0.0f64);
+    for (lon, lat) in ring {
+        slon += lon;
+        slat += lat;
+    }
+    radar_core::sites::haversine_km(slat / n, slon / n, site_lat, site_lon)
+        <= STATION_ALERT_RADIUS_KM
+}
+
 /// Sort bucket for grouping: convective warnings first (they are what the
 /// radar layers and the archive jump care about), then a rough severity
 /// order, then everything else alphabetically inside the same bucket.
@@ -384,8 +418,21 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let archive_day = state.archive_date;
     let archive_requested = state.archive_warnings_requested;
     let archive_crawl = state.archive_crawl.clone();
-    let archive_view: Vec<&HistoricWarning> = if *tab == AlertsTab::Archive {
-        state.archive_warnings.iter().collect()
+    // Historical views: every warning of the day, and the same day
+    // restricted to the selected station's area.
+    let archive_both = matches!(*tab, AlertsTab::Archive | AlertsTab::ArchiveStation);
+    let archive_n_all = state.archive_warnings.len();
+    let archive_n_near = state
+        .archive_warnings
+        .iter()
+        .filter(|w| historic_near_station(w, site_lat, site_lon))
+        .count();
+    let archive_view: Vec<&HistoricWarning> = if archive_both {
+        state
+            .archive_warnings
+            .iter()
+            .filter(|w| *tab == AlertsTab::Archive || historic_near_station(w, site_lat, site_lon))
+            .collect()
     } else {
         Vec::new()
     };
@@ -415,24 +462,51 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
         .resizable(true)
         .show(ctx, |ui| {
             super::apply_text_scale(ui, scale);
+            let site_city = radar_core::sites::site(site_id)
+                .map(|s| s.name.split(',').next().unwrap_or("").trim().to_string())
+                .unwrap_or_default();
             ui.horizontal(|ui| {
                 ui.selectable_value(tab, AlertsTab::All, format!("All US ({})", all.len()));
                 ui.selectable_value(
                     tab,
                     AlertsTab::Station,
-                    format!("{site_id} only ({})", station.len()),
+                    format!("{site_id} {site_city} ({})", station.len()),
                 );
                 ui.selectable_value(
                     tab,
                     AlertsTab::Archive,
-                    format!("Archive ({})", archive_view.len()),
+                    format!("Archive ({archive_n_all})"),
                 )
                 .on_hover_text(
-                    "Historical warnings for the archive day (IEM VTEC archive).                      Click a warning to load the radar at its time.",
+                    "Historical warnings for the archive day (IEM VTEC archive, all of the US). \
+                     Click a warning to load the radar at its time.",
+                );
+                ui.selectable_value(
+                    tab,
+                    AlertsTab::ArchiveStation,
+                    format!("Archive: {site_id} ({archive_n_near})"),
+                )
+                .on_hover_text(
+                    "Historical warnings within this station's area (polygon-based \
+                     warnings only). Click one to load the radar at its time.",
                 );
             });
+            if *tab == AlertsTab::Station {
+                let name = radar_core::sites::site(site_id)
+                    .map(|s| s.name)
+                    .unwrap_or(site_id);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Alerts near {site_id} — {name} · within ~{:.0} mi ({})",
+                        STATION_ALERT_RADIUS_KM * 0.621_371,
+                        station.len()
+                    ))
+                    .strong()
+                    .size(12.5 * scale),
+                );
+            }
 
-            if *tab == AlertsTab::Archive {
+            if archive_both {
                 archive_tab_ui(
                     ui,
                     archive_day,
@@ -442,6 +516,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                     site_lat,
                     site_lon,
                     site_id,
+                    *tab == AlertsTab::ArchiveStation,
                     scale,
                     &mut archive_action,
                 );
@@ -450,8 +525,8 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
             }
             ui.label(
                 egui::RichText::new(format!(
-                    "source api.weather.gov · nationwide sweep every 5 min, station alerts every 60 s (within {} km of the site)",
-                    STATION_ALERT_RADIUS_KM as i64
+                    "source api.weather.gov · nationwide sweep every 5 min, station alerts every 60 s (within ~{:.0} mi of the site)",
+                    STATION_ALERT_RADIUS_KM * 0.621_371
                 ))
                 .weak()
                 .small(),
@@ -485,7 +560,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                 AlertsTab::All => all.iter().collect(),
                 AlertsTab::Station => station.clone(),
                 // Handled above (the archive tab renders its own body).
-                AlertsTab::Archive => Vec::new(),
+                AlertsTab::Archive | AlertsTab::ArchiveStation => Vec::new(),
             };
             let rows: Vec<&Warning> = source
                 .into_iter()
@@ -616,7 +691,10 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     // Lazy day load: only while the archive tab is open, once per day and on
     // day changes — an explicit user action each time, never a poll. The
     // in-flight stamp bounds retries to one per minute.
-    if app.state.alerts_tab == AlertsTab::Archive {
+    if matches!(
+        app.state.alerts_tab,
+        AlertsTab::Archive | AlertsTab::ArchiveStation
+    ) {
         let day = app.state.archive_date;
         let fresh = app.state.archive_warnings_date == Some(day);
         let in_flight = app
@@ -670,6 +748,7 @@ fn ring_centroid(rings: &Option<Vec<Vec<(f64, f64)>>>) -> Option<(f64, f64)> {
 /// The archive tab's body: day picker, backfill status, and the clickable
 /// list of that day's warnings.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn archive_tab_ui(
     ui: &mut egui::Ui,
     day: chrono::NaiveDate,
@@ -679,6 +758,7 @@ fn archive_tab_ui(
     site_lat: f64,
     site_lon: f64,
     site_id: &str,
+    station_only: bool,
     scale: f32,
     action: &mut Option<ArchiveAction>,
 ) {
@@ -717,6 +797,26 @@ fn archive_tab_ui(
             *action = Some(ArchiveAction::Load(day));
         }
     });
+    if station_only {
+        let name = radar_core::sites::site(site_id)
+            .map(|s| s.name)
+            .unwrap_or(site_id);
+        ui.label(
+            egui::RichText::new(format!(
+                "Warnings near {site_id} — {name} · within ~{:.0} mi",
+                STATION_ALERT_RADIUS_KM * 0.621_371
+            ))
+            .strong()
+            .size(12.5 * scale),
+        );
+        ui.label(
+            egui::RichText::new(
+                "polygon-based warnings only (county-based events carry no coordinates)",
+            )
+            .weak()
+            .small(),
+        );
+    }
     ui.label(
         egui::RichText::new(
             "Historical warnings (IEM VTEC archive): polygon-based from 2002,              everything else from late 2005 · one small request per day, cached              forever",
@@ -791,9 +891,16 @@ fn archive_tab_ui(
                     let expires = w.expires.with_timezone(tz).format("%H:%M");
                     let dist = ring_centroid(&w.polygon)
                         .map(|(lat, lon)| {
-                            radar_render::surface_distance_m(lon, lat, site_lon, site_lat) / 1000.0
+                            let km = radar_render::surface_distance_m(lon, lat, site_lon, site_lat)
+                                / 1000.0;
+                            let brg =
+                                radar_render::initial_bearing_deg(site_lon, site_lat, lon, lat);
+                            format!(
+                                " · {} {} of {site_id}",
+                                super::map::format_miles(km * 0.621_371),
+                                super::map::compass16(brg)
+                            )
                         })
-                        .map(|d| format!(" · {d:.0} km from {site_id}"))
                         .unwrap_or_default();
                     let county = if w.polygon.is_some() {
                         ""
@@ -847,6 +954,113 @@ fn archive_tab_ui(
                 }
             }
         });
+}
+
+/// The archived NWS product text for one historical warning — opened by
+/// clicking its polygon on the map. The IEM day-files carry metadata and
+/// polygons only; the full bulletin is fetched once, on demand, and cached
+/// forever. The popup also hosts the radar jump.
+pub fn archive_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
+    let Some(id) = app.state.archive_detail.clone() else {
+        return;
+    };
+    let Some(h) = app
+        .state
+        .archive_warnings
+        .iter()
+        .find(|h| h.id == id)
+        .cloned()
+    else {
+        app.state.archive_detail = None;
+        return;
+    };
+    // Fetch on demand, once: dedupe beyond that.
+    if !app.state.archive_texts.contains_key(&id) && !app.state.archive_text_requested.contains(&id)
+    {
+        let _ = app
+            .tx
+            .send(crate::app::DataCmd::LoadArchiveText(id.clone()));
+        app.state.archive_text_requested.insert(id.clone());
+    }
+
+    let scale = app.sidebar_scale.max(1.0);
+    let size = super::popup_size(ctx, scale, 640.0, 520.0);
+    let tz = crate::timefmt::central();
+    let issued = h.issued.with_timezone(tz).format("%a %b %-d %H:%M");
+    let expires = h.expires.with_timezone(tz).format("%H:%M");
+    let mut open = true;
+    egui::Window::new(format!("{} — NWS text", h.event))
+        .id(egui::Id::new("stormscope.archive_text"))
+        .open(&mut open)
+        .default_size(size)
+        .max_height(super::popup_max_height(ctx, scale))
+        .min_size(egui::vec2(420.0 * scale, 240.0 * scale))
+        .default_pos(super::centered_popup_pos(ctx, size))
+        .resizable(true)
+        .show(ctx, |ui| {
+            super::apply_text_scale(ui, scale);
+            ui.horizontal(|ui| {
+                ui.strong(&h.event);
+                ui.label(egui::RichText::new(format!("· WFO {}", h.office)).weak());
+            });
+            ui.label(
+                egui::RichText::new(format!("{issued} → {expires} CDT · {}", h.ugc))
+                    .weak()
+                    .small(),
+            );
+            ui.horizontal(|ui| {
+                if ui
+                    .button("⏪ Load radar at this time")
+                    .on_hover_text(
+                        "Switches to the radar that covered this warning and                          pulls the archive data around its issuance",
+                    )
+                    .clicked()
+                {
+                    if let Some(idx) = app.state.archive_warnings.iter().position(|w| w.id == id)
+                    {
+                        jump_to_warning(app, idx);
+                    }
+                }
+                if ui
+                    .button("Center map")
+                    .on_hover_text("Pan the map to this warning's polygon")
+                    .clicked()
+                {
+                    if let Some((lat, lon)) = ring_centroid(&h.polygon) {
+                        app.state.view.center_lat = lat;
+                        app.state.view.center_lon = lon;
+                    }
+                }
+            });
+            ui.separator();
+            match app.state.archive_texts.get(&id) {
+                Some(Some(text)) => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(text).monospace().size(12.0 * scale),
+                                )
+                                .wrap(),
+                            );
+                        });
+                }
+                Some(None) => {
+                    ui.label(
+                        egui::RichText::new("The NWS text for this product is unavailable.")
+                            .weak(),
+                    );
+                }
+                None => {
+                    ui.label(egui::RichText::new("loading the archived NWS text…").weak());
+                }
+            }
+            super::fill_popup_height(ui);
+        });
+    if !open {
+        app.state.archive_detail = None;
+    }
 }
 
 /// Clicking a historical warning: snap to the radar that covered it, load
@@ -1027,7 +1241,13 @@ pub(super) fn first_sentence(text: &str, max_chars: usize) -> String {
 
 /// Tooltip contents: what this alert *is*, in a glance — event, who issued
 /// it, how long it runs, where, and the opening line of the NOAA text.
-pub(super) fn brief_alert_ui(ui: &mut egui::Ui, w: &Warning, site_lat: f64, site_lon: f64) {
+pub(super) fn brief_alert_ui(
+    ui: &mut egui::Ui,
+    w: &Warning,
+    site_lat: f64,
+    site_lon: f64,
+    site_id: &str,
+) {
     ui.horizontal(|ui| {
         ui.colored_label(warning_color(w), "●");
         ui.strong(&w.event);
@@ -1040,8 +1260,10 @@ pub(super) fn brief_alert_ui(ui: &mut egui::Ui, w: &Warning, site_lat: f64, site
         meta.push(w.severity.clone());
     }
     meta.push(format!("until {}", crate::timefmt::fmt_central(&w.expires)));
-    if let Some(d) = distance_km(w, site_lat, site_lon) {
-        meta.push(format!("{d:.0} km away"));
+    if distance_km(w, site_lat, site_lon).is_some()
+        && let Some(rel) = station_relative(w, site_lat, site_lon, site_id)
+    {
+        meta.push(rel);
     }
     ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
     if !w.area.is_empty() {
@@ -1137,12 +1359,10 @@ fn alert_row(
                 if !w.severity.is_empty() {
                     ui.label(egui::RichText::new(&w.severity).weak().small());
                 }
-                if let Some(d) = distance_km {
-                    ui.label(
-                        egui::RichText::new(format!("· {d:.0} km from {site_id}"))
-                            .weak()
-                            .small(),
-                    );
+                if distance_km.is_some()
+                    && let Some(rel) = station_relative(w, site_latitude, site_longitude, site_id)
+                {
+                    ui.label(egui::RichText::new(format!("· {rel}")).weak().small());
                 }
                 if !has_polygon {
                     ui.label(
@@ -1180,7 +1400,7 @@ fn alert_row(
             r.on_hover_ui(|ui| {
                 // Tooltip layers do not inherit per-panel scaling.
                 super::apply_text_scale(ui, scale);
-                brief_alert_ui(ui, w, site_latitude, site_longitude);
+                brief_alert_ui(ui, w, site_latitude, site_longitude, site_id);
                 ui.label(
                     egui::RichText::new("click to center the map on this alert")
                         .weak()

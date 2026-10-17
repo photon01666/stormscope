@@ -271,6 +271,26 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     crawl.set_enabled(on);
                     let _ = out.send(DataMsg::ArchiveCrawl(crawl.status()));
                 }
+                DataCmd::LoadArchiveText(id) => {
+                    let src = std::sync::Arc::clone(&warn_archive);
+                    let out2 = out.clone();
+                    std::thread::Builder::new()
+                        .name("warn-text".into())
+                        .spawn(move || match src.product_text(&id) {
+                            Ok(text) => {
+                                let _ = out2.send(DataMsg::ArchiveText {
+                                    id,
+                                    text: Some(text),
+                                });
+                            }
+                            Err(e) => {
+                                let _ =
+                                    out2.send(DataMsg::Error(format!("warning text {id}: {e:#}")));
+                                let _ = out2.send(DataMsg::ArchiveText { id, text: None });
+                            }
+                        })
+                        .ok();
+                }
                 DataCmd::LoadArchiveWarnings(date) => {
                     // Off-thread: a cold day is one (sometimes two) small
                     // archive requests plus parsing — never on the loop.

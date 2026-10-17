@@ -90,6 +90,9 @@ pub enum AlertsTab {
     Station,
     /// Historical warnings for the archive day (IEM VTEC archive).
     Archive,
+    /// The same archive day, restricted to the selected station's area
+    /// (polygon-based warnings only).
+    ArchiveStation,
 }
 
 /// Union of the sweep set and the point set, deduped by alert id (the sweep
@@ -165,6 +168,11 @@ pub struct AppState {
     /// In-flight request (day + when sent): dedupes tab clicks and bounds
     /// retries, exactly like the totals window does.
     pub archive_warnings_requested: Option<(chrono::NaiveDate, std::time::Instant)>,
+    /// Historical warning whose NWS text popup is open (PROD_ID), the
+    /// fetched texts (None = unavailable), and the in-flight requests.
+    pub archive_detail: Option<String>,
+    pub archive_texts: std::collections::HashMap<String, Option<String>>,
+    pub archive_text_requested: std::collections::HashSet<String>,
     /// Pending "park the playhead at this moment once the radar lands"
     /// (armed by clicking a historical warning; consumed in the pump).
     pub archive_jump: Option<(chrono::DateTime<chrono::Utc>, std::time::Instant)>,
@@ -419,6 +427,9 @@ impl Default for AppState {
             archive_warnings_date: None,
             archive_warnings_requested: None,
             archive_jump: None,
+            archive_detail: None,
+            archive_texts: std::collections::HashMap::new(),
+            archive_text_requested: std::collections::HashSet::new(),
             archive_hover: None,
             archive_hover_at: 0.0,
             map_controls_open: false,

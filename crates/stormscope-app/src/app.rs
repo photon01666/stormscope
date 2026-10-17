@@ -524,21 +524,12 @@ impl StormApp {
                     self.state.archive_crawl = Some(status);
                 }
                 DataMsg::LoadProgress { label, done, total } => {
-                    if done >= total && total > 0 {
-                        self.state.load_progress = Some(crate::state::LoadProgress {
-                            label,
-                            done,
-                            total,
-                            at: std::time::Instant::now(),
-                        });
-                    } else {
-                        self.state.load_progress = Some(crate::state::LoadProgress {
-                            label,
-                            done,
-                            total,
-                            at: std::time::Instant::now(),
-                        });
-                    }
+                    self.state.load_progress = Some(crate::state::LoadProgress {
+                        label,
+                        done,
+                        total,
+                        at: std::time::Instant::now(),
+                    });
                 }
                 DataMsg::ArchiveText { id, text } => {
                     self.state.archive_text_requested.remove(&id);

@@ -3,6 +3,19 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.8 — 2026-10-17
+
+**The warning backfill was fetching tornado warnings only**
+- The day-file request used IEM's `limitps` flag, which silently filters
+  the archive to tornado warnings: a day measured 42 records where the
+  real convective set has 328 (146 severe thunderstorm, 93 flash flood,
+  42 tornado, 47 special marine). The request now uses `limit0` — the
+  convective warning set, which is what carries polygons and what the
+  radar-at-warning jump needs (~130 KB per day-file; the unfiltered day
+  is 1.26 MB, far too much for a years-long cache).
+- Cache scope bumped: day-files from the wrong filter are removed on the
+  first run (they are re-fetched as you browse or backfill).
+
 ## v1.2.7 — 2026-10-17
 
 *(Rolls up the 1.2.5/1.2.6 fixes with the new alerts archive — those two

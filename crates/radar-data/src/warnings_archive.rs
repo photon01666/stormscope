@@ -7,12 +7,17 @@
 //! * Coverage: tornado / severe thunderstorm / flash flood **polygons from
 //!   1 Jan 2002**; all other VTEC products from 12 Nov 2005; earlier years
 //!   are county/zone based only (listable, nothing to draw).
+//! * The request asks for the convective warning set (`limit0`: tornado,
+//!   severe thunderstorm, marine, flash flood — the events that carry
+//!   polygons and matter for the radar jump), ~130 KB per day-file. Do
+//!   **not** use IEM's `limitps` flag: it silently filters to tornado
+//!   warnings only (measured: 42 records vs 328 for the same day).
 //! * **One request per day, ever.** Historical data is immutable, so a
-//!   fetched day is a permanent disk cache entry (`warnings/YYYYMMDD.zip`,
-//!   the raw response, ~100–300 KB). Nothing here polls; the caller asks
-//!   only when the user opens the archive tab or changes its day, and the
-//!   single background thread serializes requests. Failures retry twice
-//!   with backoff instead of hammering.
+//!   fetched day is a permanent disk cache entry (`warnings/v2/YYYYMMDD.zip`,
+//!   the raw response). Nothing here polls; the caller asks only when the
+//!   user opens the archive tab or changes its day, and the single
+//!   background thread serializes requests. Failures retry twice with
+//!   backoff instead of hammering.
 //!
 //! The IEM download is a zip holding a shapefile + CSV pair. The CSV carries
 //! no geometry, so the polygons come from the `.shp` (parsed here directly —
@@ -97,6 +102,15 @@ impl HistoricWarning {
     }
 }
 
+/// Cache generation. Bumped whenever the request scope changes so stale
+/// day-files (fetched with a different filter) are invalidated, not reused.
+const CACHE_SCOPE: &str = "v2";
+
+/// Day-files live under `<root>/<CACHE_SCOPE>/`.
+pub fn scope_dir(root: &std::path::Path) -> PathBuf {
+    root.join(CACHE_SCOPE)
+}
+
 /// Fetches (once per day) and parses the IEM warning archive.
 pub struct WarningArchiveSource {
     client: reqwest::blocking::Client,
@@ -104,7 +118,27 @@ pub struct WarningArchiveSource {
 }
 
 impl WarningArchiveSource {
-    pub fn new(cache_dir: PathBuf) -> Self {
+    /// `root` is the warnings cache root; the versioned scope dir is derived
+    /// from it. On the first run after a scope bump, day-files from the old
+    /// scope are removed (they were fetched with a different filter).
+    pub fn new(root: PathBuf) -> Self {
+        let cache_dir = scope_dir(&root);
+        if !cache_dir.exists() {
+            std::fs::create_dir_all(&cache_dir).ok();
+            if let Ok(entries) = std::fs::read_dir(&root) {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".zip") {
+                        std::fs::remove_file(e.path()).ok();
+                    }
+                }
+                log::info!("warning archive: cache scope bumped, old day-files removed");
+            }
+        }
+        Self::with_dir(cache_dir)
+    }
+
+    fn with_dir(cache_dir: PathBuf) -> Self {
         let client = reqwest::blocking::Client::builder()
             .user_agent(concat!(
                 "stormscope/",
@@ -160,7 +194,7 @@ impl WarningArchiveSource {
         let next = date.succ_opt().unwrap_or(date);
         let url = format!(
             "https://mesonet.agron.iastate.edu/cgi-bin/request/gis/watchwarn.py\
-             ?year1={}&month1={}&day1={}&year2={}&month2={}&day2={}&limitps=yes",
+             ?year1={}&month1={}&day1={}&year2={}&month2={}&day2={}&limit0=1",
             date.format("%Y"),
             date.format("%-m"),
             date.format("%-d"),
@@ -565,7 +599,7 @@ impl ArchiveCrawler {
                 done_today: 0,
                 enabled: false,
             });
-        let cached_days = cached_day_count(&dir);
+        let cached_days = cached_day_count(&scope_dir(&dir));
         Self {
             source: WarningArchiveSource::new(dir.clone()),
             dir,
@@ -919,8 +953,10 @@ mod tests {
         // needs network. Instead: walk-only assertions by pre-seeding a
         // *gap* and checking day_path-based skipping stays local.
         let today = Utc::now().date_naive();
+        let scope = super::scope_dir(&dir);
+        std::fs::create_dir_all(&scope).unwrap();
         let seed = |d: NaiveDate| {
-            std::fs::write(dir.join(format!("{}.zip", d.format("%Y%m%d"))), b"x").unwrap();
+            std::fs::write(scope.join(format!("{}.zip", d.format("%Y%m%d"))), b"x").unwrap();
         };
         seed(today);
         seed(today.pred_opt().unwrap());

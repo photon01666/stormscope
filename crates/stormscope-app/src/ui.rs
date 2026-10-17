@@ -48,6 +48,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Floating auto-hide sidebar, drawn over the map.
     sidebar_overlay(ui.ctx(), app, middle);
 
+    // Always-visible "go live" pill, bottom-center of the central area.
+    live_button(ui.ctx(), app, middle);
+
     // Alerts browser (its own floating window).
     alerts::alerts_popup(ui.ctx(), app);
 
@@ -78,6 +81,71 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // the panels so it isn't clipped by them; the Settings menu closes
     // itself before opening this.
     confirm_clear_dialog(ui.ctx(), app);
+}
+
+/// The always-visible "go live" pill, bottom-center of the central area.
+///
+/// One click leaves archive/replay entirely — drops the archive listing,
+/// clears the ring and shows the newest scans (the data thread's EnterLive
+/// path) — the fastest way back from browsing history. While already live
+/// it dims into a green status pill, so the same spot is both the status
+/// and the way home.
+fn live_button(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) {
+    let scale = app.sidebar_scale.max(1.0);
+    let live =
+        app.state.mode == Mode::Live && app.state.playhead + 1 >= app.state.ring.len().max(1);
+    let (text, fill, color) = if live {
+        (
+            "● LIVE",
+            egui::Color32::from_black_alpha(170),
+            egui::Color32::from_rgb(120, 230, 140),
+        )
+    } else {
+        (
+            "GO LIVE",
+            egui::Color32::from_rgb(185, 62, 62),
+            egui::Color32::WHITE,
+        )
+    };
+    // Built exactly like the pane chips ("Controls"/"Max"/"Fit"): the Small
+    // text style, the same padding, auto-sized to the label — no fixed box.
+    // Anchored to the screen's bottom-center, offset up to the central
+    // area's bottom edge so the timeline panel stays clear.
+    let bottom_offset = -(ctx.content_rect().bottom() - middle.bottom()) - 12.0 * scale;
+    egui::Area::new(egui::Id::new("stormscope.live_button"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, bottom_offset))
+        .interactable(true)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            let font = egui::TextStyle::Small.resolve(ui.style());
+            let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
+            let size = galley.size() + egui::vec2(16.0 * scale, 9.0 * scale);
+            let resp = ui
+                .add(
+                    egui::Button::new(egui::RichText::new(text).small().color(color))
+                        .fill(fill)
+                        .min_size(size),
+                )
+                .on_hover_text(if live {
+                    "Watching the newest scan".to_string()
+                } else {
+                    "Leave archive/replay and snap to the newest radar (L)".to_string()
+                });
+            if resp.clicked() && !live {
+                snap_to_live(app);
+            }
+        });
+}
+
+/// Leave archive/replay and return to live radar: the mode flips, playback
+/// stops, and the data thread clears the ring and refills from the newest
+/// scans (the same path the sidebar's Live toggle uses).
+fn snap_to_live(app: &mut StormApp) {
+    app.state.mode = Mode::Live;
+    app.state.loop_state = crate::state::LoopState::Paused;
+    app.state.archive_jump = None;
+    let _ = app.tx.send(crate::app::DataCmd::EnterLive);
 }
 
 /// The central area: 2D map alone, or side-by-side with the 3D volume pane.

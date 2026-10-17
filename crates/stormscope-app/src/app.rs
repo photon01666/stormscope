@@ -566,6 +566,13 @@ impl StormApp {
                 LoopState::Paused => LoopState::Playing,
             };
         }
+        if ctx.input(|i| i.key_pressed(egui::Key::L)) {
+            // Same as the bottom-center "go live" pill.
+            self.state.mode = crate::state::Mode::Live;
+            self.state.loop_state = LoopState::Paused;
+            self.state.archive_jump = None;
+            let _ = self.tx.send(crate::app::DataCmd::EnterLive);
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
             self.state.step_forward();
         }

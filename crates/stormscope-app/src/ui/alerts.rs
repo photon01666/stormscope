@@ -27,10 +27,16 @@ fn station_relative(w: &Warning, site_lat: f64, site_lon: f64, site_id: &str) ->
     ))
 }
 
-/// Is a historical warning's polygon within the station's alert radius?
-/// County-based events (no polygon) carry no coordinates to measure, so
-/// they never appear in a station-restricted view.
-fn historic_near_station(w: &HistoricWarning, site_lat: f64, site_lon: f64) -> bool {
+/// Does a historical warning *belong* to this station — i.e. is this site
+/// the radar nearest the warning's polygon?
+///
+/// A plain radius was wrong: Tulsa's severe warnings (215 mi south of
+/// Topeka, well inside a 400 km circle) are KINX's business, not KTWX's.
+/// Ownership by nearest radar is also exactly the rule the radar jump uses,
+/// so every row in this tab loads the radar it was listed under.
+/// County-based events (no polygon) carry no coordinates, so they never
+/// appear in a station-restricted view.
+fn historic_belongs_to(w: &HistoricWarning, site_id: &str) -> bool {
     let Some(ring) = w.polygon.as_ref().and_then(|r| r.first()) else {
         return false;
     };
@@ -43,8 +49,15 @@ fn historic_near_station(w: &HistoricWarning, site_lat: f64, site_lon: f64) -> b
         slon += lon;
         slat += lat;
     }
-    radar_core::sites::haversine_km(slat / n, slon / n, site_lat, site_lon)
-        <= STATION_ALERT_RADIUS_KM
+    let (lat, lon) = (slat / n, slon / n);
+    radar_core::sites::SITES
+        .iter()
+        .min_by(|a, b| {
+            let da = radar_core::sites::haversine_km(lat, lon, a.latitude, a.longitude);
+            let db = radar_core::sites::haversine_km(lat, lon, b.latitude, b.longitude);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .is_some_and(|nearest| nearest.id == site_id)
 }
 
 /// Sort bucket for grouping: convective warnings first (they are what the
@@ -425,13 +438,13 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let archive_n_near = state
         .archive_warnings
         .iter()
-        .filter(|w| historic_near_station(w, site_lat, site_lon))
+        .filter(|w| historic_belongs_to(w, site_id))
         .count();
     let archive_view: Vec<&HistoricWarning> = if archive_both {
         state
             .archive_warnings
             .iter()
-            .filter(|w| *tab == AlertsTab::Archive || historic_near_station(w, site_lat, site_lon))
+            .filter(|w| *tab == AlertsTab::Archive || historic_belongs_to(w, site_id))
             .collect()
     } else {
         Vec::new()
@@ -802,12 +815,17 @@ fn archive_tab_ui(
             .map(|s| s.name)
             .unwrap_or(site_id);
         ui.label(
+            egui::RichText::new(format!("Warnings belonging to {site_id} — {name}"))
+                .strong()
+                .size(12.5 * scale),
+        );
+        ui.label(
             egui::RichText::new(format!(
-                "Warnings near {site_id} — {name} · within ~{:.0} mi",
-                STATION_ALERT_RADIUS_KM * 0.621_371
+                "{site_id} is the radar nearest each warning's polygon — neighbors' \
+                 warnings (Tulsa's, Omaha's…) stay in their own tabs",
             ))
-            .strong()
-            .size(12.5 * scale),
+            .weak()
+            .small(),
         );
         ui.label(
             egui::RichText::new(

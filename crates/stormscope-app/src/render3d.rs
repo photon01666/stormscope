@@ -1026,7 +1026,25 @@ fn gvs_main(in: GroundIn) -> GroundOut {
 
 @fragment
 fn gfs_main(in: GroundOut) -> @location(0) vec4<f32> {
-    let c = textureSample(ground_tex, ground_samp, in.uv);
+    // Mip emulation for the basemap tiles. egui's tile textures are single
+    // mip, so when the ground compresses at a steep or grazing pitch one
+    // pixel covers many texels and the one-tap sample picks effectively
+    // random ones — roads and labels crawl and flicker while the camera
+    // moves. Measure the texel footprint from screen-space derivatives and
+    // blend a small diagonal cross of taps in as the footprint grows (a
+    // box-ish filter, so the texture stays sharp at 1:1). All taps are
+    // taken unconditionally: WGSL only allows textureSample in uniform
+    // control flow.
+    let dx = dpdx(in.uv);
+    let dy = dpdy(in.uv);
+    let footprint = max(length(dx), length(dy)) * 256.0; // texels per pixel
+    let a = textureSample(ground_tex, ground_samp, in.uv + (dx + dy) * 0.30)
+        + textureSample(ground_tex, ground_samp, in.uv - (dx + dy) * 0.30)
+        + textureSample(ground_tex, ground_samp, in.uv + (dx - dy) * 0.30)
+        + textureSample(ground_tex, ground_samp, in.uv - (dx - dy) * 0.30);
+    let base = textureSample(ground_tex, ground_samp, in.uv);
+    let blur = clamp((footprint - 1.1) / 6.0, 0.0, 0.9);
+    let c = mix(base, a * 0.25, blur);
     return vec4<f32>(c.rgb, 1.0);
 }
 "#;

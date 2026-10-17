@@ -3,6 +3,20 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.2.5 — 2026-10-17
+
+**Ground-map flicker at steep camera angles, fixed with mip emulation**
+- At steep or grazing pitches the basemap tiles compressed so one screen
+  pixel covered many texels; with single-mip textures the one-tap LINEAR
+  sample picked effectively random texels and roads, labels and boundaries
+  crawled and flickered while the camera moved. Neither MSAA nor plain
+  supersampling addresses this class of aliasing.
+- The ground fragment shader now measures the texel footprint from
+  screen-space derivatives and blends a four-tap diagonal cross in as the
+  footprint grows past one texel (a box-ish filter — sharp at 1:1, soft
+  exactly when undersampling starts). Volume pass cost measured unchanged
+  (2.1 ms settled / 1.05 ms motion on the A310).
+
 ## v1.2.4 — 2026-10-17
 
 **The playback stutter was ~90 ms gate-table rebuilds — now reused across scans**

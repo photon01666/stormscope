@@ -420,7 +420,6 @@ impl GateGeometry {
             md.range_start_m.to_bits().hash(&mut h);
             md.gate_size_m.to_bits().hash(&mut h);
             md.gate_count.hash(&mut h);
-            md.ray_count.hash(&mut h);
         }
         h.finish()
     }

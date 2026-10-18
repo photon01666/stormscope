@@ -1218,7 +1218,7 @@ pub(super) fn triangulate(rings: &[Vec<egui::Pos2>], color: egui::Color32) -> Op
 /// Whether the historical-warning overlay belongs on screen: a day is
 /// loaded that matches the selected archive day, and the user is either
 /// browsing that day's list or looking at that era's radar.
-fn archive_overlay_active(app: &StormApp) -> bool {
+pub(super) fn archive_overlay_active(app: &StormApp) -> bool {
     if !app.state.show_alerts {
         return false;
     }

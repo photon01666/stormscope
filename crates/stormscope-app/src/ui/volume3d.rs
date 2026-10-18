@@ -100,6 +100,17 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         center_text("no site selected");
         return;
     };
+    // Historical polygons of the selected archive day, when its warnings are
+    // loaded. This mirrors `map::archive_overlay_active` minus the map's own
+    // alerts switch: the 3D pane's layer has its own switch, so turning the
+    // map's off must not empty the 3D scene.
+    let archive_overlays = app.state.archive_warnings_date == Some(app.state.archive_date)
+        && (app.state.mode == crate::state::Mode::Archive
+            || app.state.alerts_popup_open
+                && matches!(
+                    app.state.alerts_tab,
+                    crate::state::AlertsTab::Archive | crate::state::AlertsTab::ArchiveStation
+                ));
     let filter = MeshFilter {
         moment,
         detail: app.state.view3d_detail,
@@ -430,6 +441,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     // outline + translucent wash in the event color, painted over the
     // rendered scene like the markers, so a warning is never buried inside
     // the volume. Hovering one names it; clicking opens its NOAA text.
+    let mut warnings_drawn: Option<usize> = None;
     if app.state.view3d_alerts && max_r > 1.0 {
         let cos_lat = site.latitude.to_radians().cos();
         let to_km = move |lon: f64, lat: f64| {
@@ -446,13 +458,32 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         // scene's Z is exaggerated, so the projection takes display km.
         let top_km = (app.state.view3d_alerts_top_kft.max(0.0) * 1000.0 / FT_PER_KM) * ve;
         let mut polys: Vec<GroundPoly> = Vec::new();
-        for w in &app.state.alerts {
+        // Live warnings near the station, plus the selected archive day's
+        // historical polygons when that overlay is on (the 2D map draws the
+        // same pair) — so breaking-weather warnings and archive browsing look
+        // the same in both views.
+        let historical: Vec<&radar_core::warnings::Warning> = if archive_overlays {
+            app.state.archive_warning_view.iter().collect()
+        } else {
+            Vec::new()
+        };
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (w, is_historical) in app
+            .state
+            .alerts
+            .iter()
+            .map(|w| (w, false))
+            .chain(historical.into_iter().map(|w| (w, true)))
+        {
+            if !seen.insert(w.id.as_str()) {
+                continue;
+            }
             let project = |lon: f64, lat: f64, z_km: f32| {
                 let mut p = to_km(lon, lat);
                 p[2] = z_km;
                 project(p).map(ndc_to_screen)
             };
-            if let Some(poly) = polygon_prism(w, project, top_km, &rect) {
+            if let Some(poly) = polygon_prism(w, project, top_km, &rect, is_historical) {
                 polys.push(poly);
             }
         }
@@ -471,11 +502,25 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         // Clicking one opens its NOAA detail popup — the same window the 2D
         // map's click opens (and the same afterglow highlight).
         if let Some(id) = hovered_id.as_ref().filter(|_| resp.clicked()) {
-            app.state.alert_detail = Some(id.clone());
-            app.state.alerts_focus = Some(id.clone());
-            app.state.alerts_focus_at = ui.ctx().input(|i| i.time);
+            let historical = polys
+                .iter()
+                .find(|p| p.id == *id)
+                .is_some_and(|p| p.historical);
+            if historical {
+                // The archive overlay's polygons open their archived NWS
+                // product text (fetched once, on demand) — the same window
+                // the map's click opens.
+                app.state.archive_detail = Some(id.clone());
+                app.state.alerts_focus = Some(id.clone());
+                app.state.alerts_focus_at = ui.ctx().input(|i| i.time);
+            } else {
+                app.state.alert_detail = Some(id.clone());
+                app.state.alerts_focus = Some(id.clone());
+                app.state.alerts_focus_at = ui.ctx().input(|i| i.time);
+            }
         }
 
+        warnings_drawn = Some(polys.len());
         let now = ui.ctx().input(|i| i.time);
         let mut animating = false;
         for poly in &polys {
@@ -492,8 +537,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             // same thing in both views. Walls wash a little lighter than the
             // ground fill: there are a lot more of them per warning.
             let wash = super::map::warning_fill_alpha(intensity, app.state.view3d_alerts_fill);
-            let fill = poly.color.gamma_multiply(wash);
-            let wall_fill = poly.color.gamma_multiply(wash * 0.6);
+            // Historical polygons are calm: thinner, dimmer, a lighter wash —
+            // the live warnings own the loud styling, as on the 2D map.
+            let calm = if poly.historical { 0.55 } else { 1.0 };
+            let fill = poly.color.gamma_multiply(wash * calm);
+            let wall_fill = poly.color.gamma_multiply(wash * 0.6 * calm);
 
             // Extruded walls first, so the polygon wraps the storm and the
             // outlines still read on top of them.
@@ -511,7 +559,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
                 for (b, t) in poly.base.iter().zip(top) {
                     painter.line_segment(
                         [*b, *t],
-                        Stroke::new(scale, poly.color.gamma_multiply(0.5 + 0.4 * intensity)),
+                        Stroke::new(
+                            scale,
+                            poly.color.gamma_multiply((0.5 + 0.4 * intensity) * calm),
+                        ),
                     );
                 }
                 if glow > 0.0 {
@@ -529,8 +580,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
                 painter.add(egui::Shape::closed_line(
                     top.clone(),
                     Stroke::new(
-                        1.2 * scale + 0.9 * scale * intensity,
-                        poly.color.gamma_multiply(0.85),
+                        (1.2 * scale + 0.9 * scale * intensity) * calm.max(0.6),
+                        poly.color.gamma_multiply(0.85 * calm),
                     ),
                 ));
             }
@@ -550,7 +601,10 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             ));
             painter.add(egui::Shape::closed_line(
                 poly.base.clone(),
-                Stroke::new(1.8 * scale + 1.2 * scale * intensity, poly.color),
+                Stroke::new(
+                    (1.8 * scale + 1.2 * scale * intensity) * calm.max(0.6),
+                    poly.color.gamma_multiply(calm),
+                ),
             ));
             if glow > 0.0 {
                 super::map::draw_tag_label(
@@ -799,6 +853,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     if app.state.view3d_section {
         line2.push_str(&format!(" · cut {:.0}°", app.state.view3d_section_az));
     }
+    match warnings_drawn {
+        Some(0) => line2.push_str(" · no warning polygons in range"),
+        Some(1) => line2.push_str(" · 1 warning polygon"),
+        Some(n) => line2.push_str(&format!(" · {n} warning polygons")),
+        None => {}
+    }
     if app.state.view3d_alt_lo_ft > 0.0 || app.state.view3d_alt_hi_ft < 65_000.0 {
         line2.push_str(&format!(
             " · alt {:.0}k–{:.0}k ft",
@@ -858,6 +918,9 @@ struct GroundPoly {
     top: Option<Vec<egui::Pos2>>,
     center: egui::Pos2,
     area: f32,
+    /// A historical (archive day) warning: drawn calm — the live warnings
+    /// own the loud styling, exactly as on the 2D map.
+    historical: bool,
 }
 
 impl GroundPoly {
@@ -883,6 +946,7 @@ fn polygon_prism(
     project: impl Fn(f64, f64, f32) -> Option<egui::Pos2>,
     top_km: f32,
     visible: &egui::Rect,
+    historical: bool,
 ) -> Option<GroundPoly> {
     let rings = w.polygon.as_ref()?;
     let walls = top_km > 0.01;
@@ -950,6 +1014,7 @@ fn polygon_prism(
         top,
         center,
         area: area.max(1.0),
+        historical,
     })
 }
 
@@ -1086,6 +1151,7 @@ mod tests {
             center: (sum / n).to_pos2(),
             base,
             top: None,
+            historical: false,
         }
     }
 
@@ -1120,7 +1186,8 @@ mod tests {
                 ((40.0 - lat) * 1000.0 + 300.0) as f32 - z,
             ))
         };
-        let flat = polygon_prism(&warning("a", &ring), project, 0.0, &pane).expect("projected");
+        let flat =
+            polygon_prism(&warning("a", &ring), project, 0.0, &pane, false).expect("projected");
         assert_eq!(flat.base.len(), 4);
         assert!(flat.top.is_none(), "flat when no wall height is set");
         // 0.4° × 1000 px/° on each side → 400×400 px.
@@ -1134,7 +1201,8 @@ mod tests {
 
         // Extruded: the top ring exists, sits above the base with the same
         // footprint, and the name rides the wall's midpoint.
-        let tall = polygon_prism(&warning("a", &ring), project, 120.0, &pane).expect("projected");
+        let tall =
+            polygon_prism(&warning("a", &ring), project, 120.0, &pane, true).expect("projected");
         let top = tall.top.as_ref().expect("top ring");
         assert_eq!(top.len(), 4);
         assert!(top.iter().all(|p| p.y < tall.base[0].y), "top above base");
@@ -1157,18 +1225,18 @@ mod tests {
                 project(lon, lat, z)
             }
         };
-        assert!(polygon_prism(&warning("b", &ring), behind, 120.0, &pane).is_none());
+        assert!(polygon_prism(&warning("b", &ring), behind, 120.0, &pane, false).is_none());
 
         // Far off-pane: nothing to paint.
         let away = |lon: f64, lat: f64, z: f32| {
             project(lon, lat, z).map(|p| p + egui::vec2(4000.0, 4000.0))
         };
-        assert!(polygon_prism(&warning("c", &ring), away, 120.0, &pane).is_none());
+        assert!(polygon_prism(&warning("c", &ring), away, 120.0, &pane, false).is_none());
 
         // No polygon at all (zone-based alert): nothing to draw.
         let mut zone = warning("d", &ring);
         zone.polygon = None;
-        assert!(polygon_prism(&zone, project, 120.0, &pane).is_none());
+        assert!(polygon_prism(&zone, project, 120.0, &pane, false).is_none());
     }
 
     /// The 3D warning pointer rule: outline reach beats containment, and

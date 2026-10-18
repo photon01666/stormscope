@@ -5,8 +5,10 @@
 //! application shell (`stormscope-app`). Keep it dependency-light and
 //! semantically stable; extend additively.
 
+pub mod derived;
 pub mod forecast;
 pub mod outlooks;
+pub mod sampling;
 pub mod sites;
 pub mod vcp;
 pub mod warnings;
@@ -39,9 +41,9 @@ pub enum Moment {
     CompositeReflectivity,
     /// Vertically Integrated Liquid (kg/m²) — derived from the REF volume.
     Vil,
-    /// Echo Tops (km) — the top of the ≥18.5 dBZ echo, derived from REF.
+    /// Echo Tops (kft) — the top of the ≥18.5 dBZ echo, derived from REF.
     EchoTops,
-    /// Maximum Estimated Hail Size (cm), from VIL and the freezing level.
+    /// Maximum Estimated Hail Size (in), from the VIL column.
     Mesh,
     /// Storm-relative radial velocity (m/s) — radial velocity minus the
     /// storm motion projected onto each radial.
@@ -79,7 +81,7 @@ impl Moment {
             Moment::CorrelationCoefficient => "",
             Moment::CompositeReflectivity => "dBZ",
             Moment::Vil => "kg/m²",
-            Moment::EchoTops => "km",
+            Moment::EchoTops => "kft",
             Moment::Mesh => "in",
             Moment::StormRelativeVelocity => "m/s",
         }

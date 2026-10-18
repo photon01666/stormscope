@@ -1476,7 +1476,7 @@ mod tests {
     /// 2D map ("geometry 720x1832 does not fit moment 720x1192").
     #[test]
     fn geometry_is_per_moment_when_gate_counts_differ() {
-        use radar_core::{MomentCalibration, MomentData};
+        use radar_core::{MomentCalibration, MomentData, Sweep};
         let cal = MomentCalibration {
             scale: 1.0,
             offset: 2.0,
@@ -1522,5 +1522,91 @@ mod tests {
                 .reuse_for(&sweep, Moment::SpecificDifferentialPhase, 35.0, -97.0)
                 .is_some()
         );
+    }
+
+    /// End to end for the derived products: a real volume, VIL/TOPS/MEHS
+    /// attached by the decode-side helper, and the 2D map's raster path
+    /// drawing them (the product selector only lists what rasterizes).
+    #[test]
+    fn derived_products_rasterize_on_the_map() {
+        use radar_core::{MomentCalibration, MomentData, Sweep, Volume};
+        let cal = MomentCalibration {
+            scale: 1.0,
+            offset: 2.0,
+            threshold: 0.0,
+        };
+        let mk = |elev: f32, dbz: f32| {
+            let rays: Vec<f32> = (0..360).map(|i| i as f32).collect();
+            let mut data = vec![0i16; 360 * 200]; // 50 km of 250 m gates
+            for r in 0..360 {
+                for g in 0..200 {
+                    let range_km = (g as f32 + 0.5) * 0.25;
+                    // A rain core NE of the radar, weak drizzle elsewhere.
+                    let dbz = if (20.0..45.0).contains(&range_km) {
+                        dbz
+                    } else {
+                        12.0
+                    };
+                    data[r * 200 + g] = (dbz + 2.0) as i16;
+                }
+            }
+            Sweep {
+                elevation_deg: elev,
+                elevation_measured_deg: elev,
+                azimuth_width_deg: 1.0,
+                azimuths_deg: rays,
+                moments: vec![MomentData {
+                    kind: Moment::Reflectivity,
+                    calibration: cal,
+                    range_start_m: 0.0,
+                    gate_size_m: 250.0,
+                    gate_count: 200,
+                    ray_count: 360,
+                    data,
+                }],
+            }
+        };
+        let mut vol = Volume {
+            meta: radar_core::VolumeMeta {
+                site_id: "KTWX".into(),
+                volume_start: chrono::Utc::now(),
+                vcp: Some(212),
+                sequence_number: Some(1),
+                sweep_count: 3,
+                moments: vec![Moment::Reflectivity],
+            },
+            sweeps: vec![mk(0.5, 50.0), mk(1.5, 55.0), mk(2.5, 45.0)],
+        };
+        radar_core::derived::attach_derived(&mut vol);
+        assert!(vol.meta.moments.contains(&Moment::Vil));
+
+        let view = MapView {
+            center_lat: 39.0,
+            center_lon: -96.2,
+            zoom: 8.0,
+            width_px: 500.0,
+            height_px: 400.0,
+        };
+        let (radar_lat, radar_lon) = (39.04, -96.22);
+        for m in [Moment::Vil, Moment::EchoTops, Moment::Mesh] {
+            let sweep = vol
+                .sweeps
+                .iter()
+                .find(|s| s.moment(m).is_some())
+                .unwrap_or_else(|| panic!("{m:?} sweep"));
+            let mut buf = vec![0u8; (view.width_px as usize) * (view.height_px as usize) * 4];
+            rasterize_sweep_into(
+                sweep,
+                m,
+                &view,
+                radar_lat,
+                radar_lon,
+                1.0,
+                f32::NEG_INFINITY,
+                &mut buf,
+            );
+            let opaque = buf.chunks_exact(4).filter(|px| px[3] > 0).count();
+            assert!(opaque > 200, "{m:?} rasterized {opaque} pixels");
+        }
     }
 }

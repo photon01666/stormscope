@@ -25,6 +25,7 @@
 use crate::app::StormApp;
 use crate::state::AppState;
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Vec2};
+use radar_render::section::{SectionParams, build_cross_section, probe_ray};
 use radar_render::volume3d::{Camera, FT_PER_KM, KM_PER_MILE, MeshFilter, ring_radii_mi};
 
 /// Camera pitch limits: below the horizon the ground grid reads as a wall,
@@ -83,16 +84,22 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         center_text("3D view needs the wgpu renderer");
         return;
     };
-    let Some(volume) = app.state.current().map(|f| f.volume.clone()) else {
-        center_text("waiting for the first volume scan…");
+    let moment = app.state.moment;
+    // Derived products are read through the display volume: the column
+    // products (VIL/TOPS/MEHS) ride in the frame's volume, SRM comes from
+    // the motion-keyed cache and may still be building.
+    let Some(volume) = app.state.display_volume() else {
+        if app.state.moment == radar_core::Moment::StormRelativeVelocity {
+            center_text(&format!("deriving {}…", moment.label()));
+        } else {
+            center_text("waiting for the first volume scan…");
+        }
         return;
     };
     let Some(site) = radar_core::sites::site(&app.state.site_id) else {
         center_text("no site selected");
         return;
     };
-
-    let moment = app.state.moment;
     let filter = MeshFilter {
         moment,
         detail: app.state.view3d_detail,
@@ -104,19 +111,43 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         crate::render3d::Volume3d::new(&render_state.device, &render_state.queue)
     });
 
-    // Scene identity: a new scan, a different site/moment/detail, or a tilt
-    // range change all mean new geometry. (The playhead's volume is used, so
-    // scrubbing the timeline re-renders 3D too. The altitude slab is
-    // shader-side and does not appear here on purpose.)
+    // Isosurfaces the pane wants (dBZ shells): only reflectivity-like
+    // products have a meaningful dBZ scale, so other moments show none.
+    let ref_like = matches!(
+        moment,
+        radar_core::Moment::Reflectivity | radar_core::Moment::CompositeReflectivity
+    );
+    let iso: Vec<f32> = if ref_like {
+        app.state
+            .view3d_iso
+            .iter()
+            .zip([30.0f32, 50.0, 65.0])
+            .filter(|(on, _)| **on)
+            .map(|(_, t)| t)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Scene identity: a new scan, a different site/moment/detail, a tilt
+    // range change, another derived volume (SRM follows the motion sliders —
+    // the Arc identity carries that), or different echo shells all mean new
+    // geometry. (The playhead's volume is used, so scrubbing the timeline
+    // re-renders 3D too. The altitude slab is shader-side and does not appear
+    // here on purpose.)
     let sig = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         app.state.site_id.hash(&mut h);
         volume.meta.volume_start.timestamp_millis().hash(&mut h);
+        std::sync::Arc::as_ptr(&volume).hash(&mut h);
         moment.hash(&mut h);
         filter.detail.hash(&mut h);
         filter.elev_min_deg.map(f32::to_bits).hash(&mut h);
         filter.elev_max_deg.map(f32::to_bits).hash(&mut h);
+        for t in &iso {
+            t.to_bits().hash(&mut h);
+        }
         h.finish()
     };
     // Scenes build on the pane's worker thread: playback (and fast scrubbing)
@@ -125,7 +156,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     // never pays for the build. If ticks outpace builds, the 3D view lags a
     // frame instead of stalling anything.
     v3.pump_scene(&render_state.device, &render_state.queue);
-    v3.request_scene(volume.clone(), filter, sig);
+    v3.request_scene(volume.clone(), filter, iso.clone(), sig);
     // Waking only on the playback tick made completions wait up to a full
     // tick to be shown (and drove the old discard behavior). Ask for a
     // repaint shortly while a build is in flight so the finished mesh lands
@@ -194,6 +225,41 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         &render_state,
         &tiles,
     );
+
+    // --- Cross-section curtain (RHI along one azimuth) ---------------------
+    // One prepared profile serves the whole plane, so rebuilding while the
+    // azimuth slider moves costs a couple of milliseconds on the UI thread —
+    // no worker round trip needed.
+    let section_key = if app.state.view3d_section {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::sync::Arc::as_ptr(&volume).hash(&mut h);
+        moment.hash(&mut h);
+        app.state.view3d_section_az.to_bits().hash(&mut h);
+        max_r.to_bits().hash(&mut h);
+        Some(h.finish())
+    } else {
+        None
+    };
+    if app.view3d_section_key != section_key {
+        app.view3d_section_key = section_key;
+        if section_key.is_some() {
+            let max_range = max_r.max(50.0);
+            let params = SectionParams {
+                azimuth_deg: app.state.view3d_section_az,
+                max_range_km: max_range,
+                top_km: 20.0,
+                // ~320 columns across the width, whatever the range: the
+                // data's own gate spacing is the real detail limit.
+                range_step_km: (max_range / 320.0).clamp(0.4, 2.0),
+                height_step_km: 0.3,
+            };
+            let (verts, idx) = build_cross_section(&volume, moment, &params);
+            v3.set_cross_section(&render_state.device, &render_state.queue, &verts, &idx);
+        } else {
+            v3.set_cross_section(&render_state.device, &render_state.queue, &[], &[]);
+        }
+    }
 
     // Render + present as an egui image. Feet → km for the altitude slab.
     let alt_lo_km = app.state.view3d_alt_lo_ft / FT_PER_KM;
@@ -453,6 +519,96 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         );
     }
 
+    // --- Data probe: the echo under the cursor ----------------------------
+    // The camera works in *display* space (Z exaggerated), so the ray is
+    // un-exaggerated before marching the physical volume; the hit is
+    // re-exaggerated for its screen position.
+    let probe = if app.state.view3d_probe {
+        resp.hovered()
+            .then(|| ui.ctx().pointer_hover_pos())
+            .flatten()
+            .and_then(|pos| {
+                let ndc = [
+                    ((pos.x - rect.center().x) / (rect.width() * 0.5)).clamp(-1.0, 1.0),
+                    (-(pos.y - rect.center().y) / (rect.height() * 0.5)).clamp(-1.0, 1.0),
+                ];
+                let (eye_d, dir_d) = camera.ray(aspect, ndc);
+                let origin = [eye_d[0], eye_d[1], eye_d[2] / ve];
+                let dir = [dir_d[0], dir_d[1], dir_d[2] / ve];
+                let sampler = radar_render::VolumeSampler::new(&volume, moment);
+                if sampler.cut_count() == 0 {
+                    return None;
+                }
+                // The camera can sit well outside the volume, so the march
+                // covers the distance to the scene plus the volume's reach.
+                let t_max = (camera.distance_km + max_r.max(50.0)) * 1.5;
+                let report = probe_ray(&sampler, origin, dir, t_max, app.state.view3d_threshold);
+                Some((pos, report))
+            })
+    } else {
+        None
+    };
+    if let Some((pos, report)) = probe {
+        let unit = moment.unit();
+        let marker = |hit: &radar_render::ProbeHit, color: Color32| -> Option<egui::Pos2> {
+            let p = project([hit.pos_km[0], hit.pos_km[1], hit.pos_km[2] * ve])?;
+            let g = project([hit.pos_km[0], hit.pos_km[1], 0.0])?;
+            let (sp, sg) = (ndc_to_screen(p), ndc_to_screen(g));
+            painter.line_segment([sg, sp], Stroke::new(1.0, color.gamma_multiply(0.8)));
+            painter.circle_stroke(sp, 3.5, Stroke::new(1.4, color));
+            Some(sp)
+        };
+        let mut lines: Vec<String> = Vec::new();
+        let mut anchor = pos;
+        if let Some(first) = &report.first {
+            // The probe reads in miles and feet, like the rest of the pane.
+            lines.push(format!(
+                "first {:.0} {} @ {:.1}k ft · {:.0} mi {}",
+                first.value,
+                unit,
+                first.pos_km[2] * FT_PER_KM / 1000.0,
+                first.range_km / KM_PER_MILE,
+                compass16(first.bearing_deg),
+            ));
+            if let Some(p) = marker(first, MARKER_COLOR) {
+                anchor = p;
+            }
+        }
+        if let Some(max) = &report.max {
+            lines.push(format!(
+                "max {:.0} {} @ {:.1}k ft · {:.0} mi {}",
+                max.value,
+                unit,
+                max.pos_km[2] * FT_PER_KM / 1000.0,
+                max.range_km / KM_PER_MILE,
+                compass16(max.bearing_deg),
+            ));
+            if report.first.is_none() {
+                if let Some(p) = marker(max, Color32::from_gray(170)) {
+                    anchor = p;
+                }
+            } else {
+                marker(max, Color32::from_gray(150));
+            }
+        }
+        if lines.is_empty() {
+            lines.push("no echo under the cursor".to_string());
+        }
+        // Tooltip beside the hit, kept inside the pane.
+        let text = lines.join("\n");
+        let at = egui::pos2(
+            (anchor.x + 10.0).min(rect.max.x - 220.0 * scale),
+            (anchor.y - 24.0).max(rect.min.y + 30.0 * scale),
+        );
+        painter.text(
+            at,
+            Align2::LEFT_TOP,
+            text,
+            FontId::proportional(11.0 * scale),
+            Color32::from_rgb(235, 240, 245),
+        );
+    }
+
     // Title + stats, top-left (the chips sit top-right; the slider bar owns
     // the bottom center, so nothing here can collide with it).
     painter.text(
@@ -468,6 +624,18 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         ve,
         filter.detail.label(),
     );
+    if !iso.is_empty() {
+        line2.push_str(&format!(
+            " · shells {} dBZ",
+            iso.iter()
+                .map(|t| format!("{t:.0}"))
+                .collect::<Vec<_>>()
+                .join("/")
+        ));
+    }
+    if app.state.view3d_section {
+        line2.push_str(&format!(" · cut {:.0}°", app.state.view3d_section_az));
+    }
     if app.state.view3d_alt_lo_ft > 0.0 || app.state.view3d_alt_hi_ft < 65_000.0 {
         line2.push_str(&format!(
             " · alt {:.0}k–{:.0}k ft",
@@ -475,18 +643,25 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             app.state.view3d_alt_hi_ft / 1000.0,
         ));
     }
+    let extras = v3.iso_triangles() + v3.section_triangles();
     let line1 = format!(
-        "{} tilts ({:.1}–{:.1}°) · {:.0}k tris",
+        "{} tilts ({:.1}–{:.1}°) · {:.0}k tris{}",
         v3.tilt_count(),
         v3.elev_lo_deg(),
         v3.elev_hi_deg(),
-        v3.triangles() as f32 / 1000.0,
+        (v3.triangles() + extras) as f32 / 1000.0,
+        if extras > 0 {
+            format!(" (shells/cut {:.0}k)", extras as f32 / 1000.0)
+        } else {
+            String::new()
+        },
     );
     let line3 = if playing {
         "playback running — the 3D scene follows at full detail (meshes build off-thread)"
             .to_string()
     } else {
-        "orbit: drag · pan: right-drag or W/A/S/D · zoom: wheel · fit: double-click".to_string()
+        "orbit: drag · pan: right-drag or W/A/S/D · zoom: wheel · fit: double-click · probe: hover"
+            .to_string()
     };
     for (i, text) in [line1, line2, line3].iter().enumerate() {
         painter.text(
@@ -500,4 +675,14 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     }
 
     // --- The three display sliders, bottom center --------------------------
+}
+
+/// 16-point compass name for a bearing in degrees (the probe's "31 mi NNE").
+fn compass16(deg: f32) -> &'static str {
+    const NAMES: [&str; 16] = [
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW",
+        "NW", "NNW",
+    ];
+    let idx = (deg.rem_euclid(360.0) / 22.5).round() as usize % 16;
+    NAMES[idx]
 }

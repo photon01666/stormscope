@@ -436,12 +436,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // only re-rasterized when something that affects pixels changes (frame,
     // moment, tilt, view, opacity) — never per frame.
     if let Some(frame) = app.state.current() {
-        if let Some(site) = radar_core::sites::site(&app.state.site_id) {
-            if let Some(si) = frame
-                .volume
-                .sweep_index_for_tilt_moment(app.state.tilt_deg, app.state.moment)
+        // Derived products are read through the display volume: the column
+        // products ride in the frame, SRM comes from the motion-keyed cache.
+        let volume = app.state.display_volume();
+        if let (Some(volume), Some(site)) = (volume, radar_core::sites::site(&app.state.site_id)) {
+            if let Some(si) =
+                volume.sweep_index_for_tilt_moment(app.state.tilt_deg, app.state.moment)
             {
-                let sweep = &frame.volume.sweeps[si];
+                let sweep = &volume.sweeps[si];
                 if sweep.moment(app.state.moment).is_some() {
                     // Motion = another re-raster is expected imminently (drag,
                     // playback, or a burst of wheel-zoom steps). Motion frames
@@ -484,6 +486,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     use std::hash::{Hash, Hasher};
                     let mut h = std::collections::hash_map::DefaultHasher::new();
                     frame.volume_start.timestamp_millis().hash(&mut h);
+                    std::sync::Arc::as_ptr(&volume).hash(&mut h);
                     app.state.moment.hash(&mut h);
                     app.state.tilt_deg.to_bits().hash(&mut h);
                     app.state.view.zoom.to_bits().hash(&mut h);
@@ -690,6 +693,20 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Layer 3.5: SPC outlook *outlines* over the radar -----------------
     // Only the risk boundaries, so they stay legible across rain echoes.
     draw_outlooks(&painter, origin, &view, app, false);
+
+    // A derived product that is still being computed (SRM follows the motion
+    // sliders) says so, instead of leaving a bare basemap.
+    if app.state.moment == radar_core::Moment::StormRelativeVelocity
+        && app.state.display_volume().is_none()
+    {
+        painter.text(
+            tile_resp.rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "deriving SRM…",
+            egui::FontId::proportional(13.0),
+            egui::Color32::from_gray(160),
+        );
+    }
 
     // --- Mesoscale discussion areas (broad layer, under the warnings) ----
     super::reports::draw_mcds(&painter, origin, &view, app);

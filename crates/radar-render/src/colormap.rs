@@ -173,16 +173,30 @@ const VIL_STOPS: &[Stop] = &[
     (90.0, [255, 0, 255, 255]),
 ];
 
-/// Echo Tops (km): a height ramp — cool low, hot high.
+/// Echo Tops (kft, thousands of feet — the operational product unit): a
+/// height ramp — cool low, hot high.
 const TOPS_STOPS: &[Stop] = &[
     (0.0, [30, 60, 120, 0]),
-    (3.0, [0, 120, 255, 255]),
-    (6.0, [0, 200, 200, 255]),
-    (9.0, [0, 200, 0, 255]),
-    (12.0, [255, 220, 0, 255]),
-    (15.0, [255, 120, 0, 255]),
-    (18.0, [255, 0, 0, 255]),
-    (21.0, [255, 0, 255, 255]),
+    (10.0, [0, 120, 255, 255]),
+    (20.0, [0, 200, 200, 255]),
+    (30.0, [0, 200, 0, 255]),
+    (40.0, [255, 220, 0, 255]),
+    (50.0, [255, 120, 0, 255]),
+    (60.0, [255, 0, 0, 255]),
+    (70.0, [255, 0, 255, 255]),
+];
+
+/// Maximum Estimated Hail Size (inches): transparent below a quarter inch,
+/// then the hail-size ramp viewers read for severe cores.
+const MEHS_STOPS: &[Stop] = &[
+    (0.0, [30, 60, 120, 0]),
+    (0.25, [0, 120, 255, 255]),
+    (0.5, [0, 200, 200, 255]),
+    (0.75, [0, 200, 0, 255]),
+    (1.0, [255, 220, 0, 255]),
+    (1.5, [255, 120, 0, 255]),
+    (2.0, [255, 0, 0, 255]),
+    (3.0, [255, 0, 255, 255]),
 ];
 
 fn stops_for(kind: Moment) -> &'static [Stop] {
@@ -198,7 +212,7 @@ fn stops_for(kind: Moment) -> &'static [Stop] {
         // read like rainfall intensity, echo tops like a height ramp.
         Moment::Vil => VIL_STOPS,
         Moment::EchoTops => TOPS_STOPS,
-        Moment::Mesh => VIL_STOPS,
+        Moment::Mesh => MEHS_STOPS,
         Moment::StormRelativeVelocity => VELOCITY_STOPS,
     }
 }

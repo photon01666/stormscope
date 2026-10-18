@@ -518,7 +518,12 @@ fn realtime_poll_loop(
                         radar_decode::decode_realtime_volume(&bytes)
                     }));
                     match decoded {
-                        Ok(Ok(v)) => {
+                        Ok(Ok(mut v)) => {
+                            // Derived products (VIL / Echo Tops / MEHS) ride
+                            // along on the decode thread: by the time the
+                            // volume reaches the UI they exist, so product
+                            // switching and playback never pay for them.
+                            radar_core::derived::attach_derived(&mut v);
                             log::info!(
                                 "realtime {site}: volume {} decoded ({} sweeps, {} bytes)",
                                 volume.as_number(),
@@ -629,23 +634,30 @@ fn persist_volume(
 /// Try each plausible representation until one decodes: as-given,
 /// decompressed (NOAA-style gz input), then re-compressed (strict-gz input).
 fn decode_archive_bytes(bytes: &[u8]) -> Result<Arc<radar_core::Volume>> {
+    /// Wrap a decoded volume for the archive cache, deriving the column
+    /// products (VIL / Echo Tops / MEHS) on the decode thread so the UI
+    /// never pays for them.
+    fn finish(mut v: radar_core::Volume) -> Arc<radar_core::Volume> {
+        radar_core::derived::attach_derived(&mut v);
+        Arc::new(v)
+    }
     if let Ok(v) = radar_decode::decode_volume_file(bytes) {
-        return Ok(Arc::new(v));
+        return Ok(finish(v));
     }
     if is_gzip(bytes) {
         let raw = gunzip(bytes).context("decompressing gzip volume")?;
         if let Ok(v) = radar_decode::decode_volume_file(&raw) {
-            return Ok(Arc::new(v));
+            return Ok(finish(v));
         }
     } else {
         let gz = gzip(bytes).context("compressing raw volume")?;
         if let Ok(v) = radar_decode::decode_volume_file(&gz) {
-            return Ok(Arc::new(v));
+            return Ok(finish(v));
         }
     }
     // Fall through: re-run once to surface the real decode error.
     radar_decode::decode_volume_file(bytes)
-        .map(Arc::new)
+        .map(finish)
         .map_err(Into::into)
 }
 
@@ -679,6 +691,60 @@ mod tests {
         assert!(is_gzip(&gz));
         assert!(!is_gzip(payload));
         assert_eq!(gunzip(&gz).unwrap(), payload);
+    }
+
+    /// A real cached volume, when one exists: decoding attaches the derived
+    /// column products (VIL / Echo Tops / MEHS) and the values are sane
+    /// (VIL bounded, echo tops within the beam heights).
+    #[test]
+    #[ignore = "needs a warm radar cache (run with --ignored)"]
+    fn derived_products_attach_on_a_real_volume() {
+        let root = std::env::var("HOME").unwrap_or_default() + "/.cache/stormscope/l2/KTWX";
+        let Ok(dir) = std::fs::read_dir(&root) else {
+            eprintln!("no cache at {root} — skipped");
+            return;
+        };
+        let mut files: Vec<std::path::PathBuf> = dir
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "gz"))
+            .collect();
+        files.sort();
+        let Some(path) = files.last() else {
+            eprintln!("cache empty — skipped");
+            return;
+        };
+        let bytes = std::fs::read(path).unwrap();
+        let mut vol = radar_decode::decode_volume_file(&bytes).expect("decode");
+        let t0 = std::time::Instant::now();
+        radar_core::derived::attach_derived(&mut vol);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("attach_derived on {}: {ms:.0} ms", path.display());
+        assert!(ms < 2_000.0, "deriving took {ms} ms — too slow for decode");
+        for m in [
+            radar_core::Moment::Vil,
+            radar_core::Moment::EchoTops,
+            radar_core::Moment::Mesh,
+        ] {
+            let md = vol
+                .sweeps
+                .iter()
+                .find_map(|s| s.moment(m))
+                .unwrap_or_else(|| panic!("{m:?} not attached"));
+            assert!(md.ray_count > 0 && md.gate_count > 0);
+            let mut max = f32::MIN;
+            for r in 0..md.ray_count {
+                for g in 0..md.gate_count {
+                    if let Some(v) = md.value(r, g) {
+                        max = max.max(v);
+                    }
+                }
+            }
+            eprintln!("  {m:?} max = {max:.2} {}", m.unit());
+            assert!(max.is_finite() && max >= 0.0, "{m:?} max {max}");
+            if m == radar_core::Moment::Vil {
+                assert!(max < 500.0, "VIL out of range: {max}");
+            }
+        }
     }
 
     #[test]

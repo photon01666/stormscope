@@ -469,7 +469,7 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         return;
     }
     let scale = app.sidebar_scale.max(1.0);
-    let size = egui::vec2(330.0 * scale, 260.0 * scale);
+    let size = egui::vec2(330.0 * scale, 430.0 * scale);
     let mut open = true;
     egui::Window::new("3D controls")
         .id(egui::Id::new("stormscope.view3d_controls"))
@@ -585,6 +585,78 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 }
             });
 
+            // --- Cross-section curtain (RHI) -----------------------------
+            ui.separator();
+            ui.checkbox(&mut app.state.view3d_section, "Cross-section")
+                .on_hover_text(
+                    "Cut a vertical slice through the volume along one azimuth \
+                     (solid = data, transparent = no measurement)",
+                );
+            if app.state.view3d_section {
+                ui.horizontal(|ui| {
+                    ui.label("Azimuth");
+                    let r = ui.add(
+                        egui::Slider::new(&mut app.state.view3d_section_az, 0.0..=359.0)
+                            .step_by(1.0)
+                            .suffix("°"),
+                    );
+                    sliders.push((5, r.rect));
+                });
+            }
+
+            // --- Isosurfaces (echo shells) -------------------------------
+            let ref_like = matches!(
+                app.state.moment,
+                Moment::Reflectivity | Moment::CompositeReflectivity
+            );
+            ui.horizontal(|ui| {
+                ui.label("Shells");
+                for (i, dbz) in [30.0f32, 50.0, 65.0].into_iter().enumerate() {
+                    let mut on = app.state.view3d_iso[i];
+                    let resp =
+                        ui.add_enabled(ref_like, egui::Checkbox::new(&mut on, format!("{dbz:.0}")));
+                    if resp.changed() {
+                        app.state.view3d_iso[i] = on;
+                    }
+                }
+                ui.label(
+                    egui::RichText::new(if ref_like { "dBZ" } else { "REF only" })
+                        .weak()
+                        .small(),
+                );
+            });
+
+            // --- Storm-relative motion (the SRM product's inputs) --------
+            if app.state.moment == Moment::StormRelativeVelocity {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("Storm motion (SRM subtracts this)")
+                        .small()
+                        .weak(),
+                );
+                let r = ui.add(
+                    egui::Slider::new(&mut app.state.srm_dir_deg, 0.0..=359.0)
+                        .step_by(1.0)
+                        .text("Toward")
+                        .suffix("°"),
+                );
+                sliders.push((6, r.rect));
+                let r = ui.add(
+                    egui::Slider::new(&mut app.state.srm_speed_kt, 0.0..=80.0)
+                        .step_by(1.0)
+                        .text("Speed")
+                        .suffix(" kt"),
+                );
+                sliders.push((7, r.rect));
+            }
+
+            // --- Data probe ----------------------------------------------
+            ui.checkbox(&mut app.state.view3d_probe, "Data probe")
+                .on_hover_text(
+                    "Hover the pane: first echo and strongest echo under the \
+                     cursor, with height and distance",
+                );
+
             control_window_wheel(ui, &sliders, |target, steps| match target {
                 0 => {
                     app.state.view3d_threshold =
@@ -604,6 +676,16 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 4 => {
                     app.state.view3d_alt_hi_ft = (app.state.view3d_alt_hi_ft + 1_000.0 * steps)
                         .clamp(app.state.view3d_alt_lo_ft, 65_000.0);
+                }
+                5 => {
+                    app.state.view3d_section_az =
+                        (app.state.view3d_section_az + steps).rem_euclid(360.0);
+                }
+                6 => {
+                    app.state.srm_dir_deg = (app.state.srm_dir_deg + steps).rem_euclid(360.0);
+                }
+                7 => {
+                    app.state.srm_speed_kt = (app.state.srm_speed_kt + steps).clamp(0.0, 80.0);
                 }
                 _ => {}
             });
@@ -897,18 +979,23 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             .send(crate::app::DataCmd::SetSite(app.state.site_id.clone()));
     }
 
-    // Product (moment) selector.
+    // Product (moment) selector: whatever the volume actually carries —
+    // decoded base moments plus the derived products attached at decode
+    // (VIL / Echo Tops / MEHS) and SRM, which is derived on demand from the
+    // motion sliders.
     ui.add_space(6.0);
     ui.label("Product");
-    let moments = [
-        Moment::Reflectivity,
-        Moment::Velocity,
-        Moment::SpectrumWidth,
-        Moment::DifferentialReflectivity,
-        Moment::CorrelationCoefficient,
-        Moment::SpecificDifferentialPhase,
-        Moment::DifferentialPhase,
-    ];
+    let mut moments: Vec<Moment> = app
+        .state
+        .current()
+        .map(|f| f.volume.meta.moments.clone())
+        .unwrap_or_default();
+    if moments.contains(&Moment::Velocity) && !moments.contains(&Moment::StormRelativeVelocity) {
+        moments.push(Moment::StormRelativeVelocity);
+    }
+    if moments.is_empty() {
+        moments.push(Moment::Reflectivity);
+    }
     ui.horizontal_wrapped(|ui| {
         for m in moments {
             let selected = app.state.moment == m;

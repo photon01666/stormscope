@@ -42,6 +42,12 @@ pub enum DataMsg {
         done: u32,
         total: u32,
     },
+    /// A storm-relative velocity volume for one motion setting, built off the
+    /// UI thread (the data thread's derive task).
+    Srm {
+        key: u64,
+        volume: Arc<radar_core::Volume>,
+    },
     /// One historical warning's raw NWS product text (`None` = the fetch
     /// failed; an Error message accompanies it).
     ArchiveText {
@@ -95,6 +101,15 @@ pub enum DataCmd {
     /// travels with the command so the prime and poller can never diverge
     /// from what the app is watching (a silent desync dropped every volume).
     EnterLive(String),
+    /// Derive storm-relative velocity for one motion setting (the SRM
+    /// product's inputs change with the sliders, so this can't be attached
+    /// at decode like VIL/TOPS/MEHS).
+    DeriveSrm {
+        key: u64,
+        volume: Arc<radar_core::Volume>,
+        toward_deg: f32,
+        speed_kt: f32,
+    },
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
     LoadOutlook(u8, radar_core::outlooks::OutlookType),
@@ -161,6 +176,11 @@ pub struct StormApp {
     /// Derived storm tracks for the (prev, cur) frame pair at the current
     /// tilt: cached by signature, recomputed only when the frames change.
     pub tracks_cache: Option<(u64, Vec<radar_render::StormTrack>)>,
+    /// When the in-flight SRM derivation was requested (staleness watchdog).
+    pub srm_requested_at: Option<std::time::Instant>,
+    /// Geometry key of the cross-section curtain currently uploaded (the
+    /// pane rebuilds it when the azimuth, product or volume changes).
+    pub view3d_section_key: Option<u64>,
     /// Previous smoothed track set: fresh velocities blend 50/50 with these
     /// (matched by proximity), so cell motion — and marker ETAs — settle
     /// instead of jumping scan to scan.
@@ -298,6 +318,8 @@ impl StormApp {
             radar_view_change_at: std::time::Instant::now(),
             radar_last_view_sig: 0,
             tracks_cache: None,
+            srm_requested_at: None,
+            view3d_section_key: None,
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
             view3d: None,
@@ -531,6 +553,24 @@ impl StormApp {
                         at: std::time::Instant::now(),
                     });
                 }
+                DataMsg::Srm { key, volume } => {
+                    if self.state.srm_pending == Some(key) {
+                        self.state.srm_pending = None;
+                    }
+                    let build_ms = volume
+                        .sweeps
+                        .first()
+                        .map(|s| {
+                            s.moment(radar_core::Moment::StormRelativeVelocity)
+                                .is_some()
+                        })
+                        .unwrap_or(false);
+                    log::debug!(
+                        "SRM volume {key:x}: {} sweeps, velocity present: {build_ms}",
+                        volume.sweeps.len()
+                    );
+                    self.state.srm_cache = Some((key, volume));
+                }
                 DataMsg::ArchiveText { id, text } => {
                     self.state.archive_text_requested.remove(&id);
                     self.state.archive_texts.insert(id, text);
@@ -613,8 +653,54 @@ impl StormApp {
         }
     }
 
+    /// Ask the data thread for the storm-relative volume the current frame +
+    /// motion setting needs. One derivation is in flight at a time: while it
+    /// builds (and on playback, where every frame wants its own), the panes
+    /// keep showing the last derived volume instead of blanking.
+    fn pump_srm(&mut self) {
+        if self.state.moment != radar_core::Moment::StormRelativeVelocity {
+            return;
+        }
+        let Some(key) = self.state.srm_key() else {
+            return;
+        };
+        if self.state.srm_cache.as_ref().map(|(k, _)| *k) == Some(key) {
+            self.state.srm_shown_key = Some(key);
+            return;
+        }
+        if let Some(pending) = self.state.srm_pending {
+            // A derivation this old means the request was lost (site switch,
+            // archive jump); ask again rather than showing nothing forever.
+            if self
+                .srm_requested_at
+                .is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(3))
+            {
+                log::warn!("SRM derive {pending:x} never came back; re-requesting");
+                self.state.srm_pending = None;
+            } else {
+                return;
+            }
+        }
+        let Some(frame_volume) = self
+            .state
+            .current()
+            .map(|f| std::sync::Arc::clone(&f.volume))
+        else {
+            return;
+        };
+        self.state.srm_pending = Some(key);
+        self.srm_requested_at = Some(std::time::Instant::now());
+        let _ = self.tx.send(DataCmd::DeriveSrm {
+            key,
+            volume: frame_volume,
+            toward_deg: self.state.srm_dir_deg,
+            speed_kt: self.state.srm_speed_kt,
+        });
+    }
+
     fn ui_frame(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
+        self.pump_srm();
         self.handle_input(ui.ctx());
 
         // Texture accounting (debug): the app's GPU-side footprint, and the

@@ -37,6 +37,17 @@ fn volume_bytes(v: &radar_core::Volume) -> usize {
     n
 }
 
+/// Identity of one storm-relative derivation: the frame's scan time plus the
+/// motion setting. Any change means a new SRM volume.
+pub fn srm_key_of(volume: &Volume, toward_deg: f32, speed_kt: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    volume.meta.volume_start.timestamp_millis().hash(&mut h);
+    toward_deg.to_bits().hash(&mut h);
+    speed_kt.to_bits().hash(&mut h);
+    h.finish()
+}
+
 /// A user-placed, labeled location pin on the map. Persisted to
 /// `~/.config/stormscope/markers.json`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -361,6 +372,28 @@ pub struct AppState {
     /// discards fragments outside, so moving these never rebuilds geometry.
     pub view3d_alt_lo_ft: f32,
     pub view3d_alt_hi_ft: f32,
+    /// Cross-section curtain: whether it is drawn, and the azimuth it cuts
+    /// along (degrees clockwise from north).
+    pub view3d_section: bool,
+    pub view3d_section_az: f32,
+    /// Isosurface shells to draw, in dBZ (30 / 50 / 65); only meaningful for
+    /// reflectivity-like products.
+    pub view3d_iso: [bool; 3],
+    /// The hover data probe (first + strongest echo under the cursor).
+    pub view3d_probe: bool,
+    /// Storm-relative motion the SRM product subtracts: direction storms
+    /// move *toward* (degrees clockwise from north) and speed in knots.
+    pub srm_dir_deg: f32,
+    pub srm_speed_kt: f32,
+    /// SRM display volume, keyed by (frame, motion): derived on the data
+    /// thread and swapped in whole, because it is motion-dependent and
+    /// therefore cannot ride along at decode like VIL/TOPS/MEHS do.
+    pub srm_cache: Option<(u64, Arc<Volume>)>,
+    /// Key of the SRM derivation in flight (one at a time; the newest
+    /// request is sent when it lands).
+    pub srm_pending: Option<u64>,
+    /// Key of the SRM volume currently displayed (telemetry/debug).
+    pub srm_shown_key: Option<u64>,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
@@ -547,6 +580,16 @@ impl Default for AppState {
             view3d_tilt_hi: None,
             view3d_alt_lo_ft: 0.0,
             view3d_alt_hi_ft: 65_000.0,
+            view3d_section: false,
+            view3d_section_az: 90.0,
+            view3d_iso: [false, false, false],
+            view3d_probe: true,
+            // A typical central-US supercell motion: east/southeast at 30 kt.
+            srm_dir_deg: 275.0,
+            srm_speed_kt: 30.0,
+            srm_cache: None,
+            srm_pending: None,
+            srm_shown_key: None,
             show_tracks: true,
             outlook: None,
             // On by default with the outline-only look (fill 0.0): the risk
@@ -624,6 +667,41 @@ impl AppState {
     /// Current frame at the playhead, if any volume is loaded.
     pub fn current(&self) -> Option<&Frame> {
         self.ring.get(self.playhead)
+    }
+
+    /// The volume the display paths (map raster, 3D pane, probe) read for
+    /// the selected product.
+    ///
+    /// Derived column products (VIL / Echo Tops / MEHS) ride inside the
+    /// frame's volume — attached on the decode thread — so this is simply
+    /// the frame. Storm-relative velocity cannot: it depends on the motion
+    /// setting, so it comes from the motion-keyed cache, and while a new
+    /// derivation is still building the last one stays on screen (one
+    /// derivation behind is far better than a blank pane).
+    pub fn display_volume(&self) -> Option<Arc<Volume>> {
+        let frame = self.current()?;
+        if self.moment == Moment::StormRelativeVelocity {
+            return self.srm_cache.as_ref().map(|(_, v)| Arc::clone(v));
+        }
+        Some(Arc::clone(&frame.volume))
+    }
+
+    /// Key of the SRM derivation the current frame + motion setting needs.
+    pub fn srm_key(&self) -> Option<u64> {
+        let frame = self.current()?;
+        Some(srm_key_of(
+            &frame.volume,
+            self.srm_dir_deg,
+            self.srm_speed_kt,
+        ))
+    }
+
+    /// Whether the selected product is one of the derived ones.
+    pub fn derived_product_selected(&self) -> bool {
+        matches!(
+            self.moment,
+            Moment::Vil | Moment::EchoTops | Moment::Mesh | Moment::StormRelativeVelocity
+        )
     }
 
     /// Whether the radar is scanning in precip or clear-air mode: VCP table
@@ -826,6 +904,50 @@ mod tests {
         s.push_volume(vol("UNKNOWN", at(30)));
         assert_eq!(s.ring.len(), 2);
         assert_eq!(s.newest_start(), Some(at(30)));
+    }
+
+    /// The display volume follows the product: derived column products ride
+    /// in the frame, SRM comes from the motion-keyed cache (its absence is
+    /// what the panes show as "deriving…"), and the key changes whenever the
+    /// frame or the motion setting does.
+    #[test]
+    fn display_volume_tracks_the_selected_product() {
+        let mut s = state();
+        s.push_volume(vol("KTWX", at(10)));
+        let frame_vol = Arc::clone(&s.ring[0].volume);
+        // Any base or column product reads the frame's volume, including the
+        // Arc identity the raster/3D signatures key on.
+        assert_eq!(
+            Arc::as_ptr(&s.display_volume().expect("frame volume")),
+            Arc::as_ptr(&frame_vol)
+        );
+        s.moment = radar_core::Moment::StormRelativeVelocity;
+        assert!(s.display_volume().is_none(), "no SRM derived yet");
+
+        let key = s.srm_key().expect("key for the current frame");
+        let srm = Arc::new(Volume {
+            meta: VolumeMeta {
+                site_id: "KTWX".into(),
+                volume_start: at(10),
+                vcp: None,
+                sequence_number: None,
+                sweep_count: 0,
+                moments: vec![radar_core::Moment::StormRelativeVelocity],
+            },
+            sweeps: Vec::new(),
+        });
+        s.srm_cache = Some((key, Arc::clone(&srm)));
+        assert_eq!(
+            Arc::as_ptr(&s.display_volume().expect("cached SRM")),
+            Arc::as_ptr(&srm)
+        );
+        // Motion changes make a new key: the pane re-derives, and until it
+        // lands the previous volume keeps drawing.
+        let mut other = state();
+        other.push_volume(vol("KTWX", at(10)));
+        other.srm_dir_deg = s.srm_dir_deg + 10.0;
+        assert_ne!(s.srm_key(), other.srm_key());
+        assert!(s.derived_product_selected());
     }
 
     /// The station sets are merged for display: the sweep set keeps its

@@ -344,6 +344,32 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                         shift_archive_window(&source, day, delta, &out);
                     }
                 }
+                DataCmd::DeriveSrm {
+                    key,
+                    volume,
+                    toward_deg,
+                    speed_kt,
+                } => {
+                    // Motion-dependent, and cheap enough to run inline on this
+                    // thread (~10 ms over a full VEL volume): the UI keeps
+                    // drawing while it computes.
+                    let t0 = std::time::Instant::now();
+                    match radar_core::derived::storm_relative_volume(&volume, toward_deg, speed_kt)
+                    {
+                        Some(v) => {
+                            log::debug!(
+                                "SRM {key:x}: {} sweeps toward {toward_deg:.0}° at {speed_kt:.0} kt in {} ms",
+                                v.sweeps.len(),
+                                t0.elapsed().as_millis()
+                            );
+                            let _ = out.send(DataMsg::Srm {
+                                key,
+                                volume: std::sync::Arc::new(v),
+                            });
+                        }
+                        None => log::debug!("SRM {key:x}: no velocity data in this volume"),
+                    }
+                }
                 DataCmd::EnterLive(site) => {
                     // Back to live: drop the archive listing, clear the ring,
                     // and show the newest scan immediately. The live poller

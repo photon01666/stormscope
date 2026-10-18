@@ -18,13 +18,16 @@
 //! the app paints overlays at `response.rect.min + view_px`.
 
 pub mod colormap;
+pub mod iso;
 pub mod projection;
 pub mod raster;
+pub mod section;
 pub mod tiles;
 pub mod tracks;
 pub mod volume3d;
 
 pub use colormap::{ColorTable, Stop};
+pub use iso::{IsoMesh, IsoParams, build_isosurfaces};
 pub use projection::{
     MapView, MercProjector, gate_latlon, initial_bearing_deg, lonlat_to_merc_px, merc_px_to_lonlat,
     meters_per_pixel, surface_distance_m,
@@ -34,10 +37,13 @@ pub use raster::{
     rasterize_sweep_into, rasterize_sweep_premultiplied, rasterize_sweep_premultiplied_into,
     scaled_view,
 };
+pub use section::{
+    ProbeHit, ProbeReport, SectionParams, build_cross_section, probe_ray, triangle_ranges,
+};
 pub use tiles::{TileKey, TileLayer, TileRange, tile_range, tile_scale, tile_view_rect};
 pub use tracks::{CellEta, StormTrack, compute_tracks, eta_to_point, extrapolate};
 pub use volume3d::{
     Camera, FT_PER_KM, KM_PER_MILE, MeshDetail, MeshFilter, MeshVertex, NO_THRESHOLD_VALUE,
-    TiltDraw, VolumeMesh, beam_height_km, build_ground_grid, build_volume_mesh,
-    ground_tile_bounds_km, ground_tile_keys, ring_radii_mi,
+    Profile, TiltDraw, VolumeMesh, VolumeSampler, beam_height_km, build_ground_grid,
+    build_volume_mesh, ground_tile_bounds_km, ground_tile_keys, ring_radii_mi,
 };

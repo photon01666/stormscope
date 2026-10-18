@@ -15,6 +15,7 @@
 
 use chrono::TimeZone;
 use radar_core::{Moment, MomentCalibration, MomentData, Sweep, Volume, VolumeMeta};
+use radar_render::section::{SectionParams, build_cross_section};
 use radar_render::volume3d::{Camera, MeshDetail, MeshFilter};
 use stormscope_app::render3d::Volume3d;
 
@@ -122,7 +123,7 @@ fn renders_a_synthetic_supercell_to_a_png() {
     let volume = synthetic_volume();
     let mut v3 = Volume3d::new(&device, &queue);
     let filter = MeshFilter::new(Moment::Reflectivity, MeshDetail::Normal);
-    let rebuilt = v3.update_scene(&device, &queue, &volume, &filter, 1);
+    let rebuilt = v3.update_scene(&device, &queue, &volume, &filter, &[], 1);
     assert!(rebuilt);
     eprintln!(
         "scene: {} tilts, {:.0} km range, {} tris, {} verts",
@@ -259,7 +260,7 @@ fn bench_pane_resolution_cost() {
     let volume = synthetic_volume();
     let mut v3 = Volume3d::new(&device, &queue);
     let filter = MeshFilter::new(Moment::Reflectivity, MeshDetail::Fine);
-    v3.update_scene(&device, &queue, &volume, &filter, 7);
+    v3.update_scene(&device, &queue, &volume, &filter, &[], 7);
 
     let ve = 20.0f32;
     let half_h = 13.0 * ve / 2.0;
@@ -358,7 +359,7 @@ fn bench_pane_cost_with_a_real_volume() {
     let mut v3 = Volume3d::new(&device, &queue);
     let filter = MeshFilter::new(Moment::Reflectivity, MeshDetail::Fine);
     let t0 = std::time::Instant::now();
-    v3.update_scene(&device, &queue, &vol, &filter, 9);
+    v3.update_scene(&device, &queue, &vol, &filter, &[], 9);
     eprintln!(
         "scene build: {:?} ({} tris, {} tilts)",
         t0.elapsed(),
@@ -508,4 +509,139 @@ fn inspect_kdp_on_a_real_volume() {
     }
     eprintln!("KDP cuts found: {found}");
     assert!(found > 0, "this volume has no KDP at all");
+}
+
+/// Render one frame and read the offscreen target back.
+fn readback(v3: &Volume3d, device: &wgpu::Device, queue: &wgpu::Queue, size: [u32; 2]) -> Vec<u8> {
+    let texture = v3.color_texture().expect("render created the target");
+    let bytes_per_row = size[0] * 4;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("smoke-readback"),
+        size: u64::from(bytes_per_row) * u64::from(size[1]),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("smoke-readback-encoder"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(size[1]),
+            },
+        },
+        wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(Some(encoder.finish()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("device poll");
+    rx.recv().expect("map callback").expect("map_async failed");
+    let data = buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("mapped range")
+        .to_vec();
+    buffer.unmap();
+    data
+}
+
+/// The analysis-layer GPU paths: echo shells (isosurfaces) and a
+/// cross-section curtain upload into the pane's buffers and actually reach
+/// the framebuffer — the frame must change where they were added.
+#[test]
+#[ignore = "needs a GPU adapter; run locally with --ignored --nocapture"]
+fn renders_echo_shells_and_a_cross_section() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("no GPU adapter available");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("device request failed");
+
+    let volume = synthetic_volume();
+    let mut v3 = Volume3d::new(&device, &queue);
+    let filter = MeshFilter::new(Moment::Reflectivity, MeshDetail::Normal);
+    let size = [1024u32, 640u32];
+    let ve = 6.0;
+    let camera = Camera {
+        yaw_deg: 305.0,
+        pitch_deg: 14.0,
+        distance_km: 330.0,
+        target_km: [20.0, 20.0, 9.0 * ve * 0.42],
+    };
+
+    // Frame 1: the plain volume.
+    assert!(v3.update_scene(&device, &queue, &volume, &filter, &[], 31));
+    v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0, 1.2);
+    let plain = readback(&v3, &device, &queue, size);
+
+    // Frame 2: the same view plus 30/50/65 dBZ shells and a curtain along
+    // the storm's flank.
+    assert!(v3.update_scene(&device, &queue, &volume, &filter, &[30.0, 50.0, 65.0], 32));
+    eprintln!("shells: {} triangles", v3.iso_triangles());
+    assert!(v3.iso_triangles() > 1_000, "no shells extracted");
+    let params = SectionParams {
+        azimuth_deg: 40.0,
+        max_range_km: v3.max_range_km(),
+        top_km: 16.0,
+        range_step_km: 1.0,
+        height_step_km: 0.4,
+    };
+    let (verts, idx) = build_cross_section(&volume, Moment::Reflectivity, &params);
+    assert!(idx.len() / 3 > 1_000, "cross-section too small");
+    v3.set_cross_section(&device, &queue, &verts, &idx);
+    eprintln!("cross-section: {} triangles at 40°", v3.section_triangles());
+    v3.render(&device, &queue, size, &camera, ve, 0.6, 5.0, 0.0, 20.0, 1.2);
+    let with_extras = readback(&v3, &device, &queue, size);
+
+    // The added geometry must show: count pixels that changed materially.
+    let changed = plain
+        .chunks_exact(4)
+        .zip(with_extras.chunks_exact(4))
+        .filter(|(a, b)| {
+            u32::from(a[0].abs_diff(b[0]))
+                + u32::from(a[1].abs_diff(b[1]))
+                + u32::from(a[2].abs_diff(b[2]))
+                > 24
+        })
+        .count();
+    eprintln!("changed pixels: {changed} of {}", plain.len() / 4);
+
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("render3d-shells.png");
+    let file = std::fs::File::create(&path).expect("create png");
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), size[0], size[1]);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .expect("png header")
+        .write_image_data(&with_extras)
+        .expect("png data");
+    eprintln!("wrote {}", path.display());
+
+    assert!(
+        changed > 1_000,
+        "shells/curtain did not reach the framebuffer ({changed} pixels changed)"
+    );
 }

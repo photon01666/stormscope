@@ -39,8 +39,9 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use radar_core::{Moment, Volume};
+use radar_render::iso::{IsoMesh, IsoParams, build_isosurfaces};
 use radar_render::volume3d::{
-    Camera, MeshFilter, VolumeMesh, build_ground_grid, build_volume_mesh,
+    Camera, MeshFilter, MeshVertex, VolumeMesh, build_ground_grid, build_volume_mesh,
 };
 
 /// Offscreen target format. Must stay `Rgba8Unorm` — the only format
@@ -125,6 +126,23 @@ pub struct Volume3d {
     tilt_ranges: Vec<Range<u32>>,
     /// Index range of the ground grid (drawn before the cuts).
     grid_range: Range<u32>,
+
+    /// Isosurface shells (echo volumes) sharing the volume pipeline: one
+    /// vertex/index pair, one range per threshold.
+    iso_vbuf: wgpu::Buffer,
+    iso_ibuf: wgpu::Buffer,
+    iso_vbuf_cap: u64,
+    iso_ibuf_cap: u64,
+    iso_ranges: Vec<(f32, Range<u32>)>,
+    iso_triangles: usize,
+    /// Vertical cross-section curtain: same vertex format, rebuilt on the UI
+    /// thread (it is a few thousand vertices) whenever its azimuth changes.
+    section_vbuf: wgpu::Buffer,
+    section_ibuf: wgpu::Buffer,
+    section_vbuf_cap: u64,
+    section_ibuf_cap: u64,
+    section_range: Range<u32>,
+    section_triangles: usize,
 
     /// Basemap tiles: cached bind groups by egui texture id, plus the
     /// frame's quad geometry (rebuilt every frame — a few hundred vertices).
@@ -427,11 +445,32 @@ impl Volume3d {
             .spawn(move || {
                 while let Ok(job) = job_rx.recv() {
                     let mesh = build_volume_mesh(&job.volume, &job.filter);
+                    // Echo shells are the heavy part (a full polar lattice ×
+                    // every threshold): they belong here, off the UI thread,
+                    // and only when the pane asked for them.
+                    let iso = if job.iso.is_empty() {
+                        IsoMesh {
+                            vertices: Vec::new(),
+                            indices: Vec::new(),
+                            shells: Vec::new(),
+                        }
+                    } else {
+                        build_isosurfaces(
+                            &job.volume,
+                            job.filter.moment,
+                            &job.iso,
+                            &IsoParams {
+                                detail: job.filter.detail,
+                                ..IsoParams::default()
+                            },
+                        )
+                    };
                     if done_tx
                         .send(MeshDone {
                             sig: job.sig,
                             seq: job.seq,
                             mesh,
+                            iso,
                         })
                         .is_err()
                     {
@@ -473,6 +512,30 @@ impl Volume3d {
             ibuf_cap: 4,
             tilt_ranges: Vec::new(),
             grid_range: 0..0,
+            iso_vbuf: empty(
+                "stormscope.volume3d.iso-vbuf",
+                wgpu::BufferUsages::VERTEX,
+                4,
+            ),
+            iso_ibuf: empty("stormscope.volume3d.iso-ibuf", wgpu::BufferUsages::INDEX, 4),
+            iso_vbuf_cap: 4,
+            iso_ibuf_cap: 4,
+            iso_ranges: Vec::new(),
+            iso_triangles: 0,
+            section_vbuf: empty(
+                "stormscope.volume3d.section-vbuf",
+                wgpu::BufferUsages::VERTEX,
+                4,
+            ),
+            section_ibuf: empty(
+                "stormscope.volume3d.section-ibuf",
+                wgpu::BufferUsages::INDEX,
+                4,
+            ),
+            section_vbuf_cap: 4,
+            section_ibuf_cap: 4,
+            section_range: 0..0,
+            section_triangles: 0,
             tile_bgs: HashMap::new(),
             ground_vbuf: empty(
                 "stormscope.volume3d.ground-vbuf",
@@ -510,12 +573,14 @@ impl Volume3d {
 
     /// Rebuild the scene synchronously (tests and one-off loads).
     /// Returns true when the GPU buffers were replaced.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_scene(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         volume: &Volume,
         filter: &MeshFilter,
+        iso: &[f32],
         sig: u64,
     ) -> bool {
         if self.scene_sig == Some(sig) && self.moment_seen == Some(filter.moment) {
@@ -523,6 +588,27 @@ impl Volume3d {
         }
         let mesh = build_volume_mesh(volume, filter);
         self.upload_mesh(device, queue, mesh);
+        self.upload_iso(
+            device,
+            queue,
+            if iso.is_empty() {
+                IsoMesh {
+                    vertices: Vec::new(),
+                    indices: Vec::new(),
+                    shells: Vec::new(),
+                }
+            } else {
+                build_isosurfaces(
+                    volume,
+                    filter.moment,
+                    iso,
+                    &IsoParams {
+                        detail: filter.detail,
+                        ..IsoParams::default()
+                    },
+                )
+            },
+        );
         self.scene_sig = Some(sig);
         self.moment_seen = Some(filter.moment);
         self.scene_built_at = std::time::Instant::now();
@@ -533,7 +619,13 @@ impl Volume3d {
 
     /// Ask the worker for `sig` (idempotent: the newest request wins and
     /// stale intermediate requests are never started).
-    pub fn request_scene(&mut self, volume: std::sync::Arc<Volume>, filter: MeshFilter, sig: u64) {
+    pub fn request_scene(
+        &mut self,
+        volume: std::sync::Arc<Volume>,
+        filter: MeshFilter,
+        iso: Vec<f32>,
+        sig: u64,
+    ) {
         if self.scene_sig == Some(sig)
             || self.in_flight == Some(sig)
             || self.wanted.as_ref().map(|j| j.sig) == Some(sig)
@@ -546,6 +638,7 @@ impl Volume3d {
             seq: self.job_seq,
             volume,
             filter,
+            iso,
         });
         self.start_wanted();
     }
@@ -578,6 +671,7 @@ impl Volume3d {
             // are dropped.
             if scene_should_upload(self.displayed_seq, done.seq) {
                 self.upload_mesh(device, queue, done.mesh);
+                self.upload_iso(device, queue, done.iso);
                 self.scene_sig = Some(done.sig);
                 self.displayed_seq = done.seq;
                 self.last_key = None;
@@ -647,6 +741,60 @@ impl Volume3d {
             "stormscope.volume3d.ibuf",
             wgpu::BufferUsages::INDEX,
             index_bytes,
+        );
+    }
+
+    /// Upload the isosurface shells into their own buffers.
+    fn upload_iso(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, iso: IsoMesh) {
+        self.iso_triangles = iso.triangle_count();
+        self.iso_ranges = iso.shells;
+        upload_into(
+            device,
+            queue,
+            &mut self.iso_vbuf,
+            &mut self.iso_vbuf_cap,
+            "stormscope.volume3d.iso-vbuf",
+            wgpu::BufferUsages::VERTEX,
+            bytemuck::cast_slice(&iso.vertices),
+        );
+        upload_into(
+            device,
+            queue,
+            &mut self.iso_ibuf,
+            &mut self.iso_ibuf_cap,
+            "stormscope.volume3d.iso-ibuf",
+            wgpu::BufferUsages::INDEX,
+            bytemuck::cast_slice(&iso.indices),
+        );
+    }
+
+    /// Replace the cross-section curtain geometry (an empty mesh clears it).
+    pub fn set_cross_section(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertices: &[MeshVertex],
+        indices: &[u32],
+    ) {
+        self.section_triangles = indices.len() / 3;
+        self.section_range = 0..indices.len() as u32;
+        upload_into(
+            device,
+            queue,
+            &mut self.section_vbuf,
+            &mut self.section_vbuf_cap,
+            "stormscope.volume3d.section-vbuf",
+            wgpu::BufferUsages::VERTEX,
+            bytemuck::cast_slice(vertices),
+        );
+        upload_into(
+            device,
+            queue,
+            &mut self.section_ibuf,
+            &mut self.section_ibuf_cap,
+            "stormscope.volume3d.section-ibuf",
+            wgpu::BufferUsages::INDEX,
+            bytemuck::cast_slice(indices),
         );
     }
 
@@ -771,6 +919,12 @@ impl Volume3d {
     }
     pub fn elev_lo_deg(&self) -> f32 {
         self.elev_lo_deg
+    }
+    pub fn iso_triangles(&self) -> usize {
+        self.iso_triangles
+    }
+    pub fn section_triangles(&self) -> usize {
+        self.section_triangles
     }
     pub fn elev_hi_deg(&self) -> f32 {
         self.elev_hi_deg
@@ -917,6 +1071,25 @@ impl Volume3d {
                 for range in &self.tilt_ranges {
                     pass.draw_indexed(range.clone(), 0, 0..1);
                 }
+            }
+
+            // 4) Echo shells (isosurfaces): their own buffers, same format.
+            if !self.iso_ranges.is_empty() {
+                pass.set_bind_group(0, &self.volume_bg, &[]);
+                pass.set_vertex_buffer(0, self.iso_vbuf.slice(..));
+                pass.set_index_buffer(self.iso_ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                for (_, range) in &self.iso_ranges {
+                    pass.draw_indexed(range.clone(), 0, 0..1);
+                }
+            }
+
+            // 5) The cross-section curtain, last so it reads through the
+            //    translucent volume it cuts.
+            if self.section_range.start < self.section_range.end {
+                pass.set_bind_group(0, &self.volume_bg, &[]);
+                pass.set_vertex_buffer(0, self.section_vbuf.slice(..));
+                pass.set_index_buffer(self.section_ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(self.section_range.clone(), 0, 0..1);
             }
         }
         queue.submit(Some(encoder.finish()));
@@ -1181,6 +1354,8 @@ struct MeshJob {
     seq: u64,
     volume: std::sync::Arc<Volume>,
     filter: MeshFilter,
+    /// Isosurface thresholds (dBZ) — empty means "no shells".
+    iso: Vec<f32>,
 }
 
 /// A finished mesh on its way back to the UI thread.
@@ -1188,6 +1363,7 @@ struct MeshDone {
     sig: u64,
     seq: u64,
     mesh: VolumeMesh,
+    iso: IsoMesh,
 }
 
 /// Show a finished build when it is newer than what is on screen (strictly

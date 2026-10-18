@@ -3,6 +3,58 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.3.0 — 2026-10-18
+
+**Derived products: VIL, Echo Tops, MEHS**
+- Three new products in the selector, computed from the reflectivity volume
+  the way analysts expect: **VIL** (Amburn & Wolf `3.44·10⁻⁶·Z^(4/7)`
+  integrated over the beam heights at each column's slant range), **Echo
+  Tops** in kft (the interpolated 18.5 dBZ crossing, the operational unit)
+  and **MEHS** in inches (`0.1·√VIL`, Witt et al.), each with its own color
+  ramp. The map, the 3D pane and the probe read them like any other moment.
+- They are derived **at decode** on the data thread (threaded over ray
+  chunks: ~45 ms on a real volume, ~4 % memory), so switching products and
+  looping playback cost nothing.
+
+**Storm-relative velocity**
+- New **SRM** product: radial velocity minus the storm motion projected onto
+  each radial, with *Storm motion* toward/speed sliders in the 3D Controls
+  window. It follows the sliders, so it is derived on demand on the data
+  thread and cached per scan + motion; the panes keep the last derivation on
+  screen while the next one builds instead of blanking.
+
+**3D analysis tools**
+- **Cross-section**: a vertical curtain (RHI) through the volume along any
+  azimuth, drawn with the same colors and echo floor as everything else and
+  transparent where the radar did not measure, so the silhouette is honest.
+  Rebuilt in a couple of milliseconds while the azimuth slider moves.
+- **Echo shells (isosurfaces)**: 30 / 50 / 65 dBZ shells extracted by
+  marching tetrahedra over the polar grid on the 3D mesh worker — crack-free,
+  open where there is no data, so a hail core's shape reads at a glance.
+- **Data probe**: hover the 3D pane for the first and strongest echo under
+  the cursor — value, height in k ft, distance in miles and bearing — with
+  markers in the scene, a drop line to the ground, and the readout on a
+  black plate (clamped inside the pane) so it stays legible over bright
+  cores.
+- All three sit on one shared, unit-tested sampler (nearest ray by binary
+  search, linear in gate and between cuts, plus a prepared per-azimuth
+  profile) — which is what makes them cheap enough to run live.
+
+**KDP fixed**
+- KDP never appeared because the upstream decoder has no KDP block accessor:
+  it is now derived from the differential-phase field (least-squares over a
+  ±4-gate window, ICD-style scale/offset) when sweeps are built, verified
+  against a real volume (~293k gates with data, physical −0.5…124 °/km).
+
+**Fixes**
+- Dual-pol moments (KDP, PHI) drew **blank on the 2D map**: gate geometry
+  was built from a sweep's *first* moment, but PHI/KDP blocks carry fewer
+  gates than REF in the same sweep (720×1192 vs 720×1832), so the rasterizer
+  refused the reused table every frame. Geometry is now per moment
+  (regression-tested), and the playback-tolerant reuse (elevation jitter, a
+  dropped start ray) still absorbs scan-to-scan differences instead of
+  rebuilding ~90 ms per tick.
+
 ## v1.2.9 — 2026-10-17
 
 **The 3D loop stops skipping frames**

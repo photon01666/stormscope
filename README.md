@@ -26,9 +26,21 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   floating quick-adjust bar on the map — scroll over it to step 5 dB.
 - Optional **3D radar pane**: every elevation cut of the current scan as one
   rotatable volume, beside the map or maximized. Drag orbits, right-drag
-  (or W/A/S/D over the pane) pans freely, wheel zooms; the bottom-center sliders set the echo floor,
-  opacity and height scale; the sidebar adds a tilt range and an altitude
-  slab (feet). The ground is the same basemap the 2D map draws, and custom
+  (or W/A/S/D over the pane) pans freely, wheel zooms; the pane's Controls
+  window sets the echo floor, opacity, height scale, tilt range, altitude
+  slab (feet), mesh detail, and the analysis tools:
+  - **Cross-section** — cut a vertical slice through the volume along any
+    azimuth (data drawn, no-measurement areas transparent).
+  - **Echo shells** — 30 / 50 / 65 dBZ isosurfaces, so a hail core's shape
+    reads at a glance.
+  - **Data probe** — hover the pane for the first and strongest echo under
+    the cursor: value, height in k ft, distance in miles, bearing.
+  - **Storm motion** sliders for the storm-relative velocity product.
+- **Derived products**, computed at decode so they loop like anything else:
+  **VIL**, **Echo Tops** (kft) and **MEHS** (inches) from the reflectivity
+  volume, plus **storm-relative velocity** (SRM) from velocity and the storm
+  motion sliders.
+- The ground is the same basemap the 2D map draws, and custom
   markers rise from it as pins. Range rings are 50-mile landmarks, like a
   sectional chart.
 - Scan-age badge next to the precip/clear-air mode badge: exact age of the

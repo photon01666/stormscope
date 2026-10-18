@@ -37,6 +37,15 @@ pub enum Moment {
     /// Normalized vertical power / hydrometeor-ish extras are out of scope
     /// for now; extend as needed.
     CompositeReflectivity,
+    /// Vertically Integrated Liquid (kg/m²) — derived from the REF volume.
+    Vil,
+    /// Echo Tops (km) — the top of the ≥18.5 dBZ echo, derived from REF.
+    EchoTops,
+    /// Maximum Estimated Hail Size (cm), from VIL and the freezing level.
+    Mesh,
+    /// Storm-relative radial velocity (m/s) — radial velocity minus the
+    /// storm motion projected onto each radial.
+    StormRelativeVelocity,
 }
 
 impl Moment {
@@ -51,6 +60,10 @@ impl Moment {
             Moment::SpecificDifferentialPhase => "KDP",
             Moment::CorrelationCoefficient => "CC",
             Moment::CompositeReflectivity => "COMP",
+            Moment::Vil => "VIL",
+            Moment::EchoTops => "TOPS",
+            Moment::Mesh => "MEHS",
+            Moment::StormRelativeVelocity => "SRM",
         }
     }
 
@@ -65,6 +78,10 @@ impl Moment {
             Moment::SpecificDifferentialPhase => "deg/km",
             Moment::CorrelationCoefficient => "",
             Moment::CompositeReflectivity => "dBZ",
+            Moment::Vil => "kg/m²",
+            Moment::EchoTops => "km",
+            Moment::Mesh => "in",
+            Moment::StormRelativeVelocity => "m/s",
         }
     }
 }

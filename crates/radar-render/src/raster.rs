@@ -390,7 +390,7 @@ pub struct GateGeometry {
 }
 
 /// Shortest signed angular difference `a - b`, degrees.
-fn angle_delta(a: f32, b: f32) -> f32 {
+pub(super) fn angle_delta(a: f32, b: f32) -> f32 {
     (a - b + 180.0).rem_euclid(360.0) - 180.0
 }
 

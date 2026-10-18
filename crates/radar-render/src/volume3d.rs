@@ -29,7 +29,9 @@
 
 use std::ops::Range;
 
-use radar_core::{Moment, Volume};
+use radar_core::{Moment, MomentData, Volume};
+
+use super::raster::angle_delta;
 
 use crate::colormap::ColorTable;
 
@@ -689,6 +691,75 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 
 #[cfg(test)]
 mod tests {
+    /// Sampler: value interpolation between cuts, gaps and bounds as None.
+    #[test]
+    fn sampler_interpolates_between_cuts_and_honors_gaps() {
+        use chrono::TimeZone;
+        use radar_core::{MomentCalibration, MomentData, Sweep, VolumeMeta};
+        let cal = MomentCalibration {
+            scale: 1.0,
+            offset: 2.0,
+            threshold: 0.0,
+        };
+        // Two cuts at 0.5 and 1.5 deg, constant 20 and 40 dBZ, every ray.
+        let mk = |elev: f32, dbz: f32, drop_ray: Option<usize>| {
+            let rays: Vec<f32> = (0..360).map(|i| i as f32).collect();
+            let mut data = vec![0i16; 360 * 200];
+            for r in 0..360 {
+                if Some(r) == drop_ray {
+                    continue;
+                }
+                for g in 0..200 {
+                    data[r * 200 + g] = (dbz + 2.0) as i16;
+                }
+            }
+            Sweep {
+                elevation_deg: elev,
+                elevation_measured_deg: elev,
+                azimuth_width_deg: 1.0,
+                azimuths_deg: rays,
+                moments: vec![MomentData {
+                    kind: Moment::Reflectivity,
+                    calibration: cal,
+                    range_start_m: 0.0,
+                    gate_size_m: 250.0,
+                    gate_count: 200,
+                    ray_count: 360,
+                    data,
+                }],
+            }
+        };
+        let vol = Volume {
+            meta: VolumeMeta {
+                site_id: "KTWX".into(),
+                volume_start: chrono::Utc.with_ymd_and_hms(2026, 10, 18, 0, 0, 0).unwrap(),
+                vcp: None,
+                sequence_number: None,
+                sweep_count: 2,
+                moments: vec![Moment::Reflectivity],
+            },
+            sweeps: vec![mk(0.5, 20.0, None), mk(1.5, 40.0, None)],
+        };
+        let s = VolumeSampler::new(&vol, Moment::Reflectivity);
+        assert!((s.max_range_km() - 50.0).abs() < 0.01);
+
+        // 30 km north (inside the 50 km sweep), elevation 1.0 deg (halfway between the cuts) -> 30.
+        let h = 30.0 * 1.0f32.to_radians().tan();
+        let v = s.sample(0.0, 30.0, h).expect("inside the data");
+        assert!((v - 30.0).abs() < 0.5, "expected ~30, got {v}");
+
+        // Exactly on a cut -> that cut's value.
+        let h0 = 30.0 * 0.5f32.to_radians().tan();
+        let v = s.sample(0.0, 30.0, h0).expect("on the low cut");
+        assert!((v - 20.0).abs() < 0.2, "expected ~20, got {v}");
+
+        // Above the highest cut / beyond range / in a dropped ray: None.
+        assert!(
+            s.sample(0.0, 30.0, 30.0 * 3.0f32.to_radians().tan())
+                .is_none()
+        );
+        assert!(s.sample(0.0, 400.0, 2.0).is_none());
+    }
     use super::*;
     use chrono::TimeZone;
     use radar_core::{MomentCalibration, MomentData, Sweep, VolumeMeta};
@@ -990,5 +1061,147 @@ mod tests {
         let south = cam.project(1.6, 230.0, [0.0, -100.0, 0.0]).unwrap();
         assert!(north[0] > 0.2, "north should be right: {north:?}");
         assert!(south[0] < -0.2, "south should be left: {south:?}");
+    }
+}
+
+/// Interpolating sampler over one moment of a volume: the echo at an
+/// arbitrary scene point (km ENU, X east / Y north / Z beam height).
+///
+/// This is the shared foundation of the data probe, the vertical
+/// cross-section and the isosurface grid — all three ask "what is here?".
+/// Sampling is nearest-ray + linear between gates, then linear between the
+/// two cuts bracketing the point's elevation; the (r, z) ↔ (slant, elev)
+/// mapping ignores earth curvature (it is ~2 km of error at 200 km — far
+/// below the grid the callers sample on).
+pub struct VolumeSampler<'a> {
+    cuts: Vec<CutSampler<'a>>,
+}
+
+struct CutSampler<'a> {
+    elevation_deg: f32,
+    data: &'a MomentData,
+    azimuths: &'a [f32],
+}
+
+impl<'a> VolumeSampler<'a> {
+    pub fn new(volume: &'a Volume, moment: Moment) -> Self {
+        let mut cuts: Vec<CutSampler<'a>> = volume
+            .sweeps
+            .iter()
+            .filter_map(|s| {
+                s.moment(moment).map(|m| CutSampler {
+                    elevation_deg: if s.elevation_measured_deg.is_finite()
+                        && s.elevation_measured_deg != 0.0
+                    {
+                        s.elevation_measured_deg
+                    } else {
+                        s.elevation_deg
+                    },
+                    data: m,
+                    azimuths: &s.azimuths_deg,
+                })
+            })
+            .collect();
+        cuts.sort_by(|a, b| {
+            a.elevation_deg
+                .partial_cmp(&b.elevation_deg)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Self { cuts }
+    }
+
+    /// Longest slant range covered by any cut (km).
+    pub fn max_range_km(&self) -> f32 {
+        self.cuts
+            .iter()
+            .map(|c| {
+                (c.data.range_start_m + c.data.gate_count as f32 * c.data.gate_size_m) / 1000.0
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// Highest cut elevation (deg).
+    pub fn top_elevation_deg(&self) -> f32 {
+        self.cuts.last().map(|c| c.elevation_deg).unwrap_or(0.0)
+    }
+
+    /// The value at a scene point, or `None` outside the data (below the
+    /// lowest cut, above the highest, beyond range, or in a no-echo gap).
+    pub fn sample(&self, x_km: f32, y_km: f32, z_km: f32) -> Option<f32> {
+        if self.cuts.is_empty() {
+            return None;
+        }
+        let ground = x_km.hypot(y_km);
+        let slant = ground.hypot(z_km);
+        let elev = z_km.atan2(ground).to_degrees();
+        let az = x_km.atan2(y_km).to_degrees().rem_euclid(360.0);
+
+        // Strictly within the sampled elevation range (a hair of tolerance
+        // for floating point on "exactly the top cut"): above the highest
+        // cut there is no data to sample, so the answer is None — the
+        // cross-section and isosurface callers rely on that to stop.
+        let lo = self.cuts.first().map(|c| c.elevation_deg).unwrap_or(0.0);
+        let hi = self.cuts.last().map(|c| c.elevation_deg).unwrap_or(0.0);
+        if elev < lo - 0.05 || elev > hi + 0.05 {
+            return None;
+        }
+
+        // Bracket the point's elevation between the two nearest cuts.
+        let mut above = None;
+        let mut below = None;
+        for (i, c) in self.cuts.iter().enumerate() {
+            if c.elevation_deg <= elev {
+                below = Some(i);
+            } else {
+                above = Some(i);
+                break;
+            }
+        }
+        match (below, above) {
+            (Some(b), Some(a)) => {
+                let cb = self.sample_cut(b, az, slant)?;
+                let ca = self.sample_cut(a, az, slant)?;
+                let t = (elev - self.cuts[b].elevation_deg)
+                    / (self.cuts[a].elevation_deg - self.cuts[b].elevation_deg);
+                Some(cb + (ca - cb) * t)
+            }
+            (Some(b), None) => self.sample_cut(b, az, slant),
+            (None, Some(a)) => self.sample_cut(a, az, slant),
+            (None, None) => None,
+        }
+    }
+
+    /// One cut: nearest ray, linear between the two nearest gates.
+    fn sample_cut(&self, cut: usize, az_deg: f32, slant_km: f32) -> Option<f32> {
+        let c = &self.cuts[cut];
+        if c.azimuths.is_empty() {
+            return None;
+        }
+        // Nearest ray (the azimuth ring is short; a scan is fine).
+        let mut best = 0usize;
+        let mut best_d = angle_delta(c.azimuths[0], az_deg).abs();
+        for (i, a) in c.azimuths.iter().enumerate().skip(1) {
+            let d = angle_delta(*a, az_deg).abs();
+            if d < best_d {
+                best = i;
+                best_d = d;
+            }
+        }
+        if best_d > 180.0 {
+            return None;
+        }
+        let m = c.data;
+        let slant_m = slant_km * 1000.0;
+        let gf = (slant_m - m.range_start_m) / m.gate_size_m;
+        if gf < -0.5 || gf > m.gate_count as f32 - 0.5 {
+            return None;
+        }
+        let g0 = gf
+            .floor()
+            .clamp(0.0, (m.gate_count.saturating_sub(2)) as f32) as usize;
+        let t = (gf - g0 as f32).clamp(0.0, 1.0);
+        let v0 = m.value(best, g0)?;
+        let v1 = m.value(best, g0 + 1).unwrap_or(v0);
+        Some(v0 + (v1 - v0) * t)
     }
 }

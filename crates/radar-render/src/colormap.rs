@@ -160,6 +160,31 @@ const CC_STOPS: &[Stop] = &[
     (1.0, [0, 255, 0, 255]),
 ];
 
+/// VIL (kg/m²): a rainfall-intensity-style ramp — cool through green to
+/// yellow, red and magenta for the extreme columns.
+const VIL_STOPS: &[Stop] = &[
+    (0.0, [30, 60, 120, 0]),
+    (2.0, [0, 0, 180, 255]),
+    (10.0, [0, 160, 160, 255]),
+    (25.0, [0, 180, 0, 255]),
+    (40.0, [255, 220, 0, 255]),
+    (55.0, [255, 120, 0, 255]),
+    (70.0, [255, 0, 0, 255]),
+    (90.0, [255, 0, 255, 255]),
+];
+
+/// Echo Tops (km): a height ramp — cool low, hot high.
+const TOPS_STOPS: &[Stop] = &[
+    (0.0, [30, 60, 120, 0]),
+    (3.0, [0, 120, 255, 255]),
+    (6.0, [0, 200, 200, 255]),
+    (9.0, [0, 200, 0, 255]),
+    (12.0, [255, 220, 0, 255]),
+    (15.0, [255, 120, 0, 255]),
+    (18.0, [255, 0, 0, 255]),
+    (21.0, [255, 0, 255, 255]),
+];
+
 fn stops_for(kind: Moment) -> &'static [Stop] {
     match kind {
         Moment::Reflectivity | Moment::CompositeReflectivity => REFLECTIVITY_STOPS,
@@ -169,6 +194,12 @@ fn stops_for(kind: Moment) -> &'static [Stop] {
         Moment::DifferentialPhase => PHI_STOPS,
         Moment::SpecificDifferentialPhase => KDP_STOPS,
         Moment::CorrelationCoefficient => CC_STOPS,
+        // Derived products share the "intensity" ramps: VIL and hail size
+        // read like rainfall intensity, echo tops like a height ramp.
+        Moment::Vil => VIL_STOPS,
+        Moment::EchoTops => TOPS_STOPS,
+        Moment::Mesh => VIL_STOPS,
+        Moment::StormRelativeVelocity => VELOCITY_STOPS,
     }
 }
 

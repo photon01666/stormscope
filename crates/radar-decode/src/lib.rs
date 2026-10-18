@@ -30,12 +30,16 @@ const ARCHIVE_MAGIC: &[u8; 4] = b"AR2V";
 
 /// Canonical moment ordering used for `VolumeMeta::moments` and per-sweep
 /// moment ordering.
-const MOMENT_ORDER: [Moment; 6] = [
+const MOMENT_ORDER: [Moment; 7] = [
     Moment::Reflectivity,
     Moment::Velocity,
     Moment::SpectrumWidth,
     Moment::DifferentialReflectivity,
     Moment::DifferentialPhase,
+    // KDP is derived from PHI in build_sweep (the upstream parser drops the
+    // KDP block); it belongs in the order so the volume's moment list
+    // advertises it and the product selectors show it.
+    Moment::SpecificDifferentialPhase,
     Moment::CorrelationCoefficient,
 ];
 
@@ -370,6 +374,8 @@ fn radial_from_m31(m: &Message31<'_>) -> RawRadial {
             m.differential_reflectivity_data_block(),
         ),
         (Moment::DifferentialPhase, m.differential_phase_data_block()),
+        // KDP has no upstream accessor (the block is dropped at parse); it
+        // is derived from PHI in `build_sweep` instead.
         (
             Moment::CorrelationCoefficient,
             m.correlation_coefficient_data_block(),
@@ -560,6 +566,21 @@ fn build_sweep(radials: Vec<RawRadial>, vcp: Option<&VcpInfo>) -> Sweep {
         });
     }
 
+    // KDP is half the range derivative of differential phase. The upstream
+    // parser (nexrad-decode 1.0.0-rc.3) exposes no KDP block at all — the
+    // block is dropped at parse — so we derive it from PHI the way analysis
+    // tools do. Without this, "KDP" in the product list was an empty
+    // product everywhere (most visible in the 3D pane).
+    if !moments
+        .iter()
+        .any(|m| m.kind == Moment::SpecificDifferentialPhase)
+    {
+        let phi = moments.iter().find(|m| m.kind == Moment::DifferentialPhase);
+        if let Some(kdp) = derive_kdp_from_phi(phi) {
+            moments.push(kdp);
+        }
+    }
+
     Sweep {
         elevation_deg,
         elevation_measured_deg,
@@ -567,6 +588,70 @@ fn build_sweep(radials: Vec<RawRadial>, vcp: Option<&VcpInfo>) -> Sweep {
         azimuths_deg,
         moments,
     }
+}
+
+/// Derive Specific Differential Phase from Differential Phase:
+/// `KDP = ½ · d(PHI)/d(range)`, by least squares over a ±4-gate window so
+/// the derivative does not amplify PHI's quantization noise. A window needs
+/// at least five valid PHI gates; anything else is "below threshold".
+///
+/// PHI is the accumulated phase in degrees, so the slope is deg/km and the
+/// result is deg/km. Encoded with the ICD-style calibration
+/// (scale 2, offset 2): DN 2 = 0 deg/km, DN 0 stays "below threshold", and
+/// negative KDP keeps encoding cleanly.
+fn derive_kdp_from_phi(phi: Option<&MomentData>) -> Option<MomentData> {
+    let phi = phi?;
+    let cal = MomentCalibration {
+        scale: 2.0,
+        offset: 2.0,
+        threshold: 0.0,
+    };
+    let dgate_km = (phi.gate_size_m / 1000.0).max(1.0e-4);
+    let mut data = vec![0i16; phi.data.len()];
+    for ray in 0..phi.ray_count {
+        for gate in 0..phi.gate_count {
+            let lo = gate.saturating_sub(4);
+            let hi = (gate + 4).min(phi.gate_count - 1);
+            let mut n = 0usize;
+            let mut sx = 0.0f64;
+            let mut sy = 0.0f64;
+            let mut sxx = 0.0f64;
+            let mut sxy = 0.0f64;
+            for g in lo..=hi {
+                let Some(v) = phi.value(ray, g) else {
+                    continue;
+                };
+                let x = (g as f64 - gate as f64) * f64::from(dgate_km);
+                n += 1;
+                sx += x;
+                sy += f64::from(v);
+                sxx += x * x;
+                sxy += x * f64::from(v);
+            }
+            if n < 5 {
+                continue;
+            }
+            let denom = n as f64 * sxx - sx * sx;
+            if denom.abs() < 1.0e-9 {
+                continue;
+            }
+            let slope = (n as f64 * sxy - sx * sy) / denom; // deg/km
+            let kdp = (0.5 * slope) as f32;
+            let dn = (f64::from(kdp) * f64::from(cal.scale) + f64::from(cal.offset))
+                .round()
+                .clamp(1.0, 250.0) as i16;
+            data[ray * phi.gate_count + gate] = dn;
+        }
+    }
+    Some(MomentData {
+        kind: Moment::SpecificDifferentialPhase,
+        calibration: cal,
+        range_start_m: phi.range_start_m,
+        gate_size_m: phi.gate_size_m,
+        gate_count: phi.gate_count,
+        ray_count: phi.ray_count,
+        data,
+    })
 }
 
 #[cfg(test)]
@@ -644,5 +729,41 @@ mod tests {
     fn empty_input_is_unsupported() {
         assert!(decode_volume_file(&[]).is_err());
         assert!(decode_realtime_volume(&[]).is_err());
+    }
+
+    #[test]
+    fn kdp_is_derived_from_phi() {
+        use radar_core::{MomentCalibration, MomentData};
+        // PHI ramps at 2 deg per km -> KDP = 1 deg/km.
+        let cal = MomentCalibration {
+            scale: 1.0,
+            offset: 2.0,
+            threshold: 0.0,
+        };
+        let ray_count = 2usize;
+        let gate_count = 40usize;
+        let mut phi = vec![0i16; ray_count * gate_count];
+        for r in 0..ray_count {
+            for g in 0..gate_count {
+                let phi_deg = (g as f32 * 0.25) * 2.0; // 0.5 deg per gate, 250 m gates
+                phi[r * gate_count + g] = (phi_deg + 2.0) as i16;
+            }
+        }
+        let phi_m = MomentData {
+            kind: Moment::DifferentialPhase,
+            calibration: cal,
+            range_start_m: 0.0,
+            gate_size_m: 250.0,
+            gate_count,
+            ray_count,
+            data: phi,
+        };
+        let kdp = derive_kdp_from_phi(Some(&phi_m)).expect("derived");
+        assert_eq!(kdp.kind, Moment::SpecificDifferentialPhase);
+        // Mid-ray gate: expect ~1.0 deg/km (DN 2 + 1*2 = 4).
+        let dn = kdp.data[(ray_count / 2) * gate_count + gate_count / 2];
+        assert!(dn >= 3 && dn <= 5, "unexpected KDP DN {dn}");
+        let value = kdp.value(ray_count / 2, gate_count / 2).unwrap();
+        assert!((value - 1.0).abs() < 0.2, "expected ~1 deg/km, got {value}");
     }
 }

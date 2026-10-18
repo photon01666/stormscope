@@ -397,3 +397,115 @@ fn bench_pane_cost_with_a_real_volume() {
         );
     }
 }
+
+/// Field report: "KDP (Specific Differential Phase) seems broken in 3D".
+/// Before theorizing, look at the real bytes: what does a cached volume's
+/// KDP sweep actually contain (calibration, DN distribution), and what does
+/// the 3D mesh path see?
+#[test]
+#[ignore = "reads a cached volume; run with --ignored --nocapture"]
+fn inspect_kdp_on_a_real_volume() {
+    let dir = radar_data::DiskCache::default_root().join("l2");
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            if let Ok(sub) = std::fs::read_dir(&p) {
+                for f in sub.flatten() {
+                    let fp = f.path();
+                    if !fp.extension().map(|x| x == "gz").unwrap_or(false) {
+                        continue;
+                    }
+                    // Prefer a storm day (2026-10-13): clear-air VCPs may
+                    // legitimately lack KDP.
+                    let name = fp
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let rank = if name.contains("20261013") { 1 } else { 0 };
+                    if let Ok(md) = f.metadata() {
+                        if let Ok(t) = md.modified() {
+                            let better = match &best {
+                                None => true,
+                                Some((bt, bp)) => {
+                                    let bname = bp
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .to_string();
+                                    let brank = if bname.contains("20261013") { 1 } else { 0 };
+                                    rank > brank || (rank == brank && t > *bt)
+                                }
+                            };
+                            if better {
+                                best = Some((t, fp));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let Some((_, path)) = best else {
+        eprintln!("no cached volumes — skipped");
+        return;
+    };
+    let bytes = std::fs::read(&path).expect("read volume");
+    let vol = radar_decode::decode_volume_file(&bytes).expect("decode");
+    eprintln!("volume: {}", path.display());
+    eprintln!("meta moments: {:?}", vol.meta.moments);
+    let mut kinds: Vec<String> = Vec::new();
+    for s in &vol.sweeps {
+        for m in &s.moments {
+            let k = format!("{:?}", m.kind);
+            if !kinds.contains(&k) {
+                kinds.push(k);
+            }
+        }
+    }
+    eprintln!("sweep moment kinds present: {kinds:?}");
+    let mut found = 0;
+    for s in &vol.sweeps {
+        let Some(m) = s.moment(Moment::SpecificDifferentialPhase) else {
+            continue;
+        };
+        found += 1;
+        let mut zeros = 0usize;
+        let mut neg = 0usize;
+        let mut pos = 0usize;
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+        for &dn in &m.data {
+            if dn == 0 {
+                zeros += 1;
+                continue;
+            }
+            let v = (f32::from(dn) - m.calibration.offset) / m.calibration.scale;
+            if v < 0.0 {
+                neg += 1;
+            } else {
+                pos += 1;
+            }
+            min = min.min(v);
+            max = max.max(v);
+        }
+        eprintln!(
+            "KDP cut {:.1}°: cal scale={} offset={} threshold={} | dn zeros={} (nodata) neg={} pos={} | phys {:.2}..{:.2} deg/km",
+            s.elevation_deg,
+            m.calibration.scale,
+            m.calibration.offset,
+            m.calibration.threshold,
+            zeros,
+            neg,
+            pos,
+            min,
+            max
+        );
+    }
+    eprintln!("KDP cuts found: {found}");
+    assert!(found > 0, "this volume has no KDP at all");
+}

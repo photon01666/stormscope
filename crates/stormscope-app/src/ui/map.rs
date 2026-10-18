@@ -534,14 +534,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             // site, reused across pans, zooms, moment
                             // switches and playback frames (rotated scan
                             // layouts remap rows instead of rebuilding).
-                            let mut rows = app
-                                .radar_geom
-                                .as_ref()
-                                .and_then(|g| g.reuse_for(sweep, site.latitude, site.longitude));
+                            let mut rows = app.radar_geom.as_ref().and_then(|g| {
+                                g.reuse_for(sweep, app.state.moment, site.latitude, site.longitude)
+                            });
                             if rows.is_none() {
                                 let t0 = std::time::Instant::now();
                                 app.radar_geom = Some(radar_render::GateGeometry::build(
                                     sweep,
+                                    app.state.moment,
                                     site.latitude,
                                     site.longitude,
                                 ));

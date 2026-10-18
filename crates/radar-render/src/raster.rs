@@ -398,7 +398,7 @@ impl GateGeometry {
     /// Hash of everything the geometry depends on *except* the azimuth
     /// phase (and *not* the view: the table is zoom-independent). Angles are
     /// quantized (0.01°) so last-bit jitter can't miss the cache.
-    pub fn shape_key(sweep: &Sweep, radar_lat: f64, radar_lon: f64) -> u64 {
+    pub fn shape_key(sweep: &Sweep, moment: Moment, radar_lat: f64, radar_lon: f64) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         radar_lat.to_bits().hash(&mut h);
@@ -411,21 +411,26 @@ impl GateGeometry {
         // drop or gain a ray at the scan start). Those are absorbed by
         // `reuse_for`'s tolerant row mapping; a scan-to-scan difference that
         // big would otherwise rebuild this table (~90 ms!) on every playback
-        // frame. Gate layout is index-strided, so it stays in the key.
-        if let Some(md) = sweep.moments.first() {
+        // frame. Gate layout is index-strided, so it stays in the key — and
+        // it is the *moment's* layout: dual-pol blocks (PHI/KDP) carry
+        // fewer gates than REF in the same sweep, so a table built for one
+        // moment must not be reused for another (that mismatch is what
+        // silently dropped KDP on the 2D map).
+        if let Some(md) = sweep.moment(moment).or_else(|| sweep.moments.first()) {
             md.range_start_m.to_bits().hash(&mut h);
             md.gate_size_m.to_bits().hash(&mut h);
             md.gate_count.hash(&mut h);
+            md.ray_count.hash(&mut h);
         }
         h.finish()
     }
 
     /// Build the table for one sweep shape at one site.
-    pub fn build(sweep: &Sweep, radar_lat: f64, radar_lon: f64) -> Self {
-        let shape = Self::shape_key(sweep, radar_lat, radar_lon);
+    pub fn build(sweep: &Sweep, moment: Moment, radar_lat: f64, radar_lon: f64) -> Self {
+        let shape = Self::shape_key(sweep, moment, radar_lat, radar_lon);
         let (ray_count, gate_count, range_start_m, gate_size_m) = sweep
-            .moments
-            .first()
+            .moment(moment)
+            .or_else(|| sweep.moments.first())
             .map(|m| (m.ray_count, m.gate_count, m.range_start_m, m.gate_size_m))
             .unwrap_or((0, 0, 0.0, 0.0));
         let elevation_deg =
@@ -480,8 +485,14 @@ impl GateGeometry {
     /// Can this table serve `sweep`? Returns how its rows map (`None` =
     /// rebuild needed). The table is zoom-independent, so pans and zooms
     /// always reuse it.
-    pub fn reuse_for(&self, sweep: &Sweep, radar_lat: f64, radar_lon: f64) -> Option<RowMap> {
-        if self.shape != Self::shape_key(sweep, radar_lat, radar_lon) {
+    pub fn reuse_for(
+        &self,
+        sweep: &Sweep,
+        moment: Moment,
+        radar_lat: f64,
+        radar_lon: f64,
+    ) -> Option<RowMap> {
+        if self.shape != Self::shape_key(sweep, moment, radar_lat, radar_lon) {
             return None;
         }
         let az = &sweep.azimuths_deg;
@@ -1054,8 +1065,10 @@ mod tests {
         md.data = vec![45; 4 * 40];
 
         let view = view();
-        let geom = GateGeometry::build(&sweep, 35.0, -97.0);
-        let rows = geom.reuse_for(&sweep, 35.0, -97.0).expect("identity reuse");
+        let geom = GateGeometry::build(&sweep, Moment::Reflectivity, 35.0, -97.0);
+        let rows = geom
+            .reuse_for(&sweep, Moment::Reflectivity, 35.0, -97.0)
+            .expect("identity reuse");
         assert_eq!(rows, RowMap::Identity);
 
         let (w, h) = (view.width(), view.height());
@@ -1101,8 +1114,10 @@ mod tests {
         md.data = vec![45; 4 * 40];
 
         let view = view();
-        let geom = GateGeometry::build(&sweep, 35.0, -97.0);
-        let rows = geom.reuse_for(&sweep, 35.0, -97.0).expect("identity reuse");
+        let geom = GateGeometry::build(&sweep, Moment::Reflectivity, 35.0, -97.0);
+        let rows = geom
+            .reuse_for(&sweep, Moment::Reflectivity, 35.0, -97.0)
+            .expect("identity reuse");
 
         // Painted-alpha centroid in normalized (0..1) viewport coordinates.
         let centroid = |buf: &[u8], w: usize, h: usize| -> (f64, f64) {
@@ -1163,7 +1178,7 @@ mod tests {
         md.data = vec![45; 4 * 40];
 
         let view = view();
-        let geom = GateGeometry::build(&sweep, 35.0, -97.0);
+        let geom = GateGeometry::build(&sweep, Moment::Reflectivity, 35.0, -97.0);
 
         // Pan: same zoom, shifted center -> reusable, raster matches direct.
         let panned = MapView {
@@ -1171,7 +1186,7 @@ mod tests {
             ..view
         };
         let rows = geom
-            .reuse_for(&sweep, 35.0, -97.0)
+            .reuse_for(&sweep, Moment::Reflectivity, 35.0, -97.0)
             .expect("pan must not invalidate");
         assert_eq!(rows, RowMap::Identity);
         let (w, h) = (view.width(), view.height());
@@ -1208,7 +1223,7 @@ mod tests {
             ..view
         };
         let rows = geom
-            .reuse_for(&sweep, 35.0, -97.0)
+            .reuse_for(&sweep, Moment::Reflectivity, 35.0, -97.0)
             .expect("zoom must not invalidate");
         let mut via_geom = vec![0u8; w * h * 4];
         rasterize_sweep_from_geometry_pm(
@@ -1277,9 +1292,9 @@ mod tests {
         let b = mk(vec![90.0, 91.0, 88.0, 89.0], &[106, 126, 66, 86]);
 
         let view = view();
-        let geom = GateGeometry::build(&a, 35.0, -97.0);
+        let geom = GateGeometry::build(&a, Moment::Reflectivity, 35.0, -97.0);
         let rows = geom
-            .reuse_for(&b, 35.0, -97.0)
+            .reuse_for(&b, Moment::Reflectivity, 35.0, -97.0)
             .expect("rotated layout must reuse the table");
         match &rows {
             RowMap::Remapped(m) => assert_eq!(m, &vec![2, 3, 0, 1], "ray -> table row map"),
@@ -1349,8 +1364,8 @@ mod tests {
         };
         let a = mk(a_az);
         let b = mk(b_az);
-        let geom = GateGeometry::build(&a, 35.0, -97.0);
-        match geom.reuse_for(&b, 35.0, -97.0) {
+        let geom = GateGeometry::build(&a, Moment::Reflectivity, 35.0, -97.0);
+        match geom.reuse_for(&b, Moment::Reflectivity, 35.0, -97.0) {
             Some(RowMap::Remapped(m)) => {
                 assert_eq!(m.len(), n);
                 // Table row 0 holds azimuth a_az[0]; the candidate ray that
@@ -1436,23 +1451,77 @@ mod tests {
         };
         // 8 rays, 45° apart.
         let a: Vec<f32> = (0..8).map(|i| i as f32 * 45.0).collect();
-        let geom = GateGeometry::build(&mk(a.clone(), 0.51), 35.0, -97.0);
+        let geom = GateGeometry::build(&mk(a.clone(), 0.51), Moment::Reflectivity, 35.0, -97.0);
 
         // Measured elevation jitter alone: still the identity.
         let jittered = mk(a.clone(), 0.53);
         assert_eq!(
-            geom.reuse_for(&jittered, 35.0, -97.0),
+            geom.reuse_for(&jittered, Moment::Reflectivity, 35.0, -97.0),
             Some(RowMap::Identity),
             "0.02° of measured-elevation jitter must not rebuild"
         );
 
         // A dropped first ray: the rest must map onto rows 1..=7.
         let missing: Vec<f32> = (1..8).map(|i| i as f32 * 45.0).collect();
-        match geom.reuse_for(&mk(missing, 0.52), 35.0, -97.0) {
+        match geom.reuse_for(&mk(missing, 0.52), Moment::Reflectivity, 35.0, -97.0) {
             Some(RowMap::Remapped(rows)) => {
                 assert_eq!(rows, vec![1, 2, 3, 4, 5, 6, 7], "ray -> table row");
             }
             other => panic!("expected a remapped reuse, got {other:?}"),
         }
+    }
+
+    /// A sweep can carry moments with *different* gate counts (dual-pol
+    /// blocks are shorter than REF). A table built for one moment must not
+    /// be reused for the other — that mismatch silently dropped KDP on the
+    /// 2D map ("geometry 720x1832 does not fit moment 720x1192").
+    #[test]
+    fn geometry_is_per_moment_when_gate_counts_differ() {
+        use radar_core::{MomentCalibration, MomentData};
+        let cal = MomentCalibration {
+            scale: 1.0,
+            offset: 2.0,
+            threshold: 0.0,
+        };
+        let md = |kind: Moment, gates: usize| MomentData {
+            kind,
+            calibration: cal,
+            range_start_m: 0.0,
+            gate_size_m: 250.0,
+            gate_count: gates,
+            ray_count: 4,
+            data: vec![5; 4 * gates],
+        };
+        let sweep = Sweep {
+            elevation_deg: 0.5,
+            elevation_measured_deg: 0.5,
+            azimuth_width_deg: 1.0,
+            azimuths_deg: vec![0.0, 90.0, 180.0, 270.0],
+            moments: vec![
+                md(Moment::Reflectivity, 1832),
+                md(Moment::SpecificDifferentialPhase, 1192),
+            ],
+        };
+        let geom_ref = GateGeometry::build(&sweep, Moment::Reflectivity, 35.0, -97.0);
+        let geom_kdp = GateGeometry::build(&sweep, Moment::SpecificDifferentialPhase, 35.0, -97.0);
+        assert_eq!(geom_ref.gate_count, 1832);
+        assert_eq!(geom_kdp.gate_count, 1192);
+        // Cross-reuse must be refused in both directions.
+        assert!(
+            geom_ref
+                .reuse_for(&sweep, Moment::SpecificDifferentialPhase, 35.0, -97.0)
+                .is_none()
+        );
+        assert!(
+            geom_kdp
+                .reuse_for(&sweep, Moment::Reflectivity, 35.0, -97.0)
+                .is_none()
+        );
+        // Same-moment reuse still works.
+        assert!(
+            geom_kdp
+                .reuse_for(&sweep, Moment::SpecificDifferentialPhase, 35.0, -97.0)
+                .is_some()
+        );
     }
 }

@@ -160,10 +160,11 @@ fn main() -> anyhow::Result<()> {
     // Cached-geometry path: build once, then rasterize repeatedly (the
     // playback / pan / moment-switch case).
     let t3 = Instant::now();
-    let geom = radar_render::GateGeometry::build(&sweep, RADAR_LAT, RADAR_LON);
+    let geom =
+        radar_render::GateGeometry::build(&sweep, Moment::Reflectivity, RADAR_LAT, RADAR_LON);
     let build = t3.elapsed().as_secs_f64();
     let rows = geom
-        .reuse_for(&sweep, RADAR_LAT, RADAR_LON)
+        .reuse_for(&sweep, Moment::Reflectivity, RADAR_LAT, RADAR_LON)
         .expect("identity reuse");
 
     let mut buf = vec![0u8; w * h * 4];

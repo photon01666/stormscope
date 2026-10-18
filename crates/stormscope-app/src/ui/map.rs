@@ -142,15 +142,19 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         // warning in the stack.
                         let (lon, lat) = view.view_px_to_lonlat(cx, cy);
                         let at = egui::pos2(cx as f32, cy as f32);
-                        let stack = super::alerts::warning_stack_at(
-                            &app.state.alerts,
-                            lon,
-                            lat,
-                            |lo, la| view.lonlat_to_view_px(lo, la),
-                            cx,
-                            cy,
-                            WARNING_EDGE_PX,
-                        );
+                        let stack = if super::alerts::showing_live_radar(&app.state) {
+                            super::alerts::warning_stack_at(
+                                &app.state.alerts,
+                                lon,
+                                lat,
+                                |lo, la| view.lonlat_to_view_px(lo, la),
+                                cx,
+                                cy,
+                                WARNING_EDGE_PX,
+                            )
+                        } else {
+                            Vec::new()
+                        };
                         if !stack.is_empty() {
                             let ids: Vec<String> = stack.iter().map(|w| w.id.clone()).collect();
                             let idx = cycle_pick(app.map_alert_cycle.as_ref(), at, &ids);
@@ -248,7 +252,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // steps to the next. Only when the map itself is hovered (panel overlays
     // are higher layers, so this goes quiet while the pointer is on them).
     let map_pointer = response.hover_pos();
-    let mut map_stack: Vec<String> = if app.state.show_alerts && !response.dragged() {
+    let mut map_stack: Vec<String> = if app.state.show_alerts
+        && super::alerts::showing_live_radar(&app.state)
+        && !response.dragged()
+    {
         map_pointer
             .map(|p| {
                 let (cx, cy) = viewport_pos(rect, p);
@@ -292,7 +299,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // Historical-warning overlay hover (the live feed always wins the
     // pointer): dwell, then the tooltip drawn with the layer below.
-    let archive_hover: Option<String> = if archive_overlay_active(app)
+    let archive_set = super::alerts::archive_display_set(&app.state, archive_overlay_active(app));
+    let archive_hover: Option<String> = if !archive_set.is_empty()
         && app.state.alerts_map_stack.is_empty()
         && !response.dragged()
     {
@@ -300,7 +308,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             let (cx, cy) = viewport_pos(rect, p);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
             super::alerts::warning_stack_at(
-                &app.state.archive_warning_view,
+                archive_set.iter().copied(),
                 lon,
                 lat,
                 |lo, la| view.lonlat_to_view_px(lo, la),
@@ -1250,7 +1258,7 @@ fn archive_click_target(
         return None;
     }
     let hit = super::alerts::warning_stack_at(
-        &app.state.archive_warning_view,
+        super::alerts::archive_display_set(&app.state, archive_overlay_active(app)),
         lon,
         lat,
         |lo, la| view.lonlat_to_view_px(lo, la),
@@ -1279,7 +1287,8 @@ fn draw_archive_warnings(
     }
     let now = painter.ctx().input(|i| i.time);
     let hovered_id = app.state.archive_hover.as_deref();
-    for w in &app.state.archive_warning_view {
+    let set = super::alerts::archive_display_set(&app.state, archive_overlay_active(app));
+    for w in set {
         let Some(rings) = &w.polygon else { continue };
         let hovered = hovered_id == Some(w.id.as_str());
         let color = super::alerts::warning_color(w);
@@ -1339,6 +1348,11 @@ fn draw_archive_warnings(
 
 fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
     if !app.state.show_alerts {
+        return;
+    }
+    // Today's warnings over a past scan would be a sync lie: in archive mode
+    // the archive day's polygons (time-filtered) are the warning layer.
+    if !super::alerts::showing_live_radar(&app.state) {
         return;
     }
     // egui time drives the flash; request_repaint below keeps it animating.

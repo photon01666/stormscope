@@ -177,6 +177,94 @@ pub(super) fn station_alerts<'a>(
         .collect()
 }
 
+/// Is the radar on screen live? In archive mode the app is showing a past
+/// scan, so today's live alerts are *not* about the data on display — both
+/// panes hide the live warning layer then, and the archive day's polygons
+/// (time-filtered, see [`archive_polygons_at`]) take over.
+pub(super) fn showing_live_radar(state: &crate::state::AppState) -> bool {
+    state.mode == crate::state::Mode::Live
+}
+
+/// The archive day's polygons as they should be *drawn*: only the ones the
+/// displayed radar could be showing — within the station's warning radius
+/// (the same reach the live layer uses) and, when `at` is given, in effect at
+/// that time.
+///
+/// `at` is the displayed volume's time, which is what makes the overlay
+/// follow the timeline: scrub or play the archive loop and the polygons come
+/// and go exactly as the warnings did, instead of the whole day's set
+/// floating over every scan. `None` means "no sync target" — the user is
+/// browsing a past day's polygons from the live map (the archive tab is
+/// open), where the day itself is the subject.
+///
+/// `view` and `historic` are index-aligned (`view[i]` is `historic[i]`
+/// presented as the app's live-alert type); matching by id when the lengths
+/// disagree keeps a partial list from hiding polygons.
+pub(super) fn archive_polygons_at<'a>(
+    view: &'a [Warning],
+    historic: &[radar_data::warnings_archive::HistoricWarning],
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    site_lat: f64,
+    site_lon: f64,
+) -> Vec<&'a Warning> {
+    // Index-aligned by construction, so the common path is a zip (no string
+    // lookups in the per-frame filter); an out-of-step pair falls back to id.
+    let aligned = view.len() == historic.len();
+    let issued = |i: usize, w: &Warning| -> Option<chrono::DateTime<chrono::Utc>> {
+        if aligned {
+            historic.get(i).map(|h| h.issued)
+        } else {
+            historic.iter().find(|h| h.id == w.id).map(|h| h.issued)
+        }
+    };
+    view.iter()
+        .enumerate()
+        .filter(|(_, w)| {
+            w.centroid().is_some_and(|(lat, lon)| {
+                radar_core::sites::haversine_km(lat, lon, site_lat, site_lon)
+                    <= crate::state::STATION_ALERT_RADIUS_KM
+            })
+        })
+        .filter(|(i, w)| match at {
+            Some(t) => {
+                let started = issued(*i, w).unwrap_or(w.expires - chrono::Duration::minutes(60));
+                started <= t && t <= w.expires
+            }
+            None => true,
+        })
+        .map(|(_, w)| w)
+        .collect()
+}
+
+/// The archive day's display set for one pane: [`archive_polygons_at`] with
+/// the site and the "is the radar on screen live?" sync target pulled from
+/// the state. `active` is the caller's overlay gate (the map's alerts switch
+/// and tab state; the 3D pane's own warning switch), so both panes filter
+/// identically while staying independently switchable.
+pub(super) fn archive_display_set<'a>(
+    state: &'a crate::state::AppState,
+    active: bool,
+) -> Vec<&'a Warning> {
+    if !active {
+        return Vec::new();
+    }
+    let Some(site) = radar_core::sites::site(&state.site_id) else {
+        return Vec::new();
+    };
+    let at = if showing_live_radar(state) {
+        None
+    } else {
+        state.current().map(|f| f.volume_start)
+    };
+    archive_polygons_at(
+        &state.archive_warning_view,
+        &state.archive_warnings,
+        at,
+        site.latitude,
+        site.longitude,
+    )
+}
+
 /// Distance from the site to an alert's centroid, km.
 fn distance_km(w: &Warning, site_lat: f64, site_lon: f64) -> Option<f64> {
     w.centroid()
@@ -335,7 +423,7 @@ pub(super) fn ring_contains(ring: &[(f64, f64)], lon: f64, lat: f64) -> bool {
 /// `px`/`py` are the same pointer in the two frames of reference. Clicking the
 /// same spot again walks the rest of the stack (see `ui::map::cycle_pick`).
 pub(super) fn warning_stack_at<'a>(
-    alerts: &'a [Warning],
+    alerts: impl IntoIterator<Item = &'a Warning>,
     lon: f64,
     lat: f64,
     project: impl Fn(f64, f64) -> (f64, f64),
@@ -1654,6 +1742,85 @@ mod tests {
         assert!(hit(&[a.clone()], -97.0, 35.6).is_empty(), "well outside");
         let zone = warn("z", "Heat Advisory", 35.4, -97.3, false);
         assert!(hit(&[zone], -97.3, 35.4).is_empty(), "no polygon, no hit");
+    }
+
+    /// The archive display set is what keeps the polygons synced with the
+    /// radar: only warnings within the station's reach *and* in effect at the
+    /// displayed scan's time are drawn — the rest of the day stays in the
+    /// archive tab's list, where it belongs.
+    #[test]
+    fn archive_polygons_follow_the_playhead_and_the_coverage() {
+        let site = radar_core::sites::site("KTWX").expect("KTWX");
+        let (slat, slon) = (site.latitude, site.longitude);
+        let t = Utc::now();
+        let mk = |id: &str, issued: chrono::DateTime<Utc>, expires: chrono::DateTime<Utc>| {
+            let w = warn(id, "Tornado Warning", slat, slon, true);
+            let mut h = radar_data::warnings_archive::HistoricWarning {
+                id: id.into(),
+                event: w.event.clone(),
+                office: "OUN".into(),
+                issued,
+                expires,
+                gtype: 'P',
+                ugc: String::new(),
+                area_km2: 100.0,
+                polygon: w.polygon.clone(),
+            };
+            // The display's clock reads the warning's own expiry.
+            let mut w = w;
+            w.expires = expires;
+            h.expires = expires;
+            let _ = issued;
+            (w, h)
+        };
+        let (a, ha) = mk(
+            "A",
+            t - chrono::Duration::hours(3),
+            t + chrono::Duration::hours(1),
+        );
+        let (b, hb) = mk(
+            "B",
+            t + chrono::Duration::hours(2),
+            t + chrono::Duration::hours(4),
+        );
+        let (c, hc) = mk(
+            "C",
+            t - chrono::Duration::hours(10),
+            t - chrono::Duration::hours(5),
+        );
+        // A warning in effect, but 900 km away: not this radar's business.
+        let far_lat = slat + 8.0;
+        let mut far = warn("D", "Tornado Warning", far_lat, slon, true);
+        far.expires = t + chrono::Duration::hours(1);
+        let mut hd = ha.clone();
+        hd.id = "D".into();
+        hd.issued = t - chrono::Duration::hours(1);
+        hd.expires = far.expires;
+        hd.polygon = far.polygon.clone();
+
+        let view = vec![a, b, c, far];
+        let historic = vec![ha, hb, hc, hd];
+
+        let ids = |v: &[Warning]| v.iter().map(|w| w.id.clone()).collect::<Vec<String>>();
+        let at = |v: &[&Warning]| v.iter().map(|w| w.id.clone()).collect::<Vec<String>>();
+
+        // Synced to the scan time: only A is in effect (and in reach).
+        let synced = archive_polygons_at(&view, &historic, Some(t), slat, slon);
+        assert_eq!(at(&synced), vec!["A"]);
+        // The scan time moves: B comes in, A stays.
+        let later = archive_polygons_at(
+            &view,
+            &historic,
+            Some(t + chrono::Duration::hours(3)),
+            slat,
+            slon,
+        );
+        assert_eq!(at(&later), vec!["B"]);
+        // No sync target (browsing a past day from the live map): the whole
+        // in-reach day is shown — but never the 900 km one.
+        let browsing = archive_polygons_at(&view, &historic, None, slat, slon);
+        assert_eq!(at(&browsing), vec!["A", "B", "C"]);
+        assert_eq!(ids(&view), vec!["A", "B", "C", "D"], "fixture sanity");
     }
 
     /// Alerts badge: only watches/warnings count, warnings outrank watches,

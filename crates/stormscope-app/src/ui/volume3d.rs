@@ -100,10 +100,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         center_text("no site selected");
         return;
     };
-    // Historical polygons of the selected archive day, when its warnings are
-    // loaded. This mirrors `map::archive_overlay_active` minus the map's own
-    // alerts switch: the 3D pane's layer has its own switch, so turning the
-    // map's off must not empty the 3D scene.
+    // Warning sets for this frame. Live warnings are only about live radar:
+    // in archive mode today's alerts would be a sync lie over a past scan, so
+    // the archive day's polygons (coverage- and time-filtered) take over.
+    // The archive gate mirrors `map::archive_overlay_active` minus the map's
+    // own alerts switch — the 3D pane's layer has its own switch, so turning
+    // the map's off must not empty the 3D scene.
     let archive_overlays = app.state.archive_warnings_date == Some(app.state.archive_date)
         && (app.state.mode == crate::state::Mode::Archive
             || app.state.alerts_popup_open
@@ -441,6 +443,18 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     // outline + translucent wash in the event color, painted over the
     // rendered scene like the markers, so a warning is never buried inside
     // the volume. Hovering one names it; clicking opens its NOAA text.
+    // Warning sets for this frame: live warnings only when the radar on
+    // screen is live (in archive mode today's alerts are not about the scan
+    // being shown), plus the archive day's polygons when its overlay is on,
+    // filtered to what the displayed scan could show (coverage + in-effect
+    // time) so the polygons follow the timeline like the echoes do.
+    let live_warnings: &[radar_core::warnings::Warning] =
+        if super::alerts::showing_live_radar(&app.state) {
+            &app.state.alerts
+        } else {
+            &[]
+        };
+    let archive_warnings = super::alerts::archive_display_set(&app.state, archive_overlays);
     let mut warnings_drawn: Option<usize> = None;
     if app.state.view3d_alerts && max_r > 1.0 {
         let cos_lat = site.latitude.to_radians().cos();
@@ -462,18 +476,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         // historical polygons when that overlay is on (the 2D map draws the
         // same pair) — so breaking-weather warnings and archive browsing look
         // the same in both views.
-        let historical: Vec<&radar_core::warnings::Warning> = if archive_overlays {
-            app.state.archive_warning_view.iter().collect()
-        } else {
-            Vec::new()
-        };
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for (w, is_historical) in app
-            .state
-            .alerts
+        for (w, is_historical) in live_warnings
             .iter()
             .map(|w| (w, false))
-            .chain(historical.into_iter().map(|w| (w, true)))
+            .chain(archive_warnings.iter().copied().map(|w| (w, true)))
         {
             if !seen.insert(w.id.as_str()) {
                 continue;

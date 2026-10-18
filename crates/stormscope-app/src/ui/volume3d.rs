@@ -594,19 +594,34 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         if lines.is_empty() {
             lines.push("no echo under the cursor".to_string());
         }
-        // Tooltip beside the hit, kept inside the pane.
+        // Tooltip beside the hit, on a black plate so it stays readable over
+        // bright echo cores, and clamped inside the pane.
         let text = lines.join("\n");
-        let at = egui::pos2(
-            (anchor.x + 10.0).min(rect.max.x - 220.0 * scale),
-            (anchor.y - 24.0).max(rect.min.y + 30.0 * scale),
-        );
-        painter.text(
-            at,
-            Align2::LEFT_TOP,
+        let galley = painter.layout(
             text,
             FontId::proportional(11.0 * scale),
             Color32::from_rgb(235, 240, 245),
+            rect.width() - 40.0,
         );
+        let pad = Vec2::new(7.0, 5.0) * scale;
+        let size = galley.size() + pad * 2.0;
+        let at = egui::pos2(
+            (anchor.x + 12.0)
+                .min(rect.max.x - size.x - 6.0)
+                .max(rect.min.x + 6.0),
+            (anchor.y - size.y - 10.0)
+                .min(rect.max.y - size.y - 6.0)
+                .max(rect.min.y + 6.0),
+        );
+        let plate = Rect::from_min_size(at, size);
+        painter.rect_filled(plate, 4.0 * scale, Color32::from_black_alpha(210));
+        painter.rect_stroke(
+            plate,
+            4.0 * scale,
+            Stroke::new(1.0, Color32::from_white_alpha(46)),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(at + pad, galley, Color32::WHITE);
     }
 
     // Title + stats, top-left (the chips sit top-right; the slider bar owns

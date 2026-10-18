@@ -143,6 +143,12 @@ pub struct Volume3d {
     section_ibuf_cap: u64,
     section_range: Range<u32>,
     section_triangles: usize,
+    /// Bumped whenever the curtain geometry is replaced. It rides in the
+    /// frame key: the curtain uploads straight into its buffers (no worker
+    /// round trip, no scene signature change), so without it toggling the
+    /// checkbox would leave the previous frame on screen until the camera
+    /// happened to move.
+    section_rev: u64,
 
     /// Basemap tiles: cached bind groups by egui texture id, plus the
     /// frame's quad geometry (rebuilt every frame — a few hundred vertices).
@@ -536,6 +542,7 @@ impl Volume3d {
             section_ibuf_cap: 4,
             section_range: 0..0,
             section_triangles: 0,
+            section_rev: 0,
             tile_bgs: HashMap::new(),
             ground_vbuf: empty(
                 "stormscope.volume3d.ground-vbuf",
@@ -778,6 +785,10 @@ impl Volume3d {
     ) {
         self.section_triangles = indices.len() / 3;
         self.section_range = 0..indices.len() as u32;
+        // The frame key must see this: it is what makes the new curtain draw
+        // (and a cleared one disappear) on the very next frame.
+        self.section_rev = self.section_rev.wrapping_add(1);
+        self.last_key = None;
         upload_into(
             device,
             queue,
@@ -1118,29 +1129,18 @@ impl Volume3d {
         ground_key: u64,
         min_half_screen_px: f32,
     ) {
-        use std::hash::{Hash, Hasher};
-        let key = {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            for v in [
-                camera.yaw_deg,
-                camera.pitch_deg,
-                camera.distance_km,
-                camera.target_km[0],
-                camera.target_km[1],
-                camera.target_km[2],
-                vertical_exaggeration,
-                opacity,
-                threshold,
-                alt_min_km,
-                alt_max_km,
-            ] {
-                v.to_bits().hash(&mut h);
-            }
-            screen_px.hash(&mut h);
-            self.scene_sig.hash(&mut h);
-            ground_key.hash(&mut h);
-            h.finish()
-        };
+        let key = frame_key(
+            self.scene_sig,
+            self.section_rev,
+            camera,
+            vertical_exaggeration,
+            opacity,
+            threshold,
+            alt_min_km,
+            alt_max_km,
+            ground_key,
+            screen_px,
+        );
         let since_change_ms = self.last_change.elapsed().as_millis() as u64;
         match render_decision(self.last_key, self.last_full_key, key, since_change_ms) {
             RenderDecision::Skip => {}
@@ -1401,6 +1401,46 @@ fn upload_into(
     }
 }
 
+/// Everything that changes the rendered frame. Split out as a free function
+/// so the "a direct upload must invalidate the cached frame" rule is
+/// testable without a GPU.
+#[allow(clippy::too_many_arguments)]
+fn frame_key(
+    scene_sig: Option<u64>,
+    section_rev: u64,
+    camera: &Camera,
+    vertical_exaggeration: f32,
+    opacity: f32,
+    threshold: f32,
+    alt_min_km: f32,
+    alt_max_km: f32,
+    ground_key: u64,
+    screen_px: [u32; 2],
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for v in [
+        camera.yaw_deg,
+        camera.pitch_deg,
+        camera.distance_km,
+        camera.target_km[0],
+        camera.target_km[1],
+        camera.target_km[2],
+        vertical_exaggeration,
+        opacity,
+        threshold,
+        alt_min_km,
+        alt_max_km,
+    ] {
+        v.to_bits().hash(&mut h);
+    }
+    screen_px.hash(&mut h);
+    scene_sig.hash(&mut h);
+    ground_key.hash(&mut h);
+    section_rev.hash(&mut h);
+    h.finish()
+}
+
 /// Multiplier the settled frame renders at (motion frames render at 1x).
 const SUPERSAMPLE: f32 = 1.6;
 
@@ -1440,7 +1480,70 @@ fn render_decision(
 
 #[cfg(test)]
 mod tests {
-    use super::{RenderDecision, SETTLE_MS, render_decision, scene_should_upload};
+    use super::{RenderDecision, SETTLE_MS, frame_key, render_decision, scene_should_upload};
+    use radar_render::volume3d::Camera;
+
+    /// A cross-section is uploaded straight into its buffers (no worker, no
+    /// scene signature change), so the frame key must carry the section
+    /// revision — otherwise toggling the checkbox left the previous frame on
+    /// screen until the camera happened to move.
+    #[test]
+    fn curtain_changes_invalidate_the_cached_frame() {
+        let camera = Camera::default();
+        let plain = frame_key(
+            Some(7),
+            0,
+            &camera,
+            20.0,
+            0.6,
+            5.0,
+            0.0,
+            20.0,
+            42,
+            [800, 600],
+        );
+        let curtain = frame_key(
+            Some(7),
+            1,
+            &camera,
+            20.0,
+            0.6,
+            5.0,
+            0.0,
+            20.0,
+            42,
+            [800, 600],
+        );
+        assert_ne!(plain, curtain, "section upload must change the frame key");
+        // Clearing it is a change too (the empty mesh bumps the revision).
+        let cleared = frame_key(
+            Some(7),
+            2,
+            &camera,
+            20.0,
+            0.6,
+            5.0,
+            0.0,
+            20.0,
+            42,
+            [800, 600],
+        );
+        assert_ne!(curtain, cleared);
+        // And nothing else may collide: same inputs, same key.
+        let again = frame_key(
+            Some(7),
+            0,
+            &camera,
+            20.0,
+            0.6,
+            5.0,
+            0.0,
+            20.0,
+            42,
+            [800, 600],
+        );
+        assert_eq!(plain, again);
+    }
 
     #[test]
     fn playback_uploads_forward_only() {

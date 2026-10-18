@@ -69,6 +69,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     map_controls_window(ui.ctx(), app);
     view3d_controls_window(ui.ctx(), app);
 
+    // Product explainer (the (i) beside the Product selector).
+    product_help_window(ui.ctx(), app);
+
     // SPC discussion popup (clicking an outlook outline).
     outlook_detail_window(ui.ctx(), app);
     reports::lsr_detail_window(ui.ctx(), app);
@@ -406,6 +409,183 @@ fn naive_from_jiff(d: jiff::civil::Date) -> Option<chrono::NaiveDate> {
     chrono::NaiveDate::from_ymd_opt(d.year() as i32, d.month() as u32, d.day() as u32)
 }
 
+/// What one product shows, and how to read it. Copy lives with the UI
+/// because that is where it is read.
+struct ProductDoc {
+    name: &'static str,
+    what: &'static str,
+    how: &'static str,
+}
+
+fn product_doc(m: Moment) -> ProductDoc {
+    match m {
+        Moment::Reflectivity => ProductDoc {
+            name: "Base Reflectivity",
+            what: "Returned power from precipitation, in dBZ — rain, hail, snow, and anything else \
+                   that reflects. The core product: where the storm is, how it is shaped, how \
+                   strong it is.",
+            how: "40 dBZ is moderate rain, 50+ heavy, 60+ likely hail. Look for hook echoes, \
+                  bowing lines and hail cores. Raise Min dBZ (map Controls) to thin light \
+                  returns and see the structure.",
+        },
+        Moment::CompositeReflectivity => ProductDoc {
+            name: "Composite Reflectivity",
+            what: "The strongest return anywhere in each column, in dBZ — a storm's peak \
+                   intensity rather than one tilt's slice.",
+            how: "Use it like reflectivity when you care about the worst of a column: \
+                  intense cores show even when the current tilt is above or below them.",
+        },
+        Moment::Velocity => ProductDoc {
+            name: "Base Velocity",
+            what: "How fast targets move toward or away from the radar, in m/s — only the \
+                   component along the beam, so motion across the beam is invisible.",
+            how: "Rotation reads as a tight inbound/outbound couplet; divergence as opposite \
+                  colors spreading apart. Use the lowest tilts near the site: higher up, the \
+                  beam is far from the storm's base.",
+        },
+        Moment::SpectrumWidth => ProductDoc {
+            name: "Spectrum Width",
+            what: "The spread of velocities inside one gate, in m/s — turbulence, shear, and \
+                   mixed targets (rain plus hail, debris, ground clutter).",
+            how: "High width along a gust front or inside a turbulent core backs up a velocity \
+                  signature, and it lights up debris.",
+        },
+        Moment::DifferentialReflectivity => ProductDoc {
+            name: "Differential Reflectivity",
+            what: "How different the target looks horizontally vs vertically, in dB — a shape \
+                   clue about the hydrometeors.",
+            how: "Big raindrops read 2–5 dB, hail and tumbling or round drops near 0. A \
+                  low-ZDR column above a storm's inflow can mark hail.",
+        },
+        Moment::DifferentialPhase => ProductDoc {
+            name: "Differential Phase",
+            what: "Accumulated phase shift along the beam, in degrees — the raw field behind \
+                   KDP.",
+            how: "Rarely read directly; use KDP, the range derivative computed from it.",
+        },
+        Moment::SpecificDifferentialPhase => ProductDoc {
+            name: "Specific Differential Phase",
+            what: "How fast phase accumulates with range, in deg/km. Less affected by hail \
+                   contamination and attenuation than reflectivity.",
+            how: "Heavy-rain cores read 1–3 deg/km. High KDP, often where reflectivity is \
+                  modest, flags hail; use it where hail makes dBZ ambiguous.",
+        },
+        Moment::CorrelationCoefficient => ProductDoc {
+            name: "Correlation Coefficient",
+            what: "How consistent the returned pulse shapes are, 0–1.",
+            how: "Near 1 is uniform precipitation. Values below ~0.8 mark hail, the melting \
+                  layer, debris and clutter; a tornado debris signature is low CC inside a \
+                  velocity couplet.",
+        },
+        Moment::Vil => ProductDoc {
+            name: "Vertically Integrated Liquid",
+            what: "The total water in the column, in kg/m², integrated from reflectivity over \
+                   the beam heights.",
+            how: "20–40 is ordinary convection, 50+ strong, 60–70+ hail potential — pair it \
+                  with MEHS. Hail inflates VIL, so treat it as a severity hint, not a rain \
+                  gauge.",
+        },
+        Moment::EchoTops => ProductDoc {
+            name: "Echo Tops",
+            what: "The height of the top of the 18.5 dBZ echo, in kft (thousands of feet) — \
+                   how tall the storm is.",
+            how: "Climbing tops mean an intensifying updraft; 50+ kft is strong. Within \
+                  150–200 km tops are true heights; farther out the beams themselves are \
+                  high, so read it over the storms.",
+        },
+        Moment::Mesh => ProductDoc {
+            name: "Maximum Estimated Hail Size",
+            what: "A hail-size estimate in inches, from the VIL column (0.1·sqrt(VIL), \
+                   Witt et al.).",
+            how: "A quick hint — 1 in+ is worth watching. It is an estimate, not a \
+                  measurement, and only as good as the VIL beneath it.",
+        },
+        Moment::StormRelativeVelocity => ProductDoc {
+            name: "Storm-Relative Velocity",
+            what: "Radial velocity minus the storm's own motion, in m/s, so the storm's \
+                   translation cancels out.",
+            how: "Set the storm motion (toward + speed) in the 3D Controls window. Rotation \
+                  then reads as a cleaner couplet; a wrong motion smears the signature.",
+        },
+    }
+}
+
+/// Reading habits that apply across the products, shown at the bottom of the
+/// explainer.
+const READING_TIPS: [&str; 5] = [
+    "Tilt matters: low cuts show the storm base, high cuts the mid and upper structure.",
+    "Trends beat single frames — scrub the timeline or play the loop.",
+    "Hail inflates reflectivity and VIL; KDP, CC and ZDR help tell hail from heavy rain.",
+    "The 3D pane, the cross-section and the probe show vertical structure and values at a point.",
+    "Storm-relative velocity needs a plausible storm motion; the 3D Controls window has it.",
+];
+
+/// The product explainer, opened from the (i) beside the Product selector.
+fn product_help_window(ctx: &egui::Context, app: &mut StormApp) {
+    if !app.state.product_help_open {
+        return;
+    }
+    let scale = app.sidebar_scale.max(1.0);
+    let size = popup_size(ctx, scale, 560.0, 660.0);
+    let mut open = true;
+    egui::Window::new("Products — what they show")
+        .id(egui::Id::new("stormscope.product_help"))
+        .open(&mut open)
+        .default_size(size)
+        .max_height(popup_max_height(ctx, scale))
+        .min_size(egui::vec2(420.0 * scale, 260.0 * scale))
+        .default_pos(centered_popup_pos(ctx, size))
+        .resizable(true)
+        .show(ctx, |ui| {
+            apply_text_scale(ui, scale);
+            ui.label(
+                egui::RichText::new(
+                    "The selector lists what the current volume carries. Units follow each \
+                     product — dBZ, m/s, deg/km, kg/m², kft, inches.",
+                )
+                .weak()
+                .small(),
+            );
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height((ui.available_height() - 6.0).max(160.0))
+                .show(ui, |ui| {
+                    for m in crate::state::available_moments(&app.state) {
+                        let doc = product_doc(m);
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(m.label())
+                                    .strong()
+                                    .monospace()
+                                    .color(egui::Color32::from_rgb(255, 214, 90)),
+                            );
+                            ui.label(egui::RichText::new(doc.name).strong());
+                            if !m.unit().is_empty() {
+                                ui.label(
+                                    egui::RichText::new(format!("({})", m.unit()))
+                                        .weak()
+                                        .small(),
+                                );
+                            }
+                        });
+                        ui.label(egui::RichText::new(format!("What: {}", doc.what)));
+                        ui.label(egui::RichText::new(format!("Use: {}", doc.how)));
+                    }
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.label(egui::RichText::new("Reading tips").strong());
+                    for tip in READING_TIPS {
+                        ui.label(egui::RichText::new(format!("• {tip}")).weak());
+                    }
+                });
+        });
+    if !open {
+        app.state.product_help_open = false;
+    }
+}
+
 /// The 2D map's display controls (its bottom-right "Controls" chip).
 fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     if !app.state.map_controls_open {
@@ -650,7 +830,38 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 sliders.push((7, r.rect));
             }
 
-            // --- Data probe ----------------------------------------------
+            // --- Ground overlays -----------------------------------------
+            ui.checkbox(&mut app.state.view3d_alerts, "Warning polygons")
+                .on_hover_text(
+                    "NWS warning polygons draped on the 3D ground — its own \
+                     switch, so the map's alert layer can differ",
+                );
+            if app.state.view3d_alerts {
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    ui.label("Fill");
+                    let r = ui.add(
+                        egui::Slider::new(&mut app.state.view3d_alerts_fill, 0.0..=1.0)
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    );
+                    sliders.push((8, r.rect));
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    ui.label("Walls ≤");
+                    let r = ui.add(
+                        egui::Slider::new(&mut app.state.view3d_alerts_top_kft, 0.0..=70.0)
+                            .step_by(5.0)
+                            .suffix(" k ft"),
+                    );
+                    sliders.push((9, r.rect));
+                })
+                .response
+                .on_hover_text(
+                    "How high the warning walls rise: the polygon wraps the storm in \
+                     3D instead of lying flat on the ground (0 = flat)",
+                );
+            }
             ui.checkbox(&mut app.state.view3d_probe, "Data probe")
                 .on_hover_text(
                     "Hover the pane: first echo and strongest echo under the \
@@ -686,6 +897,14 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 }
                 7 => {
                     app.state.srm_speed_kt = (app.state.srm_speed_kt + steps).clamp(0.0, 80.0);
+                }
+                8 => {
+                    app.state.view3d_alerts_fill =
+                        (app.state.view3d_alerts_fill + 0.05 * steps).clamp(0.0, 1.0);
+                }
+                9 => {
+                    app.state.view3d_alerts_top_kft =
+                        (app.state.view3d_alerts_top_kft + 5.0 * steps).clamp(0.0, 70.0);
                 }
                 _ => {}
             });
@@ -984,20 +1203,18 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     // (VIL / Echo Tops / MEHS) and SRM, which is derived on demand from the
     // motion sliders.
     ui.add_space(6.0);
-    ui.label("Product");
-    let mut moments: Vec<Moment> = app
-        .state
-        .current()
-        .map(|f| f.volume.meta.moments.clone())
-        .unwrap_or_default();
-    if moments.contains(&Moment::Velocity) && !moments.contains(&Moment::StormRelativeVelocity) {
-        moments.push(Moment::StormRelativeVelocity);
-    }
-    if moments.is_empty() {
-        moments.push(Moment::Reflectivity);
-    }
+    ui.horizontal(|ui| {
+        ui.label("Product");
+        if ui
+            .small_button("(i)")
+            .on_hover_text("What each product shows, and when to use it")
+            .clicked()
+        {
+            app.state.product_help_open = !app.state.product_help_open;
+        }
+    });
     ui.horizontal_wrapped(|ui| {
-        for m in moments {
+        for m in crate::state::available_moments(&app.state) {
             let selected = app.state.moment == m;
             if ui.selectable_label(selected, m.label()).clicked() {
                 app.state.moment = m;

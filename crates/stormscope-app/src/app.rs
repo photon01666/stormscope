@@ -126,6 +126,9 @@ pub enum DataCmd {
     Shutdown,
 }
 
+/// Id of the synthetic test polygon `STORMSCOPE_DEBUG_WARNING` injects.
+const DEBUG_WARNING_ID: &str = "DEBUG-TEST-OVERLAY";
+
 /// Which cache section a pending "clear" is asking to delete.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ClearTarget {
@@ -465,6 +468,7 @@ impl StormApp {
                         &self.state.alerts_slow,
                         &self.state.alerts_fast,
                     );
+                    self.inject_debug_warning();
                 }
                 DataMsg::Reports(v) => self.state.lsrs = v,
                 DataMsg::Mcds(v) => self.state.mcds = v,
@@ -651,6 +655,50 @@ impl StormApp {
             self.state.measure_mode = false;
             self.state.measure_drag = None;
         }
+    }
+
+    /// Screenshot aid for the overlay layers: `STORMSCOPE_DEBUG_WARNING=1`
+    /// drops a **clearly labeled test polygon** around the selected site, so
+    /// the warning layers (map polygons, the 3D walls, the browser rows) can
+    /// be eyeballed and screenshotted on a clear day. Same spirit as
+    /// `STORMSCOPE_3D_OPEN` — and, like it, never left on for a real session:
+    /// the label says TEST, not a real warning.
+    fn inject_debug_warning(&mut self) {
+        if std::env::var_os("STORMSCOPE_DEBUG_WARNING").is_none() {
+            return;
+        }
+        if self.state.alerts.iter().any(|w| w.id == DEBUG_WARNING_ID) {
+            return;
+        }
+        let Some(site) = radar_core::sites::site(&self.state.site_id) else {
+            return;
+        };
+        let (lat, lon) = (site.latitude, site.longitude);
+        let d = 0.30; // ~33 km on a side: a storm-scale box
+        let w = radar_core::warnings::Warning {
+            id: DEBUG_WARNING_ID.into(),
+            event: "TEST overlay (debug)".into(),
+            severity: "Unknown".into(),
+            urgency: "Unknown".into(),
+            expires: chrono::Utc::now() + chrono::Duration::minutes(30),
+            office: "DEBUG".into(),
+            headline: "synthetic overlay for screenshots".into(),
+            description: String::new(),
+            instruction: String::new(),
+            area: "test area".into(),
+            polygon: Some(vec![vec![
+                (lon - d, lat - d),
+                (lon + d, lat - d),
+                (lon + d, lat + d),
+                (lon - d, lat + d),
+            ]]),
+        };
+        self.state.alerts_fast.push(w.clone());
+        self.state.alerts.push(w);
+        log::info!(
+            "STORMSCOPE_DEBUG_WARNING: test overlay polygon injected at {}",
+            self.state.site_id
+        );
     }
 
     /// Ask the data thread for the storm-relative volume the current frame +

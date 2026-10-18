@@ -37,6 +37,24 @@ fn volume_bytes(v: &radar_core::Volume) -> usize {
     n
 }
 
+/// Products the selector offers for the current volume: whatever the volume
+/// carries (decoded base moments plus the derived products attached at
+/// decode), plus storm-relative velocity whenever velocity is present — SRM
+/// is derived on demand from the motion sliders.
+pub fn available_moments(state: &AppState) -> Vec<Moment> {
+    let mut moments: Vec<Moment> = state
+        .current()
+        .map(|f| f.volume.meta.moments.clone())
+        .unwrap_or_default();
+    if moments.contains(&Moment::Velocity) && !moments.contains(&Moment::StormRelativeVelocity) {
+        moments.push(Moment::StormRelativeVelocity);
+    }
+    if moments.is_empty() {
+        moments.push(Moment::Reflectivity);
+    }
+    moments
+}
+
 /// Identity of one storm-relative derivation: the frame's scan time plus the
 /// motion setting. Any change means a new SRM volume.
 pub fn srm_key_of(volume: &Volume, toward_deg: f32, speed_kt: f32) -> u64 {
@@ -181,6 +199,8 @@ pub struct AppState {
     /// The Archive popup (opened from Settings), and the time of day
     /// (Central, minutes since midnight) the user wants to pull from.
     pub archive_popup_open: bool,
+    /// The product explainer window (the (i) beside the Product selector).
+    pub product_help_open: bool,
     pub archive_minute: u32,
     /// Warning-archive backfill progress (from the background crawler).
     pub archive_crawl: Option<radar_data::warnings_archive::CrawlStatus>,
@@ -381,6 +401,15 @@ pub struct AppState {
     pub view3d_iso: [bool; 3],
     /// The hover data probe (first + strongest echo under the cursor).
     pub view3d_probe: bool,
+    /// NWS warning polygons draped on the 3D ground. Its own switch and its
+    /// own wash strength, so the 3D scene can keep the warnings even when the
+    /// 2D map's alert layer is off (and vice versa). The fill reads like the
+    /// map's slider: 0 = outlines only, 1 = the shipped wash.
+    pub view3d_alerts: bool,
+    pub view3d_alerts_fill: f32,
+    /// Height the warning polygons are extruded to (k ft above the ground):
+    /// the polygons wrap the storm instead of lying flat on it. 0 = flat.
+    pub view3d_alerts_top_kft: f32,
     /// Storm-relative motion the SRM product subtracts: direction storms
     /// move *toward* (degrees clockwise from north) and speed in knots.
     pub srm_dir_deg: f32,
@@ -473,6 +502,7 @@ impl Default for AppState {
                 .with_timezone(crate::timefmt::central())
                 .date_naive(),
             archive_popup_open: false,
+            product_help_open: false,
             archive_crawl: None,
             archive_warnings: Vec::new(),
             archive_warning_view: Vec::new(),
@@ -584,6 +614,9 @@ impl Default for AppState {
             view3d_section_az: 90.0,
             view3d_iso: [false, false, false],
             view3d_probe: true,
+            view3d_alerts: true,
+            view3d_alerts_fill: 1.0,
+            view3d_alerts_top_kft: 30.0,
             // A typical central-US supercell motion: east/southeast at 30 kt.
             srm_dir_deg: 275.0,
             srm_speed_kt: 30.0,

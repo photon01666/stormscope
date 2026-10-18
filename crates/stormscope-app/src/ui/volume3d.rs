@@ -198,6 +198,14 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         ],
     };
 
+    // Projection helpers, shared by the warning layer, the labels and the
+    // probe: scene km (ENU) → NDC → pane pixels.
+    let aspect = rect.width() / rect.height().max(1.0);
+    let ndc_to_screen = |ndc: [f32; 2]| {
+        rect.center() + Vec2::new(ndc[0] * rect.width() * 0.5, -ndc[1] * rect.height() * 0.5)
+    };
+    let project = |world: [f32; 3]| camera.project(aspect, max_r.max(1.0), world);
+
     // --- Ground: the same basemap tiles the 2D map shows -------------------
     let keys =
         radar_render::volume3d::ground_tile_keys(site.latitude, site.longitude, max_r.max(50.0));
@@ -417,12 +425,152 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         fit_view(&mut app.state);
     }
 
+    // --- NWS warning polygons, draped on the scene ground ------------------
+    // The 2D map's polygons, projected onto the 3D ground around the storm:
+    // outline + translucent wash in the event color, painted over the
+    // rendered scene like the markers, so a warning is never buried inside
+    // the volume. Hovering one names it; clicking opens its NOAA text.
+    if app.state.view3d_alerts && max_r > 1.0 {
+        let cos_lat = site.latitude.to_radians().cos();
+        let to_km = move |lon: f64, lat: f64| {
+            [
+                ((lon - site.longitude) * 111.32 * cos_lat) as f32,
+                ((lat - site.latitude) * 110.574) as f32,
+                0.0,
+            ]
+        };
+        // Project every polygon once. A ring with a vertex behind the camera
+        // is dropped: a partially projected polygon would smear across the
+        // scene, which reads as a glitch, not a warning.
+        // The wall height is set in feet (like the rest of the pane) and the
+        // scene's Z is exaggerated, so the projection takes display km.
+        let top_km = (app.state.view3d_alerts_top_kft.max(0.0) * 1000.0 / FT_PER_KM) * ve;
+        let mut polys: Vec<GroundPoly> = Vec::new();
+        for w in &app.state.alerts {
+            let project = |lon: f64, lat: f64, z_km: f32| {
+                let mut p = to_km(lon, lat);
+                p[2] = z_km;
+                project(p).map(ndc_to_screen)
+            };
+            if let Some(poly) = polygon_prism(w, project, top_km, &rect) {
+                polys.push(poly);
+            }
+        }
+
+        // What is the pointer on? Closest outline first (8 px reach, like the
+        // map's click target), then the smallest polygon containing it — the
+        // same rule, so what lights up in 3D is what a click opens.
+        let hovered_id: Option<String> = if resp.hovered() {
+            ui.ctx()
+                .pointer_hover_pos()
+                .filter(|p| rect.contains(*p))
+                .and_then(|p| warning_under_pointer(&polys, p).map(str::to_string))
+        } else {
+            None
+        };
+        // Clicking one opens its NOAA detail popup — the same window the 2D
+        // map's click opens (and the same afterglow highlight).
+        if let Some(id) = hovered_id.as_ref().filter(|_| resp.clicked()) {
+            app.state.alert_detail = Some(id.clone());
+            app.state.alerts_focus = Some(id.clone());
+            app.state.alerts_focus_at = ui.ctx().input(|i| i.time);
+        }
+
+        let now = ui.ctx().input(|i| i.time);
+        let mut animating = false;
+        for poly in &polys {
+            let list_hover = app.state.alerts_hover.as_deref() == Some(poly.id.as_str());
+            let on_it = hovered_id.as_deref() == Some(poly.id.as_str());
+            let glow: f32 = if list_hover || on_it { 1.0 } else { 0.0 };
+            let pulse: f32 = 0.5 + 0.5 * ((now as f32) * 5.0).sin();
+            let intensity = glow * (0.65 + 0.35 * pulse);
+            if glow > 0.0 {
+                animating = true;
+            }
+            // The 3D pane's own wash strength (0 = outlines only), read
+            // through the same helper the map uses so a percentage means the
+            // same thing in both views. Walls wash a little lighter than the
+            // ground fill: there are a lot more of them per warning.
+            let wash = super::map::warning_fill_alpha(intensity, app.state.view3d_alerts_fill);
+            let fill = poly.color.gamma_multiply(wash);
+            let wall_fill = poly.color.gamma_multiply(wash * 0.6);
+
+            // Extruded walls first, so the polygon wraps the storm and the
+            // outlines still read on top of them.
+            if let Some(top) = &poly.top {
+                for i in 0..poly.base.len() {
+                    let j = (i + 1) % poly.base.len();
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![poly.base[i], poly.base[j], top[j], top[i]],
+                        wall_fill,
+                        Stroke::NONE,
+                    ));
+                }
+                // Vertical corners: without them a translucent wall of one
+                // color reads as a haze, not a box around the storm.
+                for (b, t) in poly.base.iter().zip(top) {
+                    painter.line_segment(
+                        [*b, *t],
+                        Stroke::new(scale, poly.color.gamma_multiply(0.5 + 0.4 * intensity)),
+                    );
+                }
+                if glow > 0.0 {
+                    for (width, alpha) in [(4.5, 0.30), (8.5, 0.15)] {
+                        painter.add(egui::Shape::closed_line(
+                            top.clone(),
+                            Stroke::new(
+                                width * scale,
+                                poly.color.gamma_multiply(alpha * intensity),
+                            ),
+                        ));
+                    }
+                }
+                // The rim: where the wall ends up in the air.
+                painter.add(egui::Shape::closed_line(
+                    top.clone(),
+                    Stroke::new(
+                        1.2 * scale + 0.9 * scale * intensity,
+                        poly.color.gamma_multiply(0.85),
+                    ),
+                ));
+            }
+
+            if glow > 0.0 {
+                for (width, alpha) in [(4.5, 0.30), (8.5, 0.15)] {
+                    painter.add(egui::Shape::closed_line(
+                        poly.base.clone(),
+                        Stroke::new(width * scale, poly.color.gamma_multiply(alpha * intensity)),
+                    ));
+                }
+            }
+            painter.add(egui::Shape::convex_polygon(
+                poly.base.clone(),
+                fill,
+                Stroke::NONE,
+            ));
+            painter.add(egui::Shape::closed_line(
+                poly.base.clone(),
+                Stroke::new(1.8 * scale + 1.2 * scale * intensity, poly.color),
+            ));
+            if glow > 0.0 {
+                super::map::draw_tag_label(
+                    &painter,
+                    poly.center,
+                    Align2::CENTER_CENTER,
+                    &poly.event,
+                    FontId::proportional(13.0 * scale),
+                    poly.color,
+                );
+            }
+        }
+        if animating {
+            ui.ctx().request_repaint();
+        }
+    }
+
     // --- Labels: cardinals, mile rings, altitude ticks, markers -----------
-    let aspect = rect.width() / rect.height().max(1.0);
-    let ndc_to_screen = |ndc: [f32; 2]| {
-        rect.center() + Vec2::new(ndc[0] * rect.width() * 0.5, -ndc[1] * rect.height() * 0.5)
-    };
-    let project = |world: [f32; 3]| camera.project(aspect, max_r.max(1.0), world);
+    // (`aspect` / `ndc_to_screen` / `project` are hoisted above the input
+    // block: the warning layer needs the same projection.)
     if max_r > 1.0 {
         let radii = ring_radii_mi(max_r);
         let outer_mi = radii.last().copied().unwrap_or(100);
@@ -692,6 +840,186 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     // --- The three display sliders, bottom center --------------------------
 }
 
+/// Pointer reach (pane pixels) for the 3D warning polygons: the closest
+/// outline within this counts as aimed at, matching the map's 8 px.
+const WARNING_HIT_PX: f32 = 8.0;
+
+/// One warning polygon projected onto the pane's screen space: the rings
+/// (already in pixels), the color/name the 2D map uses, the centroid for the
+/// name tag, and the screen area — the tiebreak when the pointer is inside
+/// several polygons at once.
+struct GroundPoly {
+    id: String,
+    event: String,
+    color: Color32,
+    /// The ground ring, projected (pane pixels).
+    base: Vec<egui::Pos2>,
+    /// The same ring at the wall height, when the polygons are extruded.
+    top: Option<Vec<egui::Pos2>>,
+    center: egui::Pos2,
+    area: f32,
+}
+
+impl GroundPoly {
+    /// Rings used for hit testing: the ground ring plus the wall's top ring
+    /// when extruded, so the whole prism is a target — what wraps the storm
+    /// is what a click opens.
+    fn hit_rings(&self) -> impl Iterator<Item = &[egui::Pos2]> {
+        std::iter::once(self.base.as_slice()).chain(self.top.as_deref())
+    }
+}
+
+/// Project one warning's rings into pane screen space: the ground ring, and
+/// the same ring at `top_km` above it when the polygons are extruded (the
+/// warning then wraps the storm instead of lying flat on the ground).
+///
+/// `None` when the warning has no polygon, when a vertex falls behind the
+/// camera (a partially projected polygon would smear across the scene, which
+/// reads as a glitch, not a warning), or when nothing lands in (or just
+/// outside) the pane. `project` takes `(lon, lat, height_km)` — the caller
+/// hands in *display* heights, because the scene's Z is exaggerated.
+fn polygon_prism(
+    w: &radar_core::warnings::Warning,
+    project: impl Fn(f64, f64, f32) -> Option<egui::Pos2>,
+    top_km: f32,
+    visible: &egui::Rect,
+) -> Option<GroundPoly> {
+    let rings = w.polygon.as_ref()?;
+    let walls = top_km > 0.01;
+    let mut base: Vec<egui::Pos2> = Vec::new();
+    let mut top: Option<Vec<egui::Pos2>> = None;
+    let mut area = 0.0f32;
+    let mut in_view = false;
+    for (i, ring) in rings.iter().enumerate() {
+        if ring.len() < 3 {
+            continue;
+        }
+        let mut bpts = Vec::with_capacity(ring.len());
+        let mut tpts = Vec::with_capacity(ring.len());
+        let mut ok = true;
+        for &(lon, lat) in ring {
+            match project(lon, lat, 0.0) {
+                Some(p) => bpts.push(p),
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+            if walls {
+                match project(lon, lat, top_km) {
+                    Some(p) => tpts.push(p),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if !ok || bpts.len() < 3 {
+            continue;
+        }
+        in_view |=
+            bpts.iter().any(|p| visible.contains(*p)) || tpts.iter().any(|p| visible.contains(*p));
+        area += screen_ring_area(&bpts);
+        // The exterior ring (the first) is what gets drawn and hit-tested: a
+        // warning with holes is rare enough to keep the outline only.
+        if i == 0 {
+            base = bpts;
+            top = walls.then_some(tpts);
+        }
+    }
+    if !in_view || base.is_empty() {
+        return None;
+    }
+    let n = base.len() as f32;
+    let base_center = base.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2()) / n;
+    // The name sits at the wall's midpoint, so it reads with the prism
+    // instead of being buried under the volume at the ground center.
+    let center = match &top {
+        Some(t) if !t.is_empty() => {
+            let top_center = t.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2()) / n;
+            ((base_center + top_center) * 0.5).to_pos2()
+        }
+        _ => base_center.to_pos2(),
+    };
+    Some(GroundPoly {
+        id: w.id.clone(),
+        event: w.event.clone(),
+        color: super::alerts::warning_color(w),
+        base,
+        top,
+        center,
+        area: area.max(1.0),
+    })
+}
+
+/// Which warning a pointer at `p` is on: the closest outline within
+/// [`WARNING_HIT_PX`] first, then the smallest polygon containing it — the
+/// same "what lights up is what a click opens" rule the 2D map uses, so a
+/// stack of overlapping warnings is reachable in both views.
+fn warning_under_pointer(polys: &[GroundPoly], p: egui::Pos2) -> Option<&str> {
+    let mut best: Option<(u8, f32, &str)> = None;
+    for poly in polys {
+        let mut edge = f32::INFINITY;
+        for pts in poly.hit_rings() {
+            for i in 0..pts.len() {
+                let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                edge = edge.min(super::map::point_segment_distance(
+                    p.x as f64, p.y as f64, a.x as f64, a.y as f64, b.x as f64, b.y as f64,
+                ) as f32);
+            }
+        }
+        let (rank, key) = if edge <= WARNING_HIT_PX {
+            (0u8, edge)
+        } else if poly.hit_rings().any(|pts| polygon_contains_screen(pts, p)) {
+            (1, poly.area)
+        } else {
+            continue;
+        };
+        if best.is_none_or(|(br, bk, _)| (rank, key.to_bits()) < (br, bk.to_bits())) {
+            best = Some((rank, key, poly.id.as_str()));
+        }
+    }
+    best.map(|(_, _, id)| id)
+}
+
+/// Screen-space ray cast: is `p` inside the projected ring? Perspective turns
+/// a ground polygon into an arbitrary screen polygon, so the hit test runs on
+/// the projection, not on lon/lat.
+fn polygon_contains_screen(pts: &[egui::Pos2], p: egui::Pos2) -> bool {
+    if pts.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = pts.len() - 1;
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[j]);
+        if (a.y > p.y) != (b.y > p.y) {
+            let t = (p.y - a.y) / (b.y - a.y);
+            if p.x < a.x + t * (b.x - a.x) {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Shoelace area of a projected ring (square pixels) — the tiebreak when the
+/// pointer is inside several polygons: the smallest wins, like the map.
+fn screen_ring_area(pts: &[egui::Pos2]) -> f32 {
+    if pts.len() < 3 {
+        return 0.0;
+    }
+    let mut sum = 0.0f32;
+    let mut j = pts.len() - 1;
+    for i in 0..pts.len() {
+        sum += (pts[j].x + pts[i].x) * (pts[j].y - pts[i].y);
+        j = i;
+    }
+    (sum * 0.5).abs()
+}
+
 /// 16-point compass name for a bearing in degrees (the probe's "31 mi NNE").
 fn compass16(deg: f32) -> &'static str {
     const NAMES: [&str; 16] = [
@@ -700,4 +1028,198 @@ fn compass16(deg: f32) -> &'static str {
     ];
     let idx = (deg.rem_euclid(360.0) / 22.5).round() as usize % 16;
     NAMES[idx]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn square(cx: f32, cy: f32, r: f32) -> Vec<egui::Pos2> {
+        vec![
+            egui::pos2(cx - r, cy - r),
+            egui::pos2(cx + r, cy - r),
+            egui::pos2(cx + r, cy + r),
+            egui::pos2(cx - r, cy + r),
+        ]
+    }
+
+    /// The 3D warning hit test runs on the projected ring: containment and
+    /// area both behave for a plain screen polygon.
+    #[test]
+    fn screen_polygon_hit_test() {
+        let s = square(100.0, 100.0, 20.0);
+        assert!(polygon_contains_screen(&s, egui::pos2(100.0, 100.0)));
+        assert!(polygon_contains_screen(&s, egui::pos2(115.0, 80.0)));
+        assert!(!polygon_contains_screen(&s, egui::pos2(100.0, 130.0)));
+        assert!(!polygon_contains_screen(&s, egui::pos2(79.0, 79.0)));
+        assert!(!polygon_contains_screen(&s, egui::pos2(100.0, 121.0)));
+        // Corner-adjacent: inside the bounding box but outside the edges.
+        assert!(polygon_contains_screen(&s, egui::pos2(81.0, 81.0)));
+        // A concave ("L") polygon must not count the missing notch as inside.
+        let l = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 40.0),
+            egui::pos2(40.0, 40.0),
+            egui::pos2(40.0, 100.0),
+            egui::pos2(0.0, 100.0),
+        ];
+        assert!(polygon_contains_screen(&l, egui::pos2(20.0, 80.0)));
+        assert!(!polygon_contains_screen(&l, egui::pos2(80.0, 80.0)));
+        // Too few points: never inside, zero area.
+        assert!(!polygon_contains_screen(&s[..2], egui::pos2(100.0, 100.0)));
+        assert_eq!(screen_ring_area(&s[..2]), 0.0);
+        // Area: the 40x40 square is 1600 px², and a bigger one outranks it
+        // (the smallest-containing-polygon rule).
+        assert!((screen_ring_area(&s) - 1600.0).abs() < 0.01);
+        assert!(screen_ring_area(&square(0.0, 0.0, 50.0)) > screen_ring_area(&s));
+    }
+
+    fn poly(id: &str, base: Vec<egui::Pos2>) -> GroundPoly {
+        let n = base.len() as f32;
+        let sum = base.iter().fold(Vec2::ZERO, |a, p| a + p.to_vec2());
+        GroundPoly {
+            id: id.to_string(),
+            event: id.to_string(),
+            color: Color32::WHITE,
+            area: screen_ring_area(&base),
+            center: (sum / n).to_pos2(),
+            base,
+            top: None,
+        }
+    }
+
+    fn warning(id: &str, ring: &[(f64, f64)]) -> radar_core::warnings::Warning {
+        radar_core::warnings::Warning {
+            id: id.into(),
+            event: "Severe Thunderstorm Warning".into(),
+            severity: "Severe".into(),
+            urgency: "Expected".into(),
+            expires: chrono::Utc::now(),
+            office: "OUN".into(),
+            headline: String::new(),
+            description: String::new(),
+            instruction: String::new(),
+            area: String::new(),
+            polygon: Some(vec![ring.to_vec()]),
+        }
+    }
+
+    /// Projection: a ground ring lands in the pane as a polygon with a real
+    /// center and area; a warning with a vertex behind the camera or wholly
+    /// off-pane is dropped rather than smeared.
+    #[test]
+    fn polygon_prism_projects_extrudes_and_rejects() {
+        let pane = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        // A 0.4° × 0.4° square around (100, 40), 1000 px per degree; height
+        // is 1 px per display km, up (screen y = −lat − z).
+        let ring = [(-100.2, 39.8), (-99.8, 39.8), (-99.8, 40.2), (-100.2, 40.2)];
+        let project = |lon: f64, lat: f64, z: f32| {
+            Some(egui::pos2(
+                ((lon + 100.0) * 1000.0) as f32,
+                ((40.0 - lat) * 1000.0 + 300.0) as f32 - z,
+            ))
+        };
+        let flat = polygon_prism(&warning("a", &ring), project, 0.0, &pane).expect("projected");
+        assert_eq!(flat.base.len(), 4);
+        assert!(flat.top.is_none(), "flat when no wall height is set");
+        // 0.4° × 1000 px/° on each side → 400×400 px.
+        assert!((screen_ring_area(&flat.base) - 160_000.0).abs() < 1.0);
+        assert!(pane.contains(flat.center), "center {:?}", flat.center);
+        assert_eq!(flat.event, "Severe Thunderstorm Warning");
+        assert_eq!(
+            flat.color,
+            super::super::alerts::warning_color(&warning("a", &ring))
+        );
+
+        // Extruded: the top ring exists, sits above the base with the same
+        // footprint, and the name rides the wall's midpoint.
+        let tall = polygon_prism(&warning("a", &ring), project, 120.0, &pane).expect("projected");
+        let top = tall.top.as_ref().expect("top ring");
+        assert_eq!(top.len(), 4);
+        assert!(top.iter().all(|p| p.y < tall.base[0].y), "top above base");
+        assert!(tall.center.y < flat.center.y, "name rides up the wall");
+        assert!(
+            (screen_ring_area(top) - 160_000.0).abs() < 1.0,
+            "same footprint"
+        );
+        let mean_y = |pts: &[egui::Pos2]| pts.iter().map(|p| p.y).sum::<f32>() / pts.len() as f32;
+        assert!(
+            (tall.center.y - (mean_y(&tall.base) + mean_y(top)) * 0.5).abs() < 0.01,
+            "the name sits midway up the wall"
+        );
+
+        // One vertex behind the camera: the whole polygon is dropped.
+        let behind = |lon: f64, lat: f64, z: f32| {
+            if lon < -100.0 {
+                None
+            } else {
+                project(lon, lat, z)
+            }
+        };
+        assert!(polygon_prism(&warning("b", &ring), behind, 120.0, &pane).is_none());
+
+        // Far off-pane: nothing to paint.
+        let away = |lon: f64, lat: f64, z: f32| {
+            project(lon, lat, z).map(|p| p + egui::vec2(4000.0, 4000.0))
+        };
+        assert!(polygon_prism(&warning("c", &ring), away, 120.0, &pane).is_none());
+
+        // No polygon at all (zone-based alert): nothing to draw.
+        let mut zone = warning("d", &ring);
+        zone.polygon = None;
+        assert!(polygon_prism(&zone, project, 120.0, &pane).is_none());
+    }
+
+    /// The 3D warning pointer rule: outline reach beats containment, and
+    /// among containing polygons the smallest wins — the map's rule, so a
+    /// stack is reachable identically in both views.
+    #[test]
+    fn warning_under_pointer_prefers_outline_then_smallest() {
+        // Two nested squares: the pointer deep inside the big one and just
+        // inside the small one hits the small one (smallest wins).
+        let big = poly("big", square(100.0, 100.0, 80.0));
+        let small = poly("small", square(100.0, 100.0, 15.0));
+        let polys = vec![big, small];
+        assert_eq!(
+            warning_under_pointer(&polys, egui::pos2(105.0, 105.0)),
+            Some("small")
+        );
+        // Between the two outlines: inside the big one only.
+        assert_eq!(
+            warning_under_pointer(&polys, egui::pos2(160.0, 100.0)),
+            Some("big")
+        );
+        // On the big polygon's outline but outside every fill — the outline
+        // reach (8 px) still catches it, ahead of containment.
+        assert_eq!(
+            warning_under_pointer(&polys, egui::pos2(181.0, 100.0)),
+            Some("big")
+        );
+        // Well outside everything: nothing.
+        assert_eq!(
+            warning_under_pointer(&polys, egui::pos2(400.0, 400.0)),
+            None
+        );
+        // Two overlapping outlines: the closer edge wins.
+        let a = poly("a", square(100.0, 100.0, 40.0));
+        let b = poly("b", square(104.0, 100.0, 40.0));
+        assert_eq!(
+            warning_under_pointer(&[a, b], egui::pos2(62.0, 100.0)),
+            Some("a"),
+            "the near edge wins"
+        );
+    }
+
+    /// Compass names for the probe's bearings wrap the full circle.
+    #[test]
+    fn compass_names_cover_the_circle() {
+        assert_eq!(compass16(0.0), "N");
+        assert_eq!(compass16(359.0), "N");
+        assert_eq!(compass16(90.0), "E");
+        assert_eq!(compass16(180.0), "S");
+        assert_eq!(compass16(270.0), "W");
+        assert_eq!(compass16(22.5), "NNE");
+        assert_eq!(compass16(-90.0), "W");
+    }
 }

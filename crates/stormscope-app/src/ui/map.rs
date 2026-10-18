@@ -2144,8 +2144,9 @@ pub(super) fn point_segment_distance(px: f64, py: f64, ax: f64, ay: f64, bx: f64
 
 /// Alpha of a warning polygon's fill: the shipped wash (5% at rest, 22%
 /// under the pointer) scaled by the user's fill setting, where 0% leaves the
-/// outline alone on the map.
-fn warning_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
+/// outline alone on the map. The 3D pane's ground polygons share it, so a
+/// warning washes out the same in both views.
+pub(super) fn warning_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
     (0.05 + 0.17 * intensity) * user_fill.clamp(0.0, 1.0)
 }
 

@@ -303,7 +303,6 @@ pub fn build_volume_mesh(volume: &Volume, filter: &MeshFilter) -> VolumeMesh {
 
         // --- indices: a quad only where all four corners carry data --------
         let tilt_index_start = mesh.indices.len() as u32;
-        let idx = |col: usize, row: usize| (base_u32 + (col * rows + row) as u32) as u32;
         for col in 0..n_az {
             let col2 = (col + 1) % n_az;
             for j in 0..rows - 1 {
@@ -322,7 +321,6 @@ pub fn build_volume_mesh(volume: &Volume, filter: &MeshFilter) -> VolumeMesh {
                 if !all_present {
                     continue;
                 }
-                let _ = idx;
                 mesh.indices
                     .extend_from_slice(&[v00, v01, v11, v00, v11, v10]);
             }

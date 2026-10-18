@@ -645,3 +645,84 @@ fn renders_echo_shells_and_a_cross_section() {
         "shells/curtain did not reach the framebuffer ({changed} pixels changed)"
     );
 }
+
+/// The bug the user hit: the curtain uploads straight into its buffers, so
+/// the pane's render-on-demand policy must notice. Toggling the cross-section
+/// on must redraw the frame even when nothing else (camera, volume, tiles)
+/// moved — and clearing it must redraw again.
+#[test]
+#[ignore = "needs a GPU adapter; run locally with --ignored --nocapture"]
+fn toggling_the_cross_section_redraws_the_frame() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("no GPU adapter available");
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("device request failed");
+
+    let volume = synthetic_volume();
+    let mut v3 = Volume3d::new(&device, &queue);
+    let filter = MeshFilter::new(Moment::Reflectivity, MeshDetail::Coarse);
+    v3.update_scene(&device, &queue, &volume, &filter, &[], 5);
+    let size = [960u32, 600u32];
+    let camera = Camera {
+        yaw_deg: 305.0,
+        pitch_deg: 14.0,
+        distance_km: 330.0,
+        target_km: [0.0, 0.0, 30.0],
+    };
+    let render = |v3: &mut Volume3d| {
+        v3.render_if_needed(
+            &device, &queue, size, &camera, 6.0, 0.6, 5.0, 0.0, 20.0, 12345, 1.0,
+        );
+    };
+
+    render(&mut v3);
+    let first = v3.render_count;
+    assert_eq!(first, 1, "first frame renders");
+    let plain = readback(&v3, &device, &queue, size);
+
+    // Same inputs again: nothing changed, nothing redrawn (the pane is
+    // GPU-bound; this is the whole point of the policy).
+    render(&mut v3);
+    assert_eq!(v3.render_count, first, "unchanged frame must skip");
+
+    // Toggle the curtain on: same camera, same volume — still a redraw.
+    let params = SectionParams {
+        azimuth_deg: 40.0,
+        max_range_km: v3.max_range_km(),
+        top_km: 16.0,
+        range_step_km: 1.0,
+        height_step_km: 0.4,
+    };
+    let (verts, idx) = build_cross_section(&volume, Moment::Reflectivity, &params);
+    v3.set_cross_section(&device, &queue, &verts, &idx);
+    render(&mut v3);
+    assert_eq!(v3.render_count, first + 1, "curtain must redraw the frame");
+    let with_curtain = readback(&v3, &device, &queue, size);
+    let changed = plain
+        .chunks_exact(4)
+        .zip(with_curtain.chunks_exact(4))
+        .filter(|(a, b)| {
+            u32::from(a[0].abs_diff(b[0]))
+                + u32::from(a[1].abs_diff(b[1]))
+                + u32::from(a[2].abs_diff(b[2]))
+                > 24
+        })
+        .count();
+    eprintln!("curtain toggled: {changed} pixels changed");
+    assert!(changed > 500, "curtain did not appear ({changed} px)");
+
+    // And clearing it redraws too (the empty mesh bumps the revision).
+    v3.set_cross_section(&device, &queue, &[], &[]);
+    render(&mut v3);
+    assert_eq!(
+        v3.render_count,
+        first + 2,
+        "clearing the curtain must redraw the frame"
+    );
+}

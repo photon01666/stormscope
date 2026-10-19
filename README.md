@@ -16,14 +16,18 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
 
 **Radar data**
 - Live decoding of NEXRAD Level II message 31 volumes (REF, VEL, SW, ZDR,
-  CC, PHI, KDP) — wrap around `nexrad-data`/`nexrad-decode`, no
-  reimplementation of the binary format.
+  CC, PHI, KDP — KDP derived from the differential-phase field) — wrap
+  around `nexrad-data`/`nexrad-decode`, no reimplementation of the binary
+  format.
 - Live mode (Unidata chunk stream, poller + freshness watchdog) and archive
   mode (date picker, per-day volume windows, paging through the whole day).
 - Animation ring with a timeline scrubber: play/pause, frame stepping,
   adjustable fps, exact per-frame timestamps.
 - Reflectivity filter (min dBZ) both in the controls sidebar and as a
   floating quick-adjust bar on the map — scroll over it to step 5 dB.
+- A small **(i)** beside the product selector explains every product —
+  what REF/VEL/SW/ZDR/PHI/KDP/CC are, how to read VIL, Echo Tops, MEHS and
+  storm-relative velocity, and a short reading-tips list.
 - Hover **data probe** on the map: the value under the cursor in the gate
   the pixel is in, its beam height (k ft) and distance/bearing from the
   radar (mi), plus the strongest cut in the column for reflectivity. It
@@ -62,7 +66,9 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   forecaster discussion.
 - NWS warnings (tornado / severe thunderstorm / flash flood) drawn as colored
   polygons, plus an alerts browser: every active alert nationwide on one tab,
-  just the selected station's area on the other, with a search filter.
+  just the selected station's area on the other, with a search filter. Each
+  list groups by event category and reads positions in miles/bearings from
+  the station ("42.1 mi SSW of KTWX").
   Hovering a list row — or the polygon on the map itself — glows and labels
   that warning, and a second's rest on a polygon pops a brief description
   under the pointer. Overlapping warnings all light up and are named, reachable
@@ -71,6 +77,13 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   clicking jumps to it — loading the station that covers it when the alert is
   outside the selected one's range; click a polygon (or the row's Details
   button) for the full NOAA description and safety instruction.
+- **Warnings follow the radar**: live polygons only while live radar is on
+  screen; in archive mode the selected day's historical polygons are limited
+  to the station's coverage and to warnings in effect at the displayed
+  scan's time, so scrubbing the loop moves them with the echoes. The alerts
+  archive tabs (whole day / station-owned) load that day's warnings, and
+  clicking a historical polygon opens its archived NWS text with a
+  "load radar at this time" button.
 - The top-of-map alerts pill flashes in the issued color (tornado / severe
   thunderstorm / flash flood, watches dimmed) when one of those watches or
   warnings is in force near the selected station — checked every 60 seconds
@@ -92,6 +105,12 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
 - Auto-hiding controls sidebar that slides in on left-edge hover, with a
   pin; the sidebar, its windows and their tooltips scale on high-resolution
   monitors without fighting the OS scale factor.
+- Each pane has its own **Controls** window (bottom-right chip) for its
+  display settings, and the map has a **GO LIVE** pill (red and pulsing
+  while browsing history, green on the newest scan) plus a top-center
+  **download pill** with real counts while a bulk load streams.
+- Archive day picker as a clickable calendar; the timeline carries exact
+  per-frame timestamps and adjustable loop speed.
 - Dark basemap synthesized from the light OSM/Wikimedia tiles (hue-preserving
   inversion), on-disk tile cache, dBZ-filtered look tuned for echoes.
 - Native Wayland (no XWayland round-trip) with X11 fallback; Vulkan via wgpu.
@@ -129,14 +148,17 @@ expensive raster work happens only when something actually changes:
 - Drags, playback and wheel-zoom bursts rasterize at half resolution with a
   full-resolution pass when the gesture stops.
 - The 3D pane supersamples 1.6x when settled (egui downsamples linearly —
-  anti-aliased edges and no tile shimmer) and 0.8x while the camera moves.
+  anti-aliased edges and no tile shimmer) and draws at exact display
+  resolution while the camera moves: never below it, because sub-pixel grid
+  lines flicker as their coverage flips frame to frame.
 - The 3D pane renders on demand: only when its camera, settings, volume,
-  ground tiles or size changed. Motion frames draw at half resolution and one
-  sharp frame lands 160 ms after the motion stops — idle wakes cost a texture
-  sample instead of a volume pass (the policy is a unit-tested pure function).
-- The 3D scene holds still while the timeline plays (it re-syncs on pause) and
-  scrub-dragging rebuilds at most every 250 ms, so playing the loop can never
-  starve map panning or 3D orbiting.
+  ground tiles, cross-section or size changed. One sharp (supersampled) frame
+  lands 160 ms after the motion stops — idle wakes cost a texture sample
+  instead of a volume pass (the policy is a unit-tested pure function).
+- The 3D scene follows playback: meshes build on a worker thread and upload
+  when newer than what is displayed (a frame one behind is the intended
+  behaviour), so playing the loop can never starve map panning or 3D
+  orbiting; scrub-dragging rebuilds at most every 250 ms.
 - Splats are premultiplied, division-free, into a persistent buffer uploaded
   through one reused GPU texture.
 - Measured on the development machine (Intel Arc A310, 2540×1329 viewport): heavy
@@ -184,7 +206,6 @@ internally, all coordinates WGS84 degrees.
 Single-site radar is solid; the interesting gaps are:
 
 - Multi-site mosaics / composites.
-- Storm-relative velocity and other derived products.
 - Configurable color tables / palettes.
 - Packaging (AUR, Flatpak) and a proper `.desktop` entry.
 - Windows/macOS are untested (the crate is wgpu-based, so it should port).

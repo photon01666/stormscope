@@ -24,6 +24,10 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   adjustable fps, exact per-frame timestamps.
 - Reflectivity filter (min dBZ) both in the controls sidebar and as a
   floating quick-adjust bar on the map — scroll over it to step 5 dB.
+- Hover **data probe** on the map: the value under the cursor in the gate
+  the pixel is in, its beam height (k ft) and distance/bearing from the
+  radar (mi), plus the strongest cut in the column for reflectivity. It
+  appears only where an echo is actually drawn.
 - Optional **3D radar pane**: every elevation cut of the current scan as one
   rotatable volume, beside the map or maximized. Drag orbits, right-drag
   (or W/A/S/D over the pane) pans freely, wheel zooms; the pane's Controls

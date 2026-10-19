@@ -3,6 +3,33 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.4.5 — 2026-10-19
+
+**The 2D map gets the hover probe**
+- Hover the map for the value under the cursor — the same readout the 3D
+  pane has: the product's value in the gate the pixel actually falls in (no
+  interpolation, so it matches what is drawn), the beam height in k ft, and
+  the distance and bearing from the radar in miles and compass terms. On
+  reflectivity it also reads the strongest cut in the column ("column max
+  62 dBZ @ 21.0k ft") — the hail-core / storm-top number. It sits on a black
+  plate so it stays readable over bright cores, has its own switch in the
+  map's Controls window (on by default), and stays quiet while dragging or
+  measuring.
+- Both probes now appear **only over an echo**: on the map, exactly where
+  the rasterizer draws a pixel (gate has data, clears the color table's
+  floor, clears Min dBZ, not transparent) — point at basemap and nothing
+  appears, so the height/distance lines always describe a real echo. The 3D
+  probe no longer says "no echo under the cursor" either.
+
+**Sampler fix: half a beam off**
+- The shared volume sampler's nearest-ray search compared a magnitude
+  against the *signed* delta of the first candidate, so whenever the ray
+  after the insertion point was the closer one (half of all queries) it
+  kept the ray before it. Half a beam of error went into the 3D probe, the
+  cross-section, the isosurface lattice and the derived columns. Fixed,
+  with a regression test pinning both sides of a ray boundary and the
+  wrap-around cases.
+
 ## v1.4.0 — 2026-10-19
 
 **Warning polygons wrap the storm in the 3D pane**

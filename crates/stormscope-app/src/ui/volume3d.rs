@@ -757,7 +757,9 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     } else {
         None
     };
-    if let Some((pos, report)) = probe {
+    // Nothing under the ray: no readout at all (the cursor is on empty sky or
+    // bare ground — a plate saying so is noise).
+    if let Some((pos, report)) = probe.filter(|(_, r)| r.max.is_some()) {
         let unit = moment.unit();
         let marker = |hit: &radar_render::ProbeHit, color: Color32| -> Option<egui::Pos2> {
             let p = project([hit.pos_km[0], hit.pos_km[1], hit.pos_km[2] * ve])?;
@@ -801,7 +803,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             }
         }
         if lines.is_empty() {
-            lines.push("no echo under the cursor".to_string());
+            return;
         }
         // Tooltip beside the hit, on a black plate so it stays readable over
         // bright echo cores, and clamped inside the pane.

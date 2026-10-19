@@ -783,6 +783,12 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         ) {
             let (cx, cy) = viewport_pos(rect, p);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            let min_value = match app.state.moment {
+                radar_core::Moment::Reflectivity | radar_core::Moment::CompositeReflectivity => {
+                    app.state.min_dbz
+                }
+                _ => f32::NEG_INFINITY,
+            };
             if let Some(read) = map_probe_at(
                 &volume,
                 app.state.moment,
@@ -791,6 +797,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 site.longitude,
                 lat,
                 lon,
+                min_value,
             ) {
                 let lines = read.lines(app.state.moment);
                 draw_probe_plate(
@@ -821,7 +828,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 /// storm top rather than a mixed-unit number — the strongest cut in the
 /// column.
 struct MapProbe {
-    value: Option<f32>,
+    /// The echo's value under the pointer (the probe only exists over one).
+    value: f32,
     /// Cut the value came from (degrees).
     elev_deg: f32,
     /// Beam height of that cut at the point (km).
@@ -840,20 +848,13 @@ impl MapProbe {
     fn lines(&self, moment: radar_core::Moment) -> Vec<String> {
         let unit = moment.unit();
         let mut out = Vec::with_capacity(3);
-        match self.value {
-            Some(v) => out.push(format!(
-                "{} {:.0} {} · {:.1}°",
-                moment.label(),
-                v,
-                unit,
-                self.elev_deg
-            )),
-            None => out.push(format!(
-                "{} — no echo · {:.1}°",
-                moment.label(),
-                self.elev_deg
-            )),
-        }
+        out.push(format!(
+            "{} {:.0} {} · {:.1}°",
+            moment.label(),
+            self.value,
+            unit,
+            self.elev_deg
+        ));
         out.push(format!(
             "{:.1}k ft · {} {}",
             self.height_km * radar_render::FT_PER_KM / 1000.0,
@@ -872,11 +873,18 @@ impl MapProbe {
 
 /// Read one moment at a ground point, for the map's hover probe.
 ///
+/// `None` — no readout — unless the point is **over an echo**, by exactly the
+/// rule the rasterizer draws with: a gate with data whose value clears both
+/// the color table's floor and the map's Min dBZ filter and that the table
+/// does not render transparent. A probe over blank ground is noise; the
+/// readout only appears where a pixel actually is.
+///
 /// The gate is the one the pixel falls in (nearest ray, containing range
 /// bin), so the readout is what the map is actually showing rather than a
 /// smoothed value; the beam height comes from the 4/3-earth model at the
 /// point's ground range, and the slant range used to pick the gate is that
 /// height plus the ground range.
+#[allow(clippy::too_many_arguments)]
 fn map_probe_at(
     volume: &radar_core::Volume,
     moment: radar_core::Moment,
@@ -885,6 +893,7 @@ fn map_probe_at(
     site_lon: f64,
     lat: f64,
     lon: f64,
+    min_value: f32,
 ) -> Option<MapProbe> {
     let range_km = radar_render::surface_distance_m(site_lon, site_lat, lon, lat) / 1000.0;
     let bearing_deg = radar_render::initial_bearing_deg(site_lon, site_lat, lon, lat);
@@ -902,10 +911,17 @@ fn map_probe_at(
     let elev_deg = elevation(sweep);
     let height_km = radar_core::sampling::beam_height_km(range_km as f32, elev_deg);
     let slant_km = (range_km as f32).hypot(height_km);
-    let ray = radar_core::sampling::nearest_ray_index(&sweep.azimuths_deg, bearing_deg as f32);
-    let value = ray
-        .and_then(|ray| radar_core::sampling::gate_index_at_slant(md, slant_km).map(|g| (ray, g)))
-        .and_then(|(ray, gate)| md.value(ray, gate));
+    let table = radar_render::ColorTable::for_moment(moment);
+    let ray = radar_core::sampling::nearest_ray_index(&sweep.azimuths_deg, bearing_deg as f32)?;
+    let gate = radar_core::sampling::gate_index_at_slant(md, slant_km)?;
+    let value = md.value(ray, gate)?;
+    // The rasterizer's rule for "this pixel is drawn": the color table's own
+    // floor, the Min dBZ filter, and the table's alpha at that value. Below
+    // any of them the map shows basemap, so the probe says nothing.
+    let thresh = table.range().0.max(min_value);
+    if !value.is_finite() || value < thresh || table.map(value)[3] == 0 {
+        return None;
+    }
 
     // The strongest cut in the column, for the products where that reads as
     // "hail core / storm top" rather than a mixed-unit number.
@@ -2805,8 +2821,9 @@ mod tests {
             slon,
             at(30.0),
             slon,
+            0.0,
         )
-        .expect("a readout");
+        .expect("a readout over the core");
         assert!(
             (read.range_km - 30.0).abs() < 1.0,
             "range {}",
@@ -2817,7 +2834,7 @@ mod tests {
             "bearing {}",
             read.bearing_deg
         );
-        assert_eq!(read.value, Some(45.0), "the pixel's own gate");
+        assert_eq!(read.value, 45.0, "the pixel's own gate");
         assert!(
             (read.height_km - radar_core::sampling::beam_height_km(30.0, 0.5)).abs() < 0.05,
             "beam height {}",
@@ -2836,24 +2853,41 @@ mod tests {
             slon,
             at(45.0),
             slon,
+            0.0,
         )
         .unwrap();
-        assert_eq!(far.value, Some(10.0));
+        assert_eq!(far.value, 10.0);
 
-        // Past the volume's range there is no gate: no value, but the readout
-        // still knows where the pointer is.
-        let very_far = map_probe_at(
-            &vol,
-            radar_core::Moment::Reflectivity,
-            0.5,
-            slat,
-            slon,
-            at(555.0),
-            slon,
-        )
-        .unwrap();
-        assert!(very_far.value.is_none());
-        assert!(very_far.range_km > 500.0);
+        // No echo under the pointer, no readout: past the volume's range...
+        assert!(
+            map_probe_at(
+                &vol,
+                radar_core::Moment::Reflectivity,
+                0.5,
+                slat,
+                slon,
+                at(555.0),
+                slon,
+                0.0,
+            )
+            .is_none(),
+            "beyond the data"
+        );
+        // ...and where the Min dBZ filter hides the echo the map draws.
+        assert!(
+            map_probe_at(
+                &vol,
+                radar_core::Moment::Reflectivity,
+                0.5,
+                slat,
+                slon,
+                at(45.0),
+                slon,
+                20.0,
+            )
+            .is_none(),
+            "below the map's own filter"
+        );
 
         // The lines are in the pane's units (k ft, miles, compass).
         let lines = read.lines(radar_core::Moment::Reflectivity);
@@ -2873,7 +2907,8 @@ mod tests {
                 slat,
                 slon,
                 at(30.0),
-                slon
+                slon,
+                0.0,
             )
             .is_none()
         );

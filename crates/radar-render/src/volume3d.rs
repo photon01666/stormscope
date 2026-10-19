@@ -414,6 +414,27 @@ pub fn ground_tile_keys(site_lat: f64, site_lon: f64, radius_km: f32) -> Vec<(u8
         .log2()
         .floor()
         .clamp(3.0, 12.0) as u8;
+    ground_tile_keys_at(site_lat, site_lon, radius_km, zoom)
+}
+
+/// Tile keys covering the ground square around a site out to `radius_km` at
+/// an **explicit zoom**.
+///
+/// [`ground_tile_keys`] picks a zoom so the square stays under ~10 tiles
+/// across (sharp detail, one tile set). The 3D pane also wants a *coarse
+/// surround*: a lower zoom over a larger radius, layered underneath, so the
+/// ground runs past the radar's edge and fades into the distance instead of
+/// ending in a hard black band across the pane.
+pub fn ground_tile_keys_at(
+    site_lat: f64,
+    site_lon: f64,
+    radius_km: f32,
+    zoom: u8,
+) -> Vec<(u8, u32, u32)> {
+    if radius_km < 1.0 {
+        return Vec::new();
+    }
+    let zoom = zoom.clamp(0, 17);
     let n = 2f64.powi(i32::from(zoom));
 
     let lon_span = f64::from(radius_km) / (111.32 * site_lat.to_radians().cos().abs().max(0.05));
@@ -917,6 +938,35 @@ mod tests {
         let mesh = build_volume_mesh(&v, &filter);
         assert_eq!(mesh.tilts.len(), 1);
         assert_eq!(mesh.tilts[0].elevation_deg, 1.3);
+    }
+
+    /// The coarse surround the 3D pane layers under its detailed tiles:
+    /// larger radius, lower zoom, fewer tiles, still covering the site.
+    #[test]
+    fn coarse_ground_surround_is_cheaper_and_wider() {
+        let (lat, lon) = (38.996, -96.232);
+        let fine = ground_tile_keys(lat, lon, 300.0);
+        let fine_zoom = fine[0].0;
+        let coarse = ground_tile_keys_at(lat, lon, 660.0, fine_zoom.saturating_sub(2));
+        assert!(!coarse.is_empty());
+        assert!(coarse.iter().all(|k| k.0 == fine_zoom.saturating_sub(2)));
+        assert!(
+            coarse.len() < fine.len(),
+            "the surround must not cost more tiles ({} vs {})",
+            coarse.len(),
+            fine.len()
+        );
+        // Both layers contain the site, and the surround's corner tiles reach
+        // further out than the detailed set's.
+        let far = |keys: &[(u8, u32, u32)]| {
+            keys.iter()
+                .map(|k| {
+                    let b = ground_tile_bounds_km(*k, lat, lon);
+                    b[0].abs().max(b[1].abs()).max(b[2].abs()).max(b[3].abs())
+                })
+                .fold(0.0f32, f32::max)
+        };
+        assert!(far(&coarse) > far(&fine) * 1.5, "no surround");
     }
 
     /// The ground tiles must actually contain the site, be a sane count, and

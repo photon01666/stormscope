@@ -158,6 +158,9 @@ pub struct Volume3d {
     ground_verts: Vec<GroundVertex>,
     ground_indices: Vec<u32>,
     ground_draws: Vec<(egui::TextureId, Range<u32>)>,
+    /// Distance (km) where the ground fades out: the coarse surround's edge.
+    /// Zero disables the fade (no tiles yet, or a single layer).
+    ground_fade_km: f32,
 
     max_range_km: f32,
     tilt_count: usize,
@@ -557,6 +560,7 @@ impl Volume3d {
             ground_verts: Vec::new(),
             ground_indices: Vec::new(),
             ground_draws: Vec::new(),
+            ground_fade_km: 0.0,
             max_range_km: 0.0,
             tilt_count: 0,
             triangles: 0,
@@ -818,18 +822,24 @@ impl Volume3d {
     /// in scene-local km. Resolves each egui texture to a cached wgpu bind
     /// group (the tile layer uploaded the pixels; the GPU texture is shared,
     /// not copied) and rewrites the small quad geometry.
+    /// `tiles` carries a per-tile Z (km): the detailed layer sits at 0 and the
+    /// coarse surround just below it, so the depth test lets the sharp tiles
+    /// win where both cover the same ground. `fade_km` is where the ground
+    /// dissolves into the void (the surround's outer edge); 0 keeps it crisp.
     pub fn set_ground_tiles(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         render_state: &egui_wgpu::RenderState,
-        tiles: &[(egui::TextureId, [f32; 4])],
+        tiles: &[(egui::TextureId, [f32; 4], f32)],
+        fade_km: f32,
     ) {
         self.ground_verts.clear();
         self.ground_indices.clear();
         self.ground_draws.clear();
+        self.ground_fade_km = fade_km.max(0.0);
 
-        for (id, b) in tiles {
+        for (id, b, z) in tiles {
             if self.ground_verts.len() + 4 > GROUND_VERT_CAP
                 || self.ground_indices.len() + 6 > GROUND_INDEX_CAP
             {
@@ -867,19 +877,19 @@ impl Volume3d {
             let base = self.ground_verts.len() as u32;
             // Mercator y grows southward; v = 0 is the tile's north edge.
             self.ground_verts.push(GroundVertex {
-                pos_km: [x0, y0, 0.0],
+                pos_km: [x0, y0, *z],
                 uv: [0.0, 1.0],
             });
             self.ground_verts.push(GroundVertex {
-                pos_km: [x1, y0, 0.0],
+                pos_km: [x1, y0, *z],
                 uv: [1.0, 1.0],
             });
             self.ground_verts.push(GroundVertex {
-                pos_km: [x1, y1, 0.0],
+                pos_km: [x1, y1, *z],
                 uv: [1.0, 0.0],
             });
             self.ground_verts.push(GroundVertex {
-                pos_km: [x0, y1, 0.0],
+                pos_km: [x0, y1, *z],
                 uv: [0.0, 0.0],
             });
             let start = self.ground_indices.len() as u32;
@@ -911,7 +921,7 @@ impl Volume3d {
         // this frame draws (the rest re-registers in one bind group).
         if self.tile_bgs.len() > TILE_BG_CAP {
             let keep: std::collections::HashSet<egui::TextureId> =
-                tiles.iter().map(|(id, _)| *id).collect();
+                tiles.iter().map(|(id, _, _)| *id).collect();
             self.tile_bgs.retain(|id, _| keep.contains(id));
         }
     }
@@ -1014,7 +1024,9 @@ impl Volume3d {
         // minimum expressed in this pass's pixels.
         let grid_uniforms = Uniforms {
             view_proj,
-            params: [vertical_exaggeration, 1.0, threshold, 0.0],
+            // params.w is the ground fade radius; only the ground fragment
+            // shader reads it (the grid ignores it).
+            params: [vertical_exaggeration, 1.0, threshold, self.ground_fade_km],
             params2: [0.0, 1.0e9, min_half_render_px, 0.0],
             params3: [eye[0], eye[1], eye[2], viewport_h],
         };
@@ -1313,6 +1325,8 @@ struct GroundIn {
 struct GroundOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    // Distance from the site (km) — the scene origin is the radar.
+    @location(1) dist: f32,
 };
 
 @vertex
@@ -1320,6 +1334,7 @@ fn gvs_main(in: GroundIn) -> GroundOut {
     var out: GroundOut;
     out.clip = cam.view_proj * vec4<f32>(in.pos, 1.0);
     out.uv = in.uv;
+    out.dist = length(in.pos.xy);
     return out;
 }
 
@@ -1344,7 +1359,15 @@ fn gfs_main(in: GroundOut) -> @location(0) vec4<f32> {
     let base = textureSample(ground_tex, ground_samp, in.uv);
     let blur = clamp((footprint - 1.1) / 6.0, 0.0, 0.9);
     let c = mix(base, a * 0.25, blur);
-    return vec4<f32>(c.rgb, 1.0);
+    // The ground dissolves into the void at the edge of the coarse surround,
+    // so the pane has no hard black horizon band. cam.params.w is that edge
+    // in km (0 = no fade).
+    var rgb = c.rgb;
+    if (cam.params.w > 1.0) {
+        let fade = 1.0 - smoothstep(cam.params.w * 0.72, cam.params.w, in.dist);
+        rgb = c.rgb * fade;
+    }
+    return vec4<f32>(rgb, 1.0);
 }
 "#;
 

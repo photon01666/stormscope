@@ -252,23 +252,44 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     let project = |world: [f32; 3]| camera.project(aspect, max_r.max(1.0), world);
 
     // --- Ground: the same basemap tiles the 2D map shows -------------------
-    let keys =
-        radar_render::volume3d::ground_tile_keys(site.latitude, site.longitude, max_r.max(50.0));
-    let key_objs: Vec<radar_render::TileKey> = keys
+    // Two layers: the detailed tiles around the radar, and a coarse surround
+    // (two zooms out, over twice the radius) just underneath. The surround
+    // runs past the radar's edge and fades into the void at its own edge, so
+    // the pane no longer ends in a hard black band where the tiles stopped.
+    let fine_radius = max_r.max(50.0);
+    let fine_keys =
+        radar_render::volume3d::ground_tile_keys(site.latitude, site.longitude, fine_radius);
+    let coarse_radius = (fine_radius * 2.2).max(600.0);
+    let coarse_zoom = fine_keys.first().map_or(5, |k| k.0.saturating_sub(2));
+    let coarse_keys = radar_render::volume3d::ground_tile_keys_at(
+        site.latitude,
+        site.longitude,
+        coarse_radius,
+        coarse_zoom,
+    );
+    // One list: detail first at z = 0, the surround just below it.
+    let layered: Vec<((u8, u32, u32), f32)> = fine_keys
         .iter()
-        .map(|(z, x, y)| radar_render::TileKey {
+        .copied()
+        .map(|k| (k, 0.0))
+        .chain(coarse_keys.iter().copied().map(|k| (k, -0.08)))
+        .collect();
+    let key_objs: Vec<radar_render::TileKey> = layered
+        .iter()
+        .map(|((z, x, y), _)| radar_render::TileKey {
             z: *z,
             x: *x,
             y: *y,
         })
         .collect();
     let ids = app.tiles.ensure_tiles(ui, &key_objs);
-    let mut tiles: Vec<(egui::TextureId, [f32; 4])> = Vec::with_capacity(keys.len());
-    for (key, id) in keys.iter().zip(ids) {
+    let mut tiles: Vec<(egui::TextureId, [f32; 4], f32)> = Vec::with_capacity(layered.len());
+    for ((key, z_km), id) in layered.iter().zip(ids) {
         if let Some(id) = id {
             tiles.push((
                 id,
                 radar_render::volume3d::ground_tile_bounds_km(*key, site.latitude, site.longitude),
+                *z_km,
             ));
         }
     }
@@ -277,6 +298,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         &render_state.queue,
         &render_state,
         &tiles,
+        coarse_radius,
     );
 
     // --- Cross-section curtain (RHI along one azimuth) ---------------------
@@ -332,11 +354,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         tiles.len().hash(&mut h);
-        for (id, b) in &tiles {
+        for (id, b, z) in &tiles {
             id.hash(&mut h);
             for v in b {
                 v.to_bits().hash(&mut h);
             }
+            z.to_bits().hash(&mut h);
         }
         h.finish()
     };

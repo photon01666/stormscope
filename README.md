@@ -3,9 +3,11 @@
 A fast, native NEXRAD weather-radar viewer for Linux, built in Rust with [egui/eframe](https://github.com/emilk/egui) on
 Vulkan (wgpu), native Wayland and X11.
 
-**Free public data only**: NOAA/NWS NEXRAD Level II (via Unidata's AWS Open
-Data buckets), `api.weather.gov` alerts, SPC convective outlooks, and
-OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
+**Free public data only**: NOAA/NWS NEXRAD Level II (via Unidata's and NOAA's
+AWS Open Data buckets), `api.weather.gov` alerts/forecasts/observations/storm
+reports, SPC convective outlooks and mesoscale discussions, IEM's warning
+archive, and OpenStreetMap-derived basemap tiles. No accounts, no API keys, no
+telemetry.
 
 [![CI](https://github.com/photon01666/stormscope/actions/workflows/ci.yml/badge.svg)](https://github.com/photon01666/stormscope/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -20,13 +22,15 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   around `nexrad-data`/`nexrad-decode`, no reimplementation of the binary
   format.
 - Live mode (Unidata chunk stream, poller + freshness watchdog) and archive
-  mode (date picker, per-day volume windows, paging through the whole day).
+  mode (calendar day picker, per-day volume windows, paging through the
+  whole day), with a WSR-88D site selector.
 - Animation ring with a timeline scrubber: play/pause, frame stepping,
-  adjustable fps, exact per-frame timestamps.
-- Reflectivity filter (min dBZ) both in the controls sidebar and as a
-  floating quick-adjust bar on the map — scroll over it to step 5 dB.
-- A small **(i)** beside the product selector explains every product —
-  what REF/VEL/SW/ZDR/PHI/KDP/CC are, how to read VIL, Echo Tops, MEHS and
+  adjustable loop speed, exact per-frame timestamps, and a resident-memory
+  budget so an overnight session does not creep.
+- Reflectivity filter (min dBZ) in the map's Controls window (scroll over
+  the slider to step 5 dB), applied per product.
+- A small **(i)** beside the product selector explains every product — what
+  REF/VEL/SW/ZDR/PHI/KDP/CC are, how to read VIL, Echo Tops, MEHS and
   storm-relative velocity, and a short reading-tips list.
 - Hover **data probe** on the map: the value under the cursor in the gate
   the pixel is in, its beam height (k ft) and distance/bearing from the
@@ -88,10 +92,17 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   thunderstorm / flash flood, watches dimmed) when one of those watches or
   warnings is in force near the selected station — checked every 60 seconds
   with a tiny point query, so a new warning lights up within about a minute.
-- NWS gridpoint forecast from the *Forecast* pill next to the alerts badge:
-  the selected station's area by default, or any point you click on the map
-  ("Pick on map…"), with day/night periods, the full NOAA narrative, current
-  station conditions, and a 15-minute auto-refresh while the window is open.
+- NWS preliminary **local storm reports** (spotter/public reports) plotted at
+  the reported location, and **SPC mesoscale discussions** as areas with the
+  full forecaster text on click.
+- NWS gridpoint **forecast** from the *Forecast* pill next to the alerts
+  badge: the selected station's area by default, or any point you click on
+  the map ("Pick on map…"), with day/night periods, the full NOAA narrative,
+  current station conditions, and a 15-minute auto-refresh while the window
+  is open.
+- **Station totals**: rain/snow accumulation from the reporting stations
+  around the radar (or any point), labelled on the map with the observation
+  window it covers.
 - Storm tracks: cell-motion arrows, dashed 30-minute nowcasts, mph labels.
 - Per-marker arrival ETAs ("storm reaches this pin in ~14 min") derived from
   smoothed cell motion; velocity estimates blend scan-to-scan so they
@@ -111,9 +122,15 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   **download pill** with real counts while a bulk load streams.
 - Archive day picker as a clickable calendar; the timeline carries exact
   per-frame timestamps and adjustable loop speed.
+- Keyboard: **Space** play/pause (pausing jumps to the newest scan),
+  **L** go live, **←/→** step frames, **Esc** cancels the measure tool.
+  Map: drag pans, wheel zooms; 3D pane: drag orbits, right-drag pans,
+  wheel zooms, double-click re-fits.
 - Dark basemap synthesized from the light OSM/Wikimedia tiles (hue-preserving
   inversion), on-disk tile cache, dBZ-filtered look tuned for echoes.
 - Native Wayland (no XWayland round-trip) with X11 fallback; Vulkan via wgpu.
+- Units: the 3D pane and the alerts UI speak **miles and feet**; products use
+  their native units (dBZ, m/s, deg/km, kg/m², kft, inches).
 
 ## Install
 
@@ -159,6 +176,12 @@ expensive raster work happens only when something actually changes:
   when newer than what is displayed (a frame one behind is the intended
   behaviour), so playing the loop can never starve map panning or 3D
   orbiting; scrub-dragging rebuilds at most every 250 ms.
+- Echo shells (isosurfaces) build on that same worker; the cross-section
+  curtain is a prepared-profile sweep rebuilt in ~2 ms on the UI thread, and
+  both ride a revision in the render key so toggling them redraws at once.
+- Derived products (VIL / Echo Tops / MEHS) are computed once at decode on
+  the decode thread, threaded over ray chunks: ~45 ms on a real volume and
+  ~4 % memory, after which switching products and looping cost nothing.
 - Splats are premultiplied, division-free, into a persistent buffer uploaded
   through one reused GPU texture.
 - Measured on the development machine (Intel Arc A310, 2540×1329 viewport): heavy
@@ -179,27 +202,33 @@ memory/texture accounting.
 | Source | Used for | Terms |
 | --- | --- | --- |
 | [Unidata NEXRAD Level II](https://registry.opendata.aws/noaa-nexrad/) (`unidata-nexrad-level2-chunks`, `noaa-nexrad-level2`) | Volume scans, live chunks | NOAA public-domain data |
-| [`api.weather.gov`](https://www.weather.gov/documentation/services-web-api) | Active warning polygons | US Government work; a descriptive `User-Agent` is required and sent |
-| [SPC](https://www.spc.noaa.gov/) | Day 1–3 categorical outlooks | US Government work |
+| [`api.weather.gov`](https://www.weather.gov/documentation/services-web-api) | Active alerts, forecast gridpoints, station observations, local storm reports, radar station list | US Government work; a descriptive `User-Agent` is required and sent |
+| [IEM](https://mesonet.agron.iastate.edu/) (Iowa Environmental Mesonet) | Archived warning polygons (VTEC day files) and archived NWS product text | Iowa State University; public data, requested politely (rate-limited, cached) |
+| [SPC](https://www.spc.noaa.gov/) | Day 1–3 categorical outlooks, mesoscale discussions | US Government work |
 | [Wikimedia Maps](https://maps.wikimedia.org/) (`osm-intl`), with [OpenStreetMap](https://www.openstreetmap.org/) fallback | Basemap tiles | © OpenStreetMap contributors, ODbL — attribution is drawn on the map |
 
-Tiles are fetched anonymously at low volume and cached on disk; the dark
-theme is synthesized locally from the light tiles.
+Requests are anonymous, cached on disk, and rate-limited; there is no
+telemetry. Tiles are fetched at low volume and the dark theme is synthesized
+locally from the light tiles.
 
 ## Architecture
 
 ```
 crates/
-  radar-core/       data model contract: volumes, sweeps, moments, VCP, sites, warnings
-  radar-decode/     NEXRAD Level II bytes -> radar_core::Volume (archive + realtime)
-  radar-data/       S3 fetch/cache/live poll, NWS alerts, SPC outlooks, site catalog
-  radar-render/     projection, color tables, rasterization, tiles, storm tracks
-  stormscope-app/   eframe app: state, timeline, panels, wiring
+  radar-core/       data model: volumes, sweeps, moments, VCP, sites, warnings,
+                    outlooks, forecasts; volume sampling; derived products
+  radar-decode/     NEXRAD Level II bytes -> radar_core::Volume (archive + realtime);
+                    KDP derived from differential phase
+  radar-data/       S3 fetch/cache/live poll; NWS alerts, forecasts, observations,
+                    LSRs; SPC outlooks and MCDs; IEM archived warnings
+  radar-render/     projection, color tables, rasterization, tiles, storm tracks,
+                    3D volume geometry, cross-sections, isosurfaces
+  stormscope-app/   eframe app: state, timeline, panes, wiring
 ```
 
-Heavy work (fetch, decode, rasterize) runs on background threads and
-communicates over channels; the UI polls state each frame. All times are UTC
-internally, all coordinates WGS84 degrees.
+Heavy work (fetch, decode, rasterize, 3D meshes, derived products) runs on
+background threads and communicates over channels; the UI polls state each
+frame. All times are UTC internally, all coordinates WGS84 degrees.
 
 ## Status & roadmap
 
@@ -209,6 +238,8 @@ Single-site radar is solid; the interesting gaps are:
 - Configurable color tables / palettes.
 - Packaging (AUR, Flatpak) and a proper `.desktop` entry.
 - Windows/macOS are untested (the crate is wgpu-based, so it should port).
+
+Release history lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 

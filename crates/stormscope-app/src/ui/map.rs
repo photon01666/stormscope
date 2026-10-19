@@ -768,8 +768,6 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     super::totals::totals_hover_tooltip(ui, &response, app);
     outlook_hover_tooltip(ui, &response, app);
 
-    // --- Min dBZ quick-adjust bar at bottom-center --------------------------
-
     // --- Hover probe: the value under the pointer --------------------------
     // The same readout the 3D pane has, for the 2D map: the displayed
     // product's value in the gate the pixel falls in, its beam height, and
@@ -2233,10 +2231,6 @@ pub(super) fn consume_wheel_steps(events: &mut Vec<egui::Event>, acc: &mut f32) 
     steps + extra
 }
 
-/// Floating "Min dBZ (REF)" quick-adjust bar pinned to the bottom center of
-/// the map: the same filter as the sidebar control, where the eye is while
-/// watching echoes. Shown only for the REF-family moments it actually
-/// filters — for VEL/SW/ZDR/… the slider would be dead UI.
 /// Tooltip for the warning polygons under the pointer, shown once the pointer
 /// has rested on them for a second (a passing pointer should not pop text).
 ///

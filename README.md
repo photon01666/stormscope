@@ -36,6 +36,11 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   - **Data probe** — hover the pane for the first and strongest echo under
     the cursor: value, height in k ft, distance in miles, bearing.
   - **Storm motion** sliders for the storm-relative velocity product.
+  - **Warning walls** — NWS warning polygons draped on the ground and
+    extruded into translucent prisms around the storm (height and fill
+    adjustable); they follow the radar on screen: live warnings with live
+    radar, and the archive day's polygons only when they were in effect at
+    the scan you are looking at.
 - **Derived products**, computed at decode so they loop like anything else:
   **VIL**, **Echo Tops** (kft) and **MEHS** (inches) from the reflectivity
   volume, plus **storm-relative velocity** (SRM) from velocity and the storm

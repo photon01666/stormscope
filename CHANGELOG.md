@@ -3,6 +3,46 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.4.0 — 2026-10-19
+
+**Warning polygons wrap the storm in the 3D pane**
+- NWS warning polygons are now **prisms** there: the polygon the 2D map
+  draws is extruded from the ground into translucent walls with a rim and
+  vertical corners, so a warning encloses the storm instead of lying flat on
+  the ground. The layer has its own switch, a **fill** slider (0 = outlines
+  only) and a **Walls ≤ … k ft** height (default 30, **0 = flat**).
+- The whole prism is a target: hovering names the warning, clicking opens
+  the same NOAA detail popup the map opens. The archive day's historical
+  polygons draw too (calm styling — live warnings keep the loud look), and
+  clicking one opens its archived NWS text.
+- When the layer is on and nothing is drawn, the pane says so ("no warning
+  polygons in range") instead of leaving you wondering.
+
+**Warning polygons are synced to the radar on screen**
+- No more "why is this polygon here?": live warnings are drawn only while
+  the radar on screen is live, and in archive mode the archive day's
+  polygons are limited to the station's coverage radius **and to warnings in
+  effect at the displayed scan's time**. Scrub or play the archive loop and
+  the polygons come and go exactly as the warnings did. Browsing a past day
+  from the live map (archive tab open) still shows that day's set — there
+  the day itself is the subject. The archive tab's list still shows the
+  whole day; only the display is synced.
+- Both panes share one filter, so the 2D outlines, the hover/click stacks
+  and the 3D walls can never disagree.
+
+**A product explainer**
+- A small **(i)** beside the Product selector opens a window describing
+  every product — REF, VEL, SW, ZDR, PHI, KDP, CC, VIL, Echo Tops, MEHS,
+  SRM — with what it is, how to read it, and a short reading-tips list.
+
+**Cross-section redraw fix**
+- Toggling the cross-section (or moving its azimuth slider) appeared to do
+  nothing: the curtain uploads straight into its GPU buffers, but the
+  pane's render-on-demand key did not include it, so the previous frame
+  stayed on screen until the camera happened to move. The key now carries a
+  curtain revision, with a GPU regression test that toggles it with a fixed
+  camera and asserts the frame is redrawn.
+
 ## v1.3.0 — 2026-10-18
 
 **Derived products: VIL, Echo Tops, MEHS**

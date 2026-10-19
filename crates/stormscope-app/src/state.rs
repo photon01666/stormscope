@@ -401,6 +401,9 @@ pub struct AppState {
     pub view3d_iso: [bool; 3],
     /// The hover data probe (first + strongest echo under the cursor).
     pub view3d_probe: bool,
+    /// The 2D map's hover probe: the value of the displayed product at the
+    /// pointer, with its beam height and distance from the radar.
+    pub map_probe: bool,
     /// NWS warning polygons draped on the 3D ground. Its own switch and its
     /// own wash strength, so the 3D scene can keep the warnings even when the
     /// 2D map's alert layer is off (and vice versa). The fill reads like the
@@ -614,6 +617,7 @@ impl Default for AppState {
             view3d_section_az: 90.0,
             view3d_iso: [false, false, false],
             view3d_probe: true,
+            map_probe: true,
             view3d_alerts: true,
             view3d_alerts_fill: 1.0,
             view3d_alerts_top_kft: 30.0,

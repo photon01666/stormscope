@@ -64,22 +64,52 @@ fn nearest_ray(azimuths: &[f32], sorted: bool, az_deg: f32) -> Option<(usize, f3
     // The insertion point and its neighbors. When the search lands past the
     // end the wrap candidate (ray 0) is what "just under 0°" means, so the
     // index walk is modular.
+    //
+    // The comparison must run on *magnitudes*: the signed delta of the first
+    // candidate is often negative, and `d.abs() < negative` is never true —
+    // which silently kept the ray *before* the insertion point whenever the
+    // one after it was closer (half a beam off, every other query).
     let mut best = 0;
     let mut best_d = f32::MAX;
+    let mut best_signed = 0.0f32;
     for k in [-1i64, 0, 1] {
         let i = (idx as i64 + k).rem_euclid(n as i64) as usize;
         let d = angle_delta(azimuths[i], t);
         if d.abs() < best_d {
             best = i;
-            best_d = d;
+            best_d = d.abs();
+            best_signed = d;
         }
     }
     // Pathological spacing (a sparse, uneven ring) can hide the true nearest
     // outside the ±1 window; past 5° the scan is the honest answer.
-    if best_d.abs() > 5.0 {
+    if best_d > 5.0 {
         return nearest_ray(azimuths, false, az_deg);
     }
-    Some((best, best_d))
+    Some((best, best_signed))
+}
+
+/// Nearest ray index to `az_deg` in an azimuth ring — the same wrap-aware
+/// lookup the samplers use, exposed for callers that read raw gates (the 2D
+/// map's hover probe reads the gate a pixel is in, not an interpolated
+/// value).
+pub fn nearest_ray_index(azimuths: &[f32], az_deg: f32) -> Option<usize> {
+    let sorted = azimuths.windows(2).all(|w| w[1] >= w[0]);
+    nearest_ray(azimuths, sorted, az_deg).map(|(i, _)| i)
+}
+
+/// Index of the gate whose range bin contains `slant_km`, clamped to the
+/// moment's range: the raw gate a point falls in (no interpolation), which is
+/// what a display probe should report — the pixel's own value.
+pub fn gate_index_at_slant(md: &MomentData, slant_km: f32) -> Option<usize> {
+    if md.gate_count == 0 {
+        return None;
+    }
+    let gf = (slant_km * 1000.0 - md.range_start_m) / md.gate_size_m;
+    if gf < -0.5 || gf > md.gate_count as f32 - 0.5 {
+        return None;
+    }
+    Some(gf.round().clamp(0.0, (md.gate_count - 1) as f32) as usize)
 }
 
 /// Per-cut sampling state: the moment's data plus its azimuth ring.
@@ -452,6 +482,53 @@ mod tests {
         }
         // Above the top cut: both refuse.
         assert!(p.sample(30.0, 4.0).is_none());
+    }
+
+    /// The nearest-ray pick must compare magnitudes: with 1° rays, a query
+    /// at 89.6° must take ray 90 (0.4° away), not ray 89 (0.6°). The bug this
+    /// guards against read the *signed* delta of the first candidate and so
+    /// kept the previous ray whenever the next was closer.
+    #[test]
+    fn nearest_ray_picks_the_closer_side() {
+        let rays: Vec<f32> = (0..360).map(|i| i as f32).collect();
+        assert_eq!(nearest_ray_index(&rays, 89.6), Some(90));
+        assert_eq!(nearest_ray_index(&rays, 89.4), Some(89));
+        assert_eq!(nearest_ray_index(&rays, 0.4), Some(0));
+        assert_eq!(nearest_ray_index(&rays, 0.6), Some(1));
+        assert_eq!(nearest_ray_index(&rays, 359.6), Some(0), "wraps forward");
+        assert_eq!(nearest_ray_index(&rays, 359.4), Some(359), "wraps back");
+    }
+
+    /// The raw-gate lookup the map probe uses: nearest ray, gate containing
+    /// the range, and nothing outside the data.
+    #[test]
+    fn raw_gate_lookup_finds_the_displayed_gate() {
+        let rays: Vec<f32> = (0..360).map(|i| i as f32).collect();
+        assert_eq!(nearest_ray_index(&rays, 90.0), Some(90));
+        assert_eq!(nearest_ray_index(&rays, 89.6), Some(90));
+        assert_eq!(nearest_ray_index(&rays, 359.9), Some(0), "wraps");
+        assert_eq!(nearest_ray_index(&[], 90.0), None);
+
+        let md = MomentData {
+            kind: Moment::Reflectivity,
+            calibration: crate::MomentCalibration {
+                scale: 1.0,
+                offset: 2.0,
+                threshold: 0.0,
+            },
+            range_start_m: 2125.0,
+            gate_size_m: 250.0,
+            gate_count: 100,
+            ray_count: 360,
+            data: vec![3; 360 * 100],
+        };
+        // 2.125 km is the center of gate 0; each 250 m steps one gate.
+        assert_eq!(gate_index_at_slant(&md, 2.125), Some(0));
+        assert_eq!(gate_index_at_slant(&md, 2.250), Some(1));
+        assert_eq!(gate_index_at_slant(&md, 2.0), Some(0), "clamped in-bin");
+        assert_eq!(gate_index_at_slant(&md, 27.0), Some(99), "clamped at end");
+        assert_eq!(gate_index_at_slant(&md, 30.0), None, "beyond the data");
+        assert_eq!(gate_index_at_slant(&md, 0.5), None, "inside the cone");
     }
 
     /// A ray list that is not sorted falls back to the scan and still finds

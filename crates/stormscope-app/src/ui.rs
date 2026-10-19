@@ -628,6 +628,11 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             }
             let r = ui.add(egui::Slider::new(&mut app.state.opacity, 0.0..=1.0).text("Opacity"));
             sliders.push((1, r.rect));
+            ui.checkbox(&mut app.state.map_probe, "Data probe")
+                .on_hover_text(
+                    "Hover the map for the value under the cursor: product value, \
+                     beam height, distance and bearing from the radar",
+                );
             control_window_wheel(ui, &sliders, |target, steps| match target {
                 0 => {
                     app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);

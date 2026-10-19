@@ -770,6 +770,40 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // --- Min dBZ quick-adjust bar at bottom-center --------------------------
 
+    // --- Hover probe: the value under the pointer --------------------------
+    // The same readout the 3D pane has, for the 2D map: the displayed
+    // product's value in the gate the pixel falls in, its beam height, and
+    // the distance and bearing from the radar. Suppressed while dragging (the
+    // value under a moving map is noise) and in the measuring modes.
+    if app.state.map_probe && !response.dragged() && !app.state.measure_mode {
+        if let (Some(p), Some(site), Some(volume)) = (
+            response.hover_pos(),
+            radar_core::sites::site(&app.state.site_id),
+            app.state.display_volume(),
+        ) {
+            let (cx, cy) = viewport_pos(rect, p);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            if let Some(read) = map_probe_at(
+                &volume,
+                app.state.moment,
+                app.state.tilt_deg,
+                site.latitude,
+                site.longitude,
+                lat,
+                lon,
+            ) {
+                let lines = read.lines(app.state.moment);
+                draw_probe_plate(
+                    &painter,
+                    p,
+                    &lines,
+                    tile_resp.rect,
+                    app.sidebar_scale.max(1.0),
+                );
+            }
+        }
+    }
+
     // Label editor popup for the selected/new marker (drawn in its own
     // egui layer; lives here so it has the map context).
     marker_popup(ui, app);
@@ -778,6 +812,180 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     if app.state.loop_state == crate::state::LoopState::Playing {
         ui.ctx().request_repaint();
     }
+}
+
+/// What the map's hover probe reads at one point: the displayed product's
+/// value in the gate the pixel falls in (raw, like the pixel — no
+/// interpolation), the beam that sampled it, the ground geometry, and — for
+/// reflectivity-like products, where a column maximum means a hail core or a
+/// storm top rather than a mixed-unit number — the strongest cut in the
+/// column.
+struct MapProbe {
+    value: Option<f32>,
+    /// Cut the value came from (degrees).
+    elev_deg: f32,
+    /// Beam height of that cut at the point (km).
+    height_km: f32,
+    /// Ground distance from the radar (km) and bearing (degrees).
+    range_km: f64,
+    bearing_deg: f64,
+    /// `(value, height km)` of the strongest cut in the column.
+    column_max: Option<(f32, f32)>,
+}
+
+impl MapProbe {
+    /// The lines the hover plate shows, in the pane's units: the value and
+    /// its tilt, then beam height in k ft and distance in miles with a
+    /// compass bearing, then the column maximum when there is one.
+    fn lines(&self, moment: radar_core::Moment) -> Vec<String> {
+        let unit = moment.unit();
+        let mut out = Vec::with_capacity(3);
+        match self.value {
+            Some(v) => out.push(format!(
+                "{} {:.0} {} · {:.1}°",
+                moment.label(),
+                v,
+                unit,
+                self.elev_deg
+            )),
+            None => out.push(format!(
+                "{} — no echo · {:.1}°",
+                moment.label(),
+                self.elev_deg
+            )),
+        }
+        out.push(format!(
+            "{:.1}k ft · {} {}",
+            self.height_km * radar_render::FT_PER_KM / 1000.0,
+            format_miles(self.range_km * 0.621_371),
+            compass16(self.bearing_deg)
+        ));
+        if let Some((v, h)) = self.column_max {
+            out.push(format!(
+                "column max {v:.0} {unit} @ {:.1}k ft",
+                h * radar_render::FT_PER_KM / 1000.0
+            ));
+        }
+        out
+    }
+}
+
+/// Read one moment at a ground point, for the map's hover probe.
+///
+/// The gate is the one the pixel falls in (nearest ray, containing range
+/// bin), so the readout is what the map is actually showing rather than a
+/// smoothed value; the beam height comes from the 4/3-earth model at the
+/// point's ground range, and the slant range used to pick the gate is that
+/// height plus the ground range.
+fn map_probe_at(
+    volume: &radar_core::Volume,
+    moment: radar_core::Moment,
+    tilt_deg: f32,
+    site_lat: f64,
+    site_lon: f64,
+    lat: f64,
+    lon: f64,
+) -> Option<MapProbe> {
+    let range_km = radar_render::surface_distance_m(site_lon, site_lat, lon, lat) / 1000.0;
+    let bearing_deg = radar_render::initial_bearing_deg(site_lon, site_lat, lon, lat);
+    let si = volume.sweep_index_for_tilt_moment(tilt_deg, moment)?;
+    let sweep = &volume.sweeps[si];
+    let md = sweep.moment(moment)?;
+    let elevation = |s: &radar_core::Sweep| {
+        if s.elevation_measured_deg.is_finite() && s.elevation_measured_deg != 0.0 {
+            s.elevation_measured_deg
+        } else {
+            s.elevation_deg
+        }
+    };
+    // The displayed tilt's own gate.
+    let elev_deg = elevation(sweep);
+    let height_km = radar_core::sampling::beam_height_km(range_km as f32, elev_deg);
+    let slant_km = (range_km as f32).hypot(height_km);
+    let ray = radar_core::sampling::nearest_ray_index(&sweep.azimuths_deg, bearing_deg as f32);
+    let value = ray
+        .and_then(|ray| radar_core::sampling::gate_index_at_slant(md, slant_km).map(|g| (ray, g)))
+        .and_then(|(ray, gate)| md.value(ray, gate));
+
+    // The strongest cut in the column, for the products where that reads as
+    // "hail core / storm top" rather than a mixed-unit number.
+    let column_max = if matches!(
+        moment,
+        radar_core::Moment::Reflectivity | radar_core::Moment::CompositeReflectivity
+    ) {
+        let mut best: Option<(f32, f32)> = None;
+        for sweep in &volume.sweeps {
+            let Some(md) = sweep.moment(moment) else {
+                continue;
+            };
+            let elev = elevation(sweep);
+            let h = radar_core::sampling::beam_height_km(range_km as f32, elev);
+            let slant = (range_km as f32).hypot(h);
+            let Some(ray) =
+                radar_core::sampling::nearest_ray_index(&sweep.azimuths_deg, bearing_deg as f32)
+            else {
+                continue;
+            };
+            let Some(gate) = radar_core::sampling::gate_index_at_slant(md, slant) else {
+                continue;
+            };
+            if let Some(v) = md.value(ray, gate) {
+                if best.is_none_or(|(bv, _)| v > bv) {
+                    best = Some((v, h));
+                }
+            }
+        }
+        best
+    } else {
+        None
+    };
+
+    Some(MapProbe {
+        value,
+        elev_deg,
+        height_km,
+        range_km,
+        bearing_deg,
+        column_max,
+    })
+}
+
+/// Hover plate: the probe's lines on a translucent black plate so they stay
+/// readable over bright echoes (the same treatment the 3D probe's readout
+/// gets), clamped inside the map.
+fn draw_probe_plate(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    lines: &[String],
+    map_rect: egui::Rect,
+    scale: f32,
+) {
+    let text = lines.join("\n");
+    let galley = painter.layout(
+        text,
+        egui::FontId::proportional(11.5 * scale),
+        egui::Color32::from_rgb(235, 240, 245),
+        map_rect.width() - 40.0,
+    );
+    let pad = egui::vec2(7.0, 5.0) * scale;
+    let size = galley.size() + pad * 2.0;
+    let at = egui::pos2(
+        (at.x + 16.0)
+            .min(map_rect.max.x - size.x - 6.0)
+            .max(map_rect.min.x + 6.0),
+        (at.y + 14.0)
+            .min(map_rect.max.y - size.y - 6.0)
+            .max(map_rect.min.y + 6.0),
+    );
+    let plate = egui::Rect::from_min_size(at, size);
+    painter.rect_filled(plate, 4.0 * scale, egui::Color32::from_black_alpha(210));
+    painter.rect_stroke(
+        plate,
+        4.0 * scale,
+        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(46)),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(at + pad, galley, egui::Color32::WHITE);
 }
 
 /// Move the view center so the map content follows a drag of (dx, dy) px.
@@ -2535,6 +2743,141 @@ fn draw_attribution(painter: &egui::Painter, rect: egui::Rect, spc: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The map's hover probe reads the gate the pixel is in, reports the beam
+    /// height and the geometry, and finds the column maximum for
+    /// reflectivity-like products.
+    #[test]
+    fn hover_probe_reads_the_displayed_gate() {
+        use radar_core::{MomentCalibration, MomentData, Sweep, Volume, VolumeMeta};
+        let cal = MomentCalibration {
+            scale: 1.0,
+            offset: 2.0,
+            threshold: 0.0,
+        };
+        // 50 km of 250 m gates: a 45 dBZ core inside 40 km, 10 beyond (and
+        // 55 dBZ on the upper cut, to have a column maximum to find).
+        let mk = |elev: f32, inner: f32| {
+            let rays: Vec<f32> = (0..360).map(|i| i as f32).collect();
+            let mut data = vec![0i16; 360 * 200];
+            for r in 0..360 {
+                for g in 0..200 {
+                    let range_km = (g as f32 + 0.5) * 0.25;
+                    let dbz = if range_km < 40.0 { inner } else { 10.0 };
+                    data[r * 200 + g] = (dbz + 2.0) as i16;
+                }
+            }
+            Sweep {
+                elevation_deg: elev,
+                elevation_measured_deg: elev,
+                azimuth_width_deg: 1.0,
+                azimuths_deg: rays,
+                moments: vec![MomentData {
+                    kind: radar_core::Moment::Reflectivity,
+                    calibration: cal,
+                    range_start_m: 0.0,
+                    gate_size_m: 250.0,
+                    gate_count: 200,
+                    ray_count: 360,
+                    data,
+                }],
+            }
+        };
+        let vol = Volume {
+            meta: VolumeMeta {
+                site_id: "KTWX".into(),
+                volume_start: chrono::Utc::now(),
+                vcp: None,
+                sequence_number: None,
+                sweep_count: 2,
+                moments: vec![radar_core::Moment::Reflectivity],
+            },
+            sweeps: vec![mk(0.5, 45.0), mk(1.5, 55.0)],
+        };
+        let (slat, slon) = (39.0f64, -96.2f64);
+        let at = |km_north: f64| slat + km_north / 111.0;
+
+        let read = map_probe_at(
+            &vol,
+            radar_core::Moment::Reflectivity,
+            0.5,
+            slat,
+            slon,
+            at(30.0),
+            slon,
+        )
+        .expect("a readout");
+        assert!(
+            (read.range_km - 30.0).abs() < 1.0,
+            "range {}",
+            read.range_km
+        );
+        assert!(
+            read.bearing_deg.abs() < 1.0 || (read.bearing_deg - 360.0).abs() < 1.0,
+            "bearing {}",
+            read.bearing_deg
+        );
+        assert_eq!(read.value, Some(45.0), "the pixel's own gate");
+        assert!(
+            (read.height_km - radar_core::sampling::beam_height_km(30.0, 0.5)).abs() < 0.05,
+            "beam height {}",
+            read.height_km
+        );
+        let (v, h) = read.column_max.expect("column maximum");
+        assert_eq!(v, 55.0, "the strongest cut");
+        assert!(h > read.height_km, "it comes from higher up");
+
+        // Weak returns past the core: the value says so, it is not "nothing".
+        let far = map_probe_at(
+            &vol,
+            radar_core::Moment::Reflectivity,
+            0.5,
+            slat,
+            slon,
+            at(45.0),
+            slon,
+        )
+        .unwrap();
+        assert_eq!(far.value, Some(10.0));
+
+        // Past the volume's range there is no gate: no value, but the readout
+        // still knows where the pointer is.
+        let very_far = map_probe_at(
+            &vol,
+            radar_core::Moment::Reflectivity,
+            0.5,
+            slat,
+            slon,
+            at(555.0),
+            slon,
+        )
+        .unwrap();
+        assert!(very_far.value.is_none());
+        assert!(very_far.range_km > 500.0);
+
+        // The lines are in the pane's units (k ft, miles, compass).
+        let lines = read.lines(radar_core::Moment::Reflectivity);
+        assert!(lines[0].starts_with("REF 45 dBZ"), "{lines:?}");
+        assert!(
+            lines[1].contains("k ft") && lines[1].contains("mi "),
+            "{lines:?}"
+        );
+        assert!(lines[2].starts_with("column max 55"), "{lines:?}");
+
+        // A product this volume does not carry: no readout at all.
+        assert!(
+            map_probe_at(
+                &vol,
+                radar_core::Moment::Velocity,
+                0.5,
+                slat,
+                slon,
+                at(30.0),
+                slon
+            )
+            .is_none()
+        );
+    }
 
     fn view(zoom: f64) -> MapView {
         MapView {

@@ -1198,21 +1198,42 @@ pub(super) fn format_miles(miles: f64) -> String {
     }
 }
 
-/// Ground-range rings around the selected radar (50 km steps).
+/// Ground-range rings around the selected radar — the same **50-mile
+/// landmarks** the 3D pane draws, from the same [`ring_radii_mi`] helper and
+/// capped by the same data range, so the two views can never disagree about
+/// how far 100 miles is. (They used to be 50 *km* rings here and 50 *mile*
+/// rings in 3D: same circles, two different stories.) Labels sit on the NE
+/// diagonal, like the pane's.
 fn draw_range_rings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
     let Some(site) = radar_core::sites::site(&app.state.site_id) else {
         return;
     };
+    // The displayed volume's range bounds the ring set, exactly as in 3D.
+    let max_range_km = app
+        .state
+        .current()
+        .map(|f| {
+            f.volume
+                .sweeps
+                .iter()
+                .flat_map(|s| s.moments.iter())
+                .map(|m| (m.range_start_m + m.gate_count as f32 * m.gate_size_m) / 1000.0)
+                .fold(0.0f32, f32::max)
+        })
+        .unwrap_or(0.0);
+    let radii = radar_render::volume3d::ring_radii_mi(max_range_km);
     let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60));
+    let font = egui::FontId::proportional(10.5);
     let (cx, cy) = view.lonlat_to_view_px(site.longitude, site.latitude);
     let view_rect = egui::Rect::from_min_size(
         origin,
         egui::vec2(view.width() as f32, view.height() as f32),
     );
-    for km in [50u32, 100, 150, 200, 250] {
+    for r_mi in radii {
+        let km = r_mi as f32 * radar_render::volume3d::KM_PER_MILE;
         // Screen radius of this ring (one sampled point is enough).
         let (lat, lon) =
-            radar_render::gate_latlon(site.latitude, site.longitude, 0.0, 0.0, km as f32 * 1000.0);
+            radar_render::gate_latlon(site.latitude, site.longitude, 0.0, 0.0, km * 1000.0);
         let (px, py) = view.lonlat_to_view_px(lon, lat);
         let radius = ((px - cx).hypot(py - cy)).max(1.0);
         let center = egui::pos2(origin.x + cx as f32, origin.y + cy as f32);
@@ -1224,7 +1245,7 @@ fn draw_range_rings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView,
             continue; // fully off-screen (zoomed in past a ring)
         }
         // Tessellate to the *screen* radius, not a fixed 96 points: at storm
-        // zoom a 50 km ring spans hundreds of pixels and a fixed count turns
+        // zoom a 50-mile ring spans hundreds of pixels and a fixed count turns
         // the circle into visible straight chords that shimmer while the map
         // pans. Sagitta kept under a third of a pixel.
         let n = ((std::f64::consts::PI / (1.0 - 0.3 / radius).max(-1.0).acos()).ceil() as usize)
@@ -1232,17 +1253,28 @@ fn draw_range_rings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView,
         let mut pts = Vec::with_capacity(n + 1);
         for i in 0..=n {
             let az = i as f32 * 360.0 / n as f32;
-            let (lat, lon) = radar_render::gate_latlon(
-                site.latitude,
-                site.longitude,
-                az,
-                0.0,
-                km as f32 * 1000.0,
-            );
+            let (lat, lon) =
+                radar_render::gate_latlon(site.latitude, site.longitude, az, 0.0, km * 1000.0);
             let (vx, vy) = view.lonlat_to_view_px(lon, lat);
             pts.push(egui::pos2(origin.x + vx as f32, origin.y + vy as f32));
         }
         painter.add(egui::Shape::closed_line(pts, stroke));
+
+        // Distance label on the NE diagonal (off the storm-track arrows and
+        // the measure bubble's habitual path).
+        let (lat, lon) =
+            radar_render::gate_latlon(site.latitude, site.longitude, 40.0, 0.0, km * 1000.0);
+        let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+        let at = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+        if view_rect.shrink(4.0).contains(at) {
+            painter.text(
+                at + egui::vec2(5.0, -4.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{r_mi} mi"),
+                font.clone(),
+                egui::Color32::from_white_alpha(110),
+            );
+        }
     }
 }
 

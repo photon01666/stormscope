@@ -35,12 +35,12 @@ const PITCH_MAX: f32 = 88.0;
 /// Auto-fit distance as a multiple of the longest cut range (a floor; the
 /// exaggerated echo column can demand more).
 const FIT_FACTOR: f32 = 1.35;
-/// Top of the echo column (km on paper) the framing budgets for, and the
-/// fraction of it the camera aims at. Applied *after* exaggeration: at ×20 a
-/// 13 km storm is 260 km of visual, so aiming at a fixed altitude made tall
-/// storms float half out of frame.
+/// The echo column the framing budgets for (physical km), and the fraction of
+/// its exaggerated height the camera aims at. With the ground scale matched to
+/// the map, aiming at the column's top left the pane half empty above the
+/// site; a fifth of it keeps the ground in frame with room for the towers.
 const FIT_ECHO_TOP_KM: f32 = 13.0;
-const FIT_AIM_FRAC: f32 = 0.42;
+const FIT_AIM_FRAC: f32 = 0.18;
 /// Marker pin height, physical km (exaggerated like the volume).
 const MARKER_PIN_KM: f32 = 3.0;
 /// Pan sensitivity: how many screen-km of camera movement per dragged km.
@@ -185,19 +185,51 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     if !(lo..=hi).contains(&app.state.view3d_threshold) {
         app.state.view3d_threshold = lo;
     }
-    // Fit the camera once there is a scene (and whenever "Fit" was asked):
-    // distance from the range (with a floor for the exaggerated column),
-    // orbit center back at the site, aimed at the echo the height scale
-    // produces.
+    // Fit the camera once there is a scene (and whenever "Fit" was asked).
+    //
+    // The distance is chosen to give the scene the **same ground scale as the
+    // 2D map** (the same metres per point), so a 50-mile ring is the same size
+    // in both panes and the geography lines up when you look from one to the
+    // other. The old fit was driven by the radar's range and the enlarged
+    // echo column instead, which ignored the map's zoom entirely — with the
+    // map zoomed to a storm the 3D pane sat ~1.6× further out and read as
+    // "everything closer together".
+    //
+    // The aim sits a little above the ground rather than at the top of the
+    // exaggerated column, so the pane is not half empty sky above the site.
     let ve = app.state.view3d_ve.max(1.0);
     if app.state.view3d_dist_km < 1.0 && v3.max_range_km() > 1.0 {
-        let half_h = FIT_ECHO_TOP_KM * ve / 2.0;
-        let column_dist =
-            half_h / (radar_render::volume3d::FOV_Y_DEG.to_radians() / 2.0).tan() * 1.4;
-        app.state.view3d_dist_km = (v3.max_range_km() * FIT_FACTOR).max(column_dist).max(30.0);
+        let half_fov = (radar_render::volume3d::FOV_Y_DEG.to_radians() / 2.0).tan();
+        let range = v3.max_range_km();
+        let column = FIT_ECHO_TOP_KM * ve;
+        let mpp_km =
+            radar_render::meters_per_pixel(app.state.view.center_lat, app.state.view.zoom) / 1000.0;
+        let map_matched = app.map_rect_at.map(|r| {
+            // Points per km in the 3D pane = pane points / the km the camera
+            // sees vertically; set equal to the map's 1 / mpp.
+            let d = (r.height() as f64 * mpp_km) / (2.0 * half_fov as f64);
+            d as f32
+        });
+        app.state.view3d_dist_km = map_matched
+            .map(|d| d.clamp(range * 0.35, range * 4.0))
+            .unwrap_or_else(|| (range * FIT_FACTOR).max(column * 0.5 / half_fov))
+            .max(30.0);
         app.state.view3d_target_x_km = 0.0;
         app.state.view3d_target_y_km = 0.0;
-        app.state.view3d_target_z_km = FIT_ECHO_TOP_KM * ve * FIT_AIM_FRAC;
+        app.state.view3d_target_z_km = column * FIT_AIM_FRAC;
+        // The 2D/3D scale question, in numbers: metres per point in the map
+        // vs kilometres per point in this pane. They are matched by
+        // construction when the map rect is known; a mismatch in these two
+        // numbers is a framing bug, not a perspective illusion.
+        let pane_km_per_pt = 2.0 * app.state.view3d_dist_km * half_fov / rect.height().max(1.0);
+        log::debug!(
+            "3D fit: ve ×{ve:.1} · camera {:.0} km · map {:.3} km/pt ({:.0} km across) vs 3D {:.3} km/pt ({:.0} km across)",
+            app.state.view3d_dist_km,
+            mpp_km,
+            mpp_km * app.map_rect_at.map(|r| r.width()).unwrap_or(0.0) as f64,
+            pane_km_per_pt,
+            pane_km_per_pt * rect.width(),
+        );
     }
     let max_r = v3.max_range_km();
     let camera = Camera {

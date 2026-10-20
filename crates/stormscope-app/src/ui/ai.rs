@@ -438,6 +438,10 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                         .small()
                         .weak(),
                     );
+                    // Leave the bottom edge to the window resize handle:
+                    // without this, the privacy text sits inside its grab band
+                    // and the press can miss the handle.
+                    ui.add_space(10.0);
                 });
 
             egui::CentralPanel::no_frame().show(ui, |ui| {

@@ -6,8 +6,8 @@ Vulkan (wgpu), native Wayland and X11.
 **Free public data only**: NOAA/NWS NEXRAD Level II (via Unidata's and NOAA's
 AWS Open Data buckets), `api.weather.gov` alerts/forecasts/observations/storm
 reports, SPC convective outlooks and mesoscale discussions, IEM's warning
-archive, and OpenStreetMap-derived basemap tiles. No accounts, no API keys, no
-telemetry.
+archive, NOAA's MRMS national mosaic, NASA GIBS satellite imagery, and
+OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
 
 [![CI](https://github.com/photon01666/stormscope/actions/workflows/ci.yml/badge.svg)](https://github.com/photon01666/stormscope/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -56,8 +56,11 @@ telemetry.
     the scan you are looking at.
 - **Derived products**, computed at decode so they loop like anything else:
   **VIL**, **Echo Tops** (kft) and **MEHS** (inches) from the reflectivity
-  volume, plus **storm-relative velocity** (SRM) from velocity and the storm
-  motion sliders.
+  volume, plus **hydrometeor classification** (rain / wet snow / dry snow /
+  graupel / hail … from the dual-pol fields), **snowfall rate** (the Z–S
+  relation, inches per hour), the **melting level** (the 0 °C level, from the
+  correlation-coefficient bright band), and **storm-relative velocity** (SRM)
+  from velocity and the storm motion sliders.
 - The ground is the same basemap the 2D map draws, and custom
   markers rise from it as pins. Range rings are 50-mile landmarks, like a
   sectional chart.
@@ -65,6 +68,18 @@ telemetry.
   newest scan with cadence-aware staleness colours.
 
 **Overlays**
+- **MRMS national composite**: NOAA's multi-radar, multi-sensor reflectivity
+  mosaic (`noaa-mrms-pds`), decoded locally from PNG-packed GRIB2 and drawn
+  as a CONUS-wide layer with a native 1 km/px window around the radar on top
+  of it. Refreshes every 10 minutes while enabled; its own opacity slider is
+  in the map's Controls window. Off by default.
+- **GOES satellite** from NASA GIBS: **infrared** (the warm surface is made
+  transparent from brightness, so only the cloud field overlays the map) or
+  **GeoColor**, from GOES-East or West by site longitude — again CONUS-wide
+  plus a sharp radar window, refreshed every 10 minutes. Off by default.
+- The **0 °C level** as contour lines every 2 kft over the map (on by
+  default; toggle in the map's Controls), and as a hover readout even at a
+  gate with no echo.
 - SPC Day 1–3 categorical outlooks (fills under the radar, outlines on top)
   with the NWS definition of each risk level — legend in the sidebar, hover
   an outline for the brief explanation, and click it for the full SPC
@@ -182,9 +197,13 @@ expensive raster work happens only when something actually changes:
 - Echo shells (isosurfaces) build on that same worker; the cross-section
   curtain is a prepared-profile sweep rebuilt in ~2 ms on the UI thread, and
   both ride a revision in the render key so toggling them redraws at once.
-- Derived products (VIL / Echo Tops / MEHS) are computed once at decode on
-  the decode thread, threaded over ray chunks: ~45 ms on a real volume and
-  ~4 % memory, after which switching products and looping cost nothing.
+- Derived products (VIL / Echo Tops / MEHS, hydrometeor classification, snow
+  rate, melting level) are computed once at decode on the decode thread,
+  threaded over ray chunks: ~45 ms on a real volume and ~4 % memory, after
+  which switching products and looping cost nothing.
+- MRMS and GOES work runs on the fetch/decode workers (GRIB2 parse, PNG
+  decode, crop, WMS fetch); the UI thread only builds a texture when a new
+  frame arrives, and pans/zooms just redraw the cached one.
 - Splats are premultiplied, division-free, into a persistent buffer uploaded
   through one reused GPU texture.
 - Measured on the development machine (Intel Arc A310, 2540×1329 viewport): heavy
@@ -205,6 +224,8 @@ memory/texture accounting.
 | Source | Used for | Terms |
 | --- | --- | --- |
 | [Unidata NEXRAD Level II](https://registry.opendata.aws/noaa-nexrad/) (`unidata-nexrad-level2-chunks`, `noaa-nexrad-level2`) | Volume scans, live chunks | NOAA public-domain data |
+| [MRMS](https://www.nssl.noaa.gov/projects/mrms/) (`noaa-mrms-pds`) | National multi-radar reflectivity composite | NOAA public-domain data |
+| [NASA GIBS](https://www.earthdata.nasa.gov/engage/open-data-services-software/earthdata-developer-portal/gibs) | GOES-East/West imagery (infrared, GeoColor) | NASA/NOAA; public data |
 | [`api.weather.gov`](https://www.weather.gov/documentation/services-web-api) | Active alerts, forecast gridpoints, station observations, local storm reports, radar station list | US Government work; a descriptive `User-Agent` is required and sent |
 | [IEM](https://mesonet.agron.iastate.edu/) (Iowa Environmental Mesonet) | Archived warning polygons (VTEC day files) and archived NWS product text | Iowa State University; public data, requested politely (rate-limited, cached) |
 | [SPC](https://www.spc.noaa.gov/) | Day 1–3 categorical outlooks, mesoscale discussions | US Government work |
@@ -223,7 +244,8 @@ crates/
   radar-decode/     NEXRAD Level II bytes -> radar_core::Volume (archive + realtime);
                     KDP derived from differential phase
   radar-data/       S3 fetch/cache/live poll; NWS alerts, forecasts, observations,
-                    LSRs; SPC outlooks and MCDs; IEM archived warnings
+                    LSRs; SPC outlooks and MCDs; IEM archived warnings; MRMS
+                    mosaic and GOES imagery
   radar-render/     projection, color tables, rasterization, tiles, storm tracks,
                     3D volume geometry, cross-sections, isosurfaces
   stormscope-app/   eframe app: state, timeline, panes, wiring
@@ -237,7 +259,6 @@ frame. All times are UTC internally, all coordinates WGS84 degrees.
 
 Single-site radar is solid; the interesting gaps are:
 
-- Multi-site mosaics / composites.
 - Configurable color tables / palettes.
 - Packaging (AUR, Flatpak) and a proper `.desktop` entry.
 - Windows/macOS are untested (the crate is wgpu-based, so it should port).

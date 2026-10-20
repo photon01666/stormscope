@@ -3,6 +3,54 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.4.6 — 2026-10-20
+
+**Winter analysis: hydrometeor classification, snow rate, the 0 °C level**
+- Three new products, computed once at decode like VIL/TOPS/MEHS and
+  available on the timeline and in 3D: **HCA** (hydrometeor classification —
+  rain, big drops, wet snow, dry snow, ice crystals, graupel, hail, mixed —
+  from a Z/ZDR/CC/KDP decision tree), **SNOW** (snowfall rate from the Z–S
+  relation, inches per hour) and **MELT** (the melting level, the
+  correlation-coefficient bright-band minimum in the 0.4–7 km layer). Color
+  tables, the product explainer and the probe labels ("HCA wet snow") know
+  them.
+- The **0 °C level** is drawn as isohypses every 2 kft (default on, toggle
+  in the map's Controls window), and the probe answers with it on hover even
+  at a gate that has no echo ("0 °C level 8.4k ft").
+- Derived products sample gate **centres** now instead of half a gate back —
+  that half-gate offset went into every derived column.
+
+**Winter defaults and alerts**
+- Snow-friendly defaults: minimum dBZ 10, and a *Winter* echo-shell preset
+  (10 / 20 / 30 dBZ, where snow lives) beside the convective one.
+- Winter storm warnings and advisories use a dimmer ice-blue family, and
+  advisories no longer pulse the alert badge.
+
+**MRMS national composite** (off by default)
+- NOAA's multi-radar, multi-sensor reflectivity mosaic (`noaa-mrms-pds`),
+  decoded locally from PNG-packed GRIB2. One download yields two windows: a
+  CONUS-wide image for context and a native 1 km/px window around the radar
+  for detail, drawn in that order. Refreshes every 10 minutes while enabled,
+  caches to disk, and has its own opacity slider in the map's Controls.
+
+**GOES satellite** (off by default)
+- NASA GIBS imagery in the map's own projection: **infrared** or
+  **GeoColor**, GOES-East or West chosen by the site's longitude. Infrared
+  arrives as an opaque gray disk covering the whole CONUS; its alpha is now
+  derived from brightness so the warm surface dissolves and only the cloud
+  field overlays the map. CONUS-wide plus a sharp radar window, 10-minute
+  refresh, opacity and channel in the map's Controls.
+
+**3D ground scale**
+- The 3D pane's ground matches the 2D map's metres-per-pixel again (the
+  auto-fit was using a fraction of the column), with a coarse surround past
+  the radar and a fade at its edge instead of a hard cut.
+
+**Internals**
+- README rewritten against what the app actually does; third-party inventory
+  regenerated; dependency debug info dropped from dev builds (`target/` had
+  grown to 71 GB); CI's rustfmt and clippy gates fixed.
+
 ## v1.4.5 — 2026-10-19
 
 **The 2D map gets the hover probe**

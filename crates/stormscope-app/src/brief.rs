@@ -50,14 +50,23 @@ pub struct BriefInputs<'a> {
     pub view_zoom: f64,
     pub view3d_open: bool,
     pub show_melting_layer: bool,
-    /// Places the model asked to sample in a previous LOOK round ("Wichita",
-    /// lat, lon). Their data is appended as `requested_samples`.
-    pub look_points: &'a [(String, f64, f64)],
+    /// Places the model asked to sample in a previous LOOK round. Their data
+    /// is appended as `requested_samples`.
+    pub look_points: &'a [LookPointSample],
     /// The storm-relative volume, when the SRM product has been built.
     pub srm_volume: Option<&'a Volume>,
     /// GOES windows (CONUS first, the sharp radar window last).
     pub goes: Option<&'a [std::sync::Arc<radar_data::goes::GoesImage>]>,
     pub now: DateTime<Utc>,
+}
+
+/// One area the model asked to see: a centre, a radius and a human label.
+#[derive(Debug, Clone)]
+pub struct LookPointSample {
+    pub label: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub radius_mi: f64,
 }
 
 /// A finished request: the system prompt, the user prompt (JSON) and the
@@ -102,11 +111,15 @@ pub fn system_prompt() -> String {
      - The snapshot samples only the markers (and any `requested_samples`). If a question needs \
      data somewhere else — a town the spotter names, a cell outside the pins — do not guess: \
      reply with ONLY a line\n\
-     LOOK: {\"points\": [{\"lat\": 37.69, \"lon\": -97.34, \"label\": \"Wichita\"}], \"product\": \"REF\"}\n\
-     The app samples radar/MRMS/warnings/satellite at those points, moves the map there, and \
-     sends you a second snapshot. Then answer fully. At most 2 looks per question and 6 points \
-     per look; spread the points across the feature when you need its extent. If a look comes \
-     back clear while `echo_regions` shows a region nearby, look again at that region.\n\
+     LOOK: {\"points\": [{\"lat\": 37.69, \"lon\": -97.34, \"label\": \"Wichita\", \"radius_mi\": 25}], \"product\": \"REF\"}\n\
+     The app samples radar/MRMS/warnings/satellite at those AREAS (radius defaults to 20 mi), \
+     moves the map to fit them, and sends you a second snapshot. Each area returns the centre \
+     column plus `area` with the strongest echo and its distance/direction, % of the disk with \
+     >=20 dBZ, the nearest echo, and warnings. At most 2 looks per question and 3 areas per \
+     look. Answer from the area summary — never conclude there is nothing from a single gate. If a \
+     look comes back clear while `echo_regions` shows a region nearby, look again at that region. \
+     When you answer after a LOOK, centre the MAP on that area and choose a zoom that shows the \
+     whole disk (not a single point).\n\
      - You are at the screen with the spotter. When the answer refers to anything the map can \
      show — a cell, a velocity couplet, a hail core, the echo top, the melting layer, a warning, \
      an approaching line — you MUST use the MAP directive to focus it: centre/zoom the marker or \
@@ -256,14 +269,7 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
         let requested: Vec<Value> = input
             .look_points
             .iter()
-            .map(|(label, lat, lon)| {
-                let marker = MapMarker {
-                    lat: *lat,
-                    lon: *lon,
-                    label: label.clone(),
-                };
-                marker_snapshot(input, &marker, usize::MAX)
-            })
+            .map(|point| look_snapshot(input, point))
             .collect();
         root.insert("requested_samples".into(), json!(requested));
     }
@@ -475,6 +481,156 @@ fn echo_regions(
     }
     regions.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     regions.into_iter().take(6).map(|(_, v)| v).collect()
+}
+
+/// A LOOK area: the centre column plus a disk summary (strongest echo, how
+/// far/direction, coverage, nearest echo) so "near Wichita" is answered from
+/// an area, not one gate.
+fn look_snapshot(input: &BriefInputs<'_>, point: &LookPointSample) -> Value {
+    let site = input.site;
+    let distance_m =
+        radar_render::surface_distance_m(site.longitude, site.latitude, point.lon, point.lat);
+    let range_km = (distance_m / 1000.0) as f32;
+    let bearing =
+        radar_render::initial_bearing_deg(site.longitude, site.latitude, point.lon, point.lat)
+            as f32;
+
+    let mut root = Map::new();
+    root.insert("label".into(), json!(point.label));
+    root.insert("lat".into(), json!(round4(point.lat)));
+    root.insert("lon".into(), json!(round4(point.lon)));
+    root.insert("radius_mi".into(), json!(round1(point.radius_mi)));
+    root.insert(
+        "distance_from_radar_mi".into(),
+        json!(round1(distance_m / 1609.344)),
+    );
+    root.insert(
+        "bearing_from_radar".into(),
+        json!(compass16(bearing as f64)),
+    );
+    root.insert(
+        "radar_at_center".into(),
+        radar_column(input.volume, bearing, range_km),
+    );
+    root.insert(
+        "area".into(),
+        area_summary(input, point.lat, point.lon, point.radius_mi),
+    );
+    Value::Object(root)
+}
+
+/// Summarise the lowest reflectivity cut inside a disk. The model uses this
+/// for "what about X?" questions: `echo_coverage_pct` says whether there is
+/// precipitation in the area at all, and `max_dbz_at` says where the
+/// strongest part is relative to the centre.
+fn area_summary(input: &BriefInputs<'_>, lat: f64, lon: f64, radius_mi: f64) -> Value {
+    const MIN_DBZ: f32 = 20.0;
+    const CELL_KM: f64 = 4.0;
+    let radius_km = (radius_mi.max(1.0)) * 1.609_344;
+    let Some(sweep) = input
+        .volume
+        .sweeps
+        .iter()
+        .find(|s| s.moment(Moment::Reflectivity).is_some())
+    else {
+        return json!({ "available": false });
+    };
+    let Some(data) = sweep.moment(Moment::Reflectivity) else {
+        return json!({ "available": false });
+    };
+    let n = ((2.0 * radius_km) / CELL_KM).ceil() as usize + 1;
+    let mut occupied = vec![false; n * n];
+    let mut in_disk = 0usize;
+    for iy in 0..n {
+        for ix in 0..n {
+            let dx = ix as f64 * CELL_KM - radius_km;
+            let dy = iy as f64 * CELL_KM - radius_km;
+            if dx.hypot(dy) <= radius_km {
+                in_disk += 1;
+            }
+        }
+    }
+    let mut max: Option<(f32, f64, f64, f64)> = None; // dbz, glat, glon, distance
+    let mut nearest: Option<f64> = None;
+    let ray_step = (data.ray_count / 180).max(1);
+    let gate_step = ((1500.0 / data.gate_size_m).round() as usize).max(1);
+    let cos_lat = lat.to_radians().cos();
+    for ray in (0..data.ray_count).step_by(ray_step) {
+        let Some(&az) = sweep.azimuths_deg.get(ray) else {
+            continue;
+        };
+        if !az.is_finite() {
+            continue;
+        }
+        for gate in (0..data.gate_count).step_by(gate_step) {
+            let Some(v) = data.value(ray, gate) else {
+                continue;
+            };
+            let slant_m = data.range_start_m + gate as f32 * data.gate_size_m;
+            let (glat, glon) = radar_render::gate_latlon(
+                input.site.latitude,
+                input.site.longitude,
+                az,
+                sweep.elevation_deg,
+                slant_m,
+            );
+            let dx = (glon - lon) * 111.32 * cos_lat;
+            let dy = (glat - lat) * 110.574;
+            let d = dx.hypot(dy);
+            if d > radius_km {
+                continue;
+            }
+            let ix = ((dx + radius_km) / CELL_KM).round() as isize;
+            let iy = ((dy + radius_km) / CELL_KM).round() as isize;
+            if ix >= 0 && iy >= 0 && (ix as usize) < n && (iy as usize) < n && v >= MIN_DBZ {
+                occupied[iy as usize * n + ix as usize] = true;
+                nearest = Some(nearest.map_or(d, |n| n.min(d)));
+            }
+            if max.is_none_or(|(bv, _, _, _)| v > bv) {
+                max = Some((v, glat, glon, d));
+            }
+        }
+    }
+    let cells = occupied.iter().filter(|c| **c).count();
+    let coverage = if in_disk == 0 {
+        0.0
+    } else {
+        cells as f64 / in_disk as f64 * 100.0
+    };
+    let max_at = max.map(|(dbz, glat, glon, d)| {
+        json!({
+            "dbz": round(dbz),
+            "distance_from_center_mi": round1(d / 1.609_344),
+            "direction_from_center": compass16(radar_render::initial_bearing_deg(lon, lat, glon, glat)),
+            "lat": round4(glat),
+            "lon": round4(glon),
+        })
+    });
+    let warnings: Vec<Value> = input
+        .alerts
+        .iter()
+        .filter(|w| w.expires > input.now)
+        .filter(|w| {
+            w.polygon
+                .as_ref()
+                .is_some_and(|rings| rings.iter().any(|ring| ring_contains(ring, lon, lat)))
+                || w.centroid().is_some_and(|(clat, clon)| {
+                    radar_render::surface_distance_m(lon, lat, clon, clat) / 1609.344
+                        <= radius_mi.max(5.0)
+                })
+        })
+        .take(3)
+        .map(|w| json!({ "event": w.event, "expires_in_min": (w.expires - input.now).num_minutes().max(0) }))
+        .collect();
+    json!({
+        "available": true,
+        "threshold_dbz": MIN_DBZ,
+        "echo_coverage_pct": round1(coverage),
+        "nearest_echo_mi": nearest.map(|d| round1(d / 1.609_344)),
+        "max_dbz_at": max_at,
+        "warnings": warnings,
+        "note": "coverage = % of this disk with >=20 dBZ on the lowest cut; max_dbz_at is the strongest gate inside the disk",
+    })
 }
 
 fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) -> Value {
@@ -1151,7 +1307,12 @@ mod tests {
             view_zoom: 8.0,
             view3d_open: false,
             show_melting_layer: true,
-            look_points: &[("Wichita".into(), site.latitude - 1.0, site.longitude - 0.5)],
+            look_points: &[LookPointSample {
+                label: "Wichita".into(),
+                lat: site.latitude - 1.0,
+                lon: site.longitude - 0.5,
+                radius_mi: 30.0,
+            }],
             srm_volume: None,
             goes: None,
             now: chrono::Utc::now(),
@@ -1172,7 +1333,9 @@ mod tests {
             r#""echo_top_kft""#,
             r#""current_view""#,
             r#""requested_samples""#,
-            r#""name":"Wichita""#,
+            r#""label":"Wichita""#,
+            r#""echo_coverage_pct""#,
+            r#""max_dbz_at""#,
         ] {
             assert!(
                 brief.user.contains(needle),

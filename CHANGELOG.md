@@ -23,10 +23,12 @@ log; entries start at the first public release.
   model can spend the whole budget in hidden reasoning before writing the
   answer, and that no longer becomes a dead end.
 - **It can look before it speaks**: a question about a place with no marker
-  ("is it raining in Wichita?") gets a `LOOK:` round-trip — the app samples
-  radar, MRMS, satellite and warnings at those coordinates, moves the map
-  there, and sends a second snapshot. The report window shows "Looking at …"
-  while that runs.
+  ("is it raining in Wichita?") gets a `LOOK:` round-trip. Each look is an
+  **area** (default 20 mi radius, up to 3 areas): the app returns the centre
+  column plus the strongest echo inside the disk with its distance/direction,
+  the percentage of the area with ≥20 dBZ, the nearest echo and any warnings —
+  never a single gate. The map fits the whole searched area while the report
+  window shows "Looking at …".
 - The snapshot now also carries **SRM** when built, the **GOES** pixel
   brightness, spectrum width/differential phase, and an **echo-region
   overview**: connected areas of ≥20 dBZ on the lowest cut, each with its

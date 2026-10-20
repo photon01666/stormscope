@@ -110,6 +110,11 @@ pub struct LookPoint {
     pub lon: f64,
     #[serde(default)]
     pub label: Option<String>,
+    /// Radius of the area to examine, miles. Defaults to 20: a point sample
+    /// is useless for "is it raining near X" — the area summary reports the
+    /// strongest echo and its distance/direction instead.
+    #[serde(default)]
+    pub radius_mi: Option<f64>,
 }
 
 /// Split a reply into the prose the user reads, an optional manoeuvre and an

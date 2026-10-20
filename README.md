@@ -162,9 +162,11 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   outlook/MCD context, station totals and the NWS forecast. It is decoded
   data — **no screenshot is taken or sent**.
 - If a question is about a place with no marker ("is it raining in Wichita?"),
-  it can ask the app to **look** there: the requested coordinates are sampled
-  (radar, MRMS, satellite, warnings), the map moves to them, and the model
-  answers from the second snapshot instead of guessing.
+  it can ask the app to **look** there: each look is an **area** (default 20 mi
+  radius) returning the strongest echo, its distance/direction, the percentage
+  of the area with ≥20 dBZ, the nearest echo and any warnings. The map fits the
+  whole searched area, and the model answers from that area summary instead of
+  a single gate.
 - **Ask it questions** in a chat transcript: every question and answer stays
   in the window (you can scroll back, copy, clear), follow-ups keep the whole
   conversation in context, and a failed call is retried automatically and kept

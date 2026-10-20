@@ -1,6 +1,7 @@
 //! The eframe App: owns AppState, spawns background data threads, polls
 //! their channels each frame, and drives the UI.
 
+use crate::brief::LookPointSample;
 use crate::state::{AiChatMessage, AiRole, AppState, LoopState};
 use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender};
@@ -886,25 +887,25 @@ impl StormApp {
     /// centre the map on the first one, and ask again with the extra data.
     /// Returns false when the request had no usable points.
     fn ai_look(&mut self, look: crate::ai_actions::LookRequest) -> bool {
-        let points: Vec<(String, f64, f64)> = look
+        let points: Vec<LookPointSample> = look
             .points
             .iter()
-            .take(6)
+            .take(3)
             .filter(|p| {
                 p.lat.is_finite()
                     && p.lon.is_finite()
                     && (-85.0..=85.0).contains(&p.lat)
                     && (-180.0..=180.0).contains(&p.lon)
             })
-            .map(|p| {
-                (
-                    p.label
-                        .clone()
-                        .filter(|l| !l.trim().is_empty())
-                        .unwrap_or_else(|| format!("{:.2}, {:.2}", p.lat, p.lon)),
-                    p.lat,
-                    p.lon,
-                )
+            .map(|p| LookPointSample {
+                label: p
+                    .label
+                    .clone()
+                    .filter(|l| !l.trim().is_empty())
+                    .unwrap_or_else(|| format!("{:.2}, {:.2}", p.lat, p.lon)),
+                lat: p.lat,
+                lon: p.lon,
+                radius_mi: p.radius_mi.unwrap_or(20.0).clamp(1.0, 60.0),
             })
             .collect();
         if points.is_empty() {
@@ -912,16 +913,17 @@ impl StormApp {
         }
         let names = points
             .iter()
-            .map(|(label, _, _)| label.clone())
+            .map(|p| p.label.clone())
             .collect::<Vec<_>>()
             .join(", ");
         log::info!("AI meteorologist looks at: {names}");
-        // Show where it is looking while the second call runs (and keep the
-        // previous view restorable). The product comes from the LOOK request.
+        // Fit the view to the whole searched area (plus its radius), not an
+        // arbitrary zoom: the user must be able to see what the model saw.
+        let (center_lat, center_lon, zoom) = self.fit_look_view(&points);
         let action = crate::ai_actions::MapAction {
-            center_lat: Some(points[0].1),
-            center_lon: Some(points[0].2),
-            zoom: Some(9.0),
+            center_lat: Some(center_lat),
+            center_lon: Some(center_lon),
+            zoom: Some(zoom),
             product: look.product.clone(),
             ..Default::default()
         };
@@ -934,6 +936,36 @@ impl StormApp {
         let question = self.state.ai_question_ctx.clone();
         self.send_ai(question, points);
         true
+    }
+
+    /// A zoom that fits every searched area (centre + radius) into the map.
+    fn fit_look_view(&self, points: &[LookPointSample]) -> (f64, f64, f64) {
+        let (mut min_lat, mut max_lat) = (f64::MAX, f64::MIN);
+        let (mut min_lon, mut max_lon) = (f64::MAX, f64::MIN);
+        for point in points {
+            let dlat = point.radius_mi / 69.0;
+            let dlon = point.radius_mi / (69.0 * point.lat.to_radians().cos().max(0.2));
+            min_lat = min_lat.min(point.lat - dlat);
+            max_lat = max_lat.max(point.lat + dlat);
+            min_lon = min_lon.min(point.lon - dlon);
+            max_lon = max_lon.max(point.lon + dlon);
+        }
+        let center_lat = (min_lat + max_lat) * 0.5;
+        let center_lon = (min_lon + max_lon) * 0.5;
+        let span_m = ((max_lat - min_lat) * 110_574.0)
+            .max((max_lon - min_lon) * 111_320.0 * center_lat.to_radians().cos());
+        let extent = f64::from(
+            self.state
+                .view
+                .width_px
+                .min(self.state.view.height_px)
+                .max(240.0),
+        ) * 0.75;
+        let zoom = (3..=12)
+            .rev()
+            .find(|z| radar_render::meters_per_pixel(center_lat, f64::from(*z)) * extent >= span_m)
+            .unwrap_or(3) as f64;
+        (center_lat, center_lon, zoom)
     }
 
     /// Display a final reply (after any LOOK round) and apply its map move.
@@ -958,7 +990,7 @@ impl StormApp {
 
     /// Build the snapshot (optionally with the LOOK samples), compose the
     /// prompts and send the request. Callers own the pending flags.
-    fn send_ai(&mut self, question: Option<String>, look: Vec<(String, f64, f64)>) {
+    fn send_ai(&mut self, question: Option<String>, look: Vec<LookPointSample>) {
         if self.state.markers.is_empty() {
             self.state.ai_pending = false;
             self.ai_note("Place at least one marker on the map first.".into());
@@ -1051,12 +1083,14 @@ impl StormApp {
         if !look.is_empty() {
             let names = look
                 .iter()
-                .map(|(label, _, _)| label.clone())
+                .map(|p| format!("{} ({:.0} mi radius)", p.label, p.radius_mi))
                 .collect::<Vec<_>>()
                 .join(", ");
             user.push_str(&format!(
-                "\n\nYou asked to look at: {names}. The app sampled those places and put them \
-                 under \"requested_samples\" (the same radar/MRMS/warnings values as a marker)."
+                "\n\nYou asked to look at: {names}. The app sampled those AREAS and put them \
+                 under \"requested_samples\": each has the centre column plus `area` with the \
+                 strongest echo, its distance/direction, % of the disk with >=20 dBZ, the nearest \
+                 echo and any warnings. Answer from the area, not a single gate."
             ));
         }
         user.push_str(

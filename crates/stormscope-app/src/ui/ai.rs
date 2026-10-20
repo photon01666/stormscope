@@ -227,7 +227,6 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     );
     let max_h = (screen.y * 0.85).max(320.0);
     let mut open = app.state.ai_open;
-    let prev_window_h = app.state.ai_window_h;
     let chrome_h = app.state.ai_chrome_h;
     let mut brief = false;
     let mut ask: Option<String> = None;
@@ -236,7 +235,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     let mut clear_marks = false;
     let mut retry = false;
 
-    let response = egui::Window::new("AI meteorologist")
+    egui::Window::new("AI meteorologist")
         .id(egui::Id::new("stormscope.ai"))
         .open(&mut open)
         .default_size(size)
@@ -347,15 +346,32 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             }
 
             ui.separator();
-            // The transcript fills the window: its height is whatever the user
-            // has dragged the window to, minus the measured chrome (header,
-            // toolbar, input, footer). One frame behind the drag, then settles.
-            let chat_h = if prev_window_h > 1.0 && chrome_h > 1.0 {
-                (prev_window_h - 28.0 - chrome_h).clamp(120.0, 1400.0)
-            } else {
-                (size.y * 0.42).clamp(160.0, 400.0)
-            };
+            // The transcript fills the window. Use the *current* available
+            // height, not last frame's: with a stale height, shrinking the
+            // window made the content taller than the frame and egui grew it
+            // straight back. Reserve the measured footer (chrome minus what
+            // has been drawn so far).
             let before_chat = ui.min_rect().height();
+            let footer_h = if chrome_h > before_chat + 20.0 {
+                (chrome_h - before_chat).max(120.0)
+            } else {
+                (220.0 * text_scale).clamp(140.0, 360.0)
+            };
+            let avail = ui.available_height();
+            let screen_h = ctx.content_rect().height();
+            let live = (avail.is_finite() && avail > 80.0 && avail < screen_h * 0.97)
+                .then(|| (avail - footer_h).clamp(80.0, 1400.0));
+            // Also bound by the window's stored size, so an auto-sizing frame
+            // cannot make the chat taller than the frame the user dragged.
+            let stored = ctx
+                .memory(|m| m.area_rect(egui::Id::new("stormscope.ai")))
+                .map(|r| (r.height() - 28.0 * text_scale - chrome_h).clamp(80.0, 1400.0));
+            let chat_h = match (live, stored) {
+                (Some(live), Some(stored)) => live.min(stored),
+                (Some(live), None) => live,
+                (None, Some(stored)) => stored,
+                (None, None) => (size.y * 0.42).clamp(160.0, 400.0),
+            };
             egui::ScrollArea::vertical()
                 .id_salt("stormscope.ai.chat")
                 .stick_to_bottom(true)
@@ -517,9 +533,6 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             );
             app.state.ai_chrome_h = (ui.min_rect().height() - transcript_h).clamp(120.0, 1200.0);
         });
-    if let Some(response) = &response {
-        app.state.ai_window_h = response.response.rect.height();
-    }
     app.state.ai_open = open;
     if brief {
         app.ai_request(None);

@@ -161,8 +161,11 @@ pub fn system_prompt() -> String {
      without stating what is stronger and where; the user is asking what is happening there. \
      `radar.site` in the snapshot is the radar the samples came from (the app switches to the \
      closest one automatically when needed).\n\
-     - Motion: use `storm_cells`/`next_arrival_min` when present (radar tracks from two scans). \
-     If `storm_cells` is empty, check `motion` in warnings/MCDs, which often says 'moving east at 30 mph'. Only after both are absent say motion is unavailable — then give the line's \
+     - Motion: `storm_cells_all` lists every tracked cell on the scope with speed/heading and a \
+     vector mean (`mean_motion`); `echo_regions[].motion` gives each area its nearest cell's \
+     vector. Use these before saying motion is missing, even when the per-marker \
+     `storm_cells` is empty. If no track exists, check `motion` in warnings/MCDs ('moving east at \
+     30 mph'). Only after both are absent say motion is unavailable — then give the line's \
      orientation and the trend you can support, and name what is missing (the next scan). Never \
      guess a bearing."
         .to_string()
@@ -203,6 +206,65 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
         }),
     );
 
+    if !input.tracks.is_empty() {
+        let mut cells = Vec::with_capacity(input.tracks.len().min(16));
+        for track in input.tracks.iter().take(16) {
+            let d = radar_render::surface_distance_m(
+                site.longitude,
+                site.latitude,
+                track.lon,
+                track.lat,
+            ) / 1609.344;
+            let nearest = input
+                .markers
+                .iter()
+                .map(|m| {
+                    let dm = radar_render::surface_distance_m(track.lon, track.lat, m.lon, m.lat)
+                        / 1609.344;
+                    (dm, m)
+                })
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            cells.push(json!({
+                "lat": round4(track.lat),
+                "lon": round4(track.lon),
+                "peak_dbz": round(track.max_dbz),
+                "speed_mph": round1(track.speed_kmh / 1.609_344),
+                "heading": compass16(track.bearing_deg),
+                "bearing_deg": round1(track.bearing_deg),
+                "distance_from_radar_mi": round1(d),
+                "nearest_marker": nearest.map(|(dm, m)| json!({
+                    "name": m.display(),
+                    "distance_mi": round1(dm),
+                })),
+            }));
+        }
+        // Vector mean: a usable "how is the line moving" number even when
+        // individual cells are scattered across the scope.
+        let (mut sum_e, mut sum_n) = (0.0f64, 0.0f64);
+        let mut speed_total = 0.0f64;
+        for track in input.tracks {
+            sum_e += track.vel_e;
+            sum_n += track.vel_n;
+            speed_total += track.speed_kmh / 1.609_344;
+        }
+        let n = input.tracks.len() as f64;
+        let mean_speed = speed_total / n;
+        let mean_bearing = sum_e.atan2(sum_n).to_degrees().rem_euclid(360.0);
+        root.insert(
+            "storm_cells_all".into(),
+            json!({
+                "count": input.tracks.len(),
+                "cells": cells,
+                "mean_motion": {
+                    "speed_mph": round1(mean_speed),
+                    "heading": compass16(mean_bearing),
+                    "bearing_deg": round1(mean_bearing),
+                },
+                "note": "every tracked cell on the scope (the app only tracks cores >=40 dBZ); mean_motion is the vector average",
+            }),
+        );
+    }
+
     root.insert(
         "data_status".into(),
         json!({
@@ -226,7 +288,7 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
 
     root.insert(
         "echo_regions".into(),
-        json!(echo_regions(volume, site, input.markers)),
+        json!(echo_regions(volume, site, input.markers, input.tracks)),
     );
 
     root.insert(
@@ -374,6 +436,7 @@ fn echo_regions(
     volume: &Volume,
     site: &radar_core::sites::RadarSite,
     markers: &[MapMarker],
+    tracks: &[radar_render::StormTrack],
 ) -> Vec<Value> {
     const MIN_DBZ: f32 = 20.0;
     const CELL_KM: f32 = 8.0;
@@ -510,8 +573,27 @@ fn echo_regions(
                 "direction": compass16(bearing),
             })
         });
+        // The nearest tracked cell gives the region a motion vector.
+        let motion = tracks
+            .iter()
+            .map(|t| {
+                (
+                    radar_render::surface_distance_m(lon, lat, t.lon, t.lat) / 1000.0,
+                    t,
+                )
+            })
+            .filter(|(d, _)| *d <= 60.0)
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(d, t)| {
+                json!({
+                    "speed_mph": round1(t.speed_kmh / 1.609_344),
+                    "heading": compass16(t.bearing_deg),
+                    "cell_distance_mi": round1(d / 1.609_344),
+                })
+            });
         let value = json!({
             "max_dbz": round(max_dbz),
+            "motion": motion,
             "area_sq_mi": round1(area_sq_mi),
             "width_mi": round1(width_mi),
             "height_mi": round1(height_mi),
@@ -1423,6 +1505,15 @@ mod tests {
             east: marker.lon + 1.0,
             values: vec![35.0; 100],
         });
+        let track = radar_render::StormTrack {
+            lat: site.latitude + 0.5,
+            lon: site.longitude + 0.3,
+            vel_e: 15.0,
+            vel_n: 20.0,
+            speed_kmh: 90.0,
+            bearing_deg: 36.9,
+            max_dbz: 48.0,
+        };
         let brief = build(&BriefInputs {
             site,
             mode: "live",
@@ -1434,7 +1525,7 @@ mod tests {
                 speed_mph: 35.0,
                 compass: "E",
             })],
-            tracks: &[],
+            tracks: &[track],
             alerts: &[warning],
             outlook: Some(&outlook),
             mcds: &[],
@@ -1477,6 +1568,9 @@ mod tests {
             r#""dbz":35.0"#,
             r#""echo_top_kft""#,
             r#""current_view""#,
+            r#""storm_cells_all""#,
+            r#""mean_motion""#,
+            r#""heading":"NE""#,
             r#""requested_samples""#,
             r#""label":"Wichita""#,
             r#""echo_coverage_pct""#,
@@ -1536,7 +1630,7 @@ mod tests {
             sweeps: vec![sweep],
         };
         let site = radar_core::sites::site("KTWX").expect("site");
-        let regions = echo_regions(&volume, site, &[]);
+        let regions = echo_regions(&volume, site, &[], &[]);
         assert!(!regions.is_empty(), "the southern band must be found");
         let region = &regions[0];
         assert!(region["max_dbz"].as_f64().unwrap() >= 40.0, "{region}");

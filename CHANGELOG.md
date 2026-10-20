@@ -44,6 +44,10 @@ log; entries start at the first public release.
   new snapshot. The sidebar layer switches on automatically while it fetches.
   The snapshot also carries every tilt's gates at each column.
 - The AI window is resizable and has a chat-height slider.
+- The snapshot now includes **every tracked cell** on the scope, not just those
+  within 60 mi of a marker: position, peak dBZ, speed, heading and the nearest
+  marker, plus a vector mean (`mean_motion`) and each echo region's nearest-cell
+  motion. The app tracks cores at or above 40 dBZ, which the snapshot states.
 - The snapshot now also carries **SRM** when built, the **GOES** pixel
   brightness, spectrum width/differential phase, and an **echo-region
   overview**: connected areas of ≥20 dBZ on the lowest cut, each with its

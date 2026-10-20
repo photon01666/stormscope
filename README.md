@@ -174,6 +174,9 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   heading, speed and arrival estimates. If only one scan is available it uses
   explicit motion in warning/MCD text and says when neither exists. The chat
   history is sent to the model as real user/assistant turns, not pasted text.
+  Every tracked cell on the scope is included (speed, heading, peak dBZ,
+  position) with a vector mean, not only cells within 60 mi of a marker — so
+  "which way is the line moving" uses the same storm-track layer you see.
 - It can **request missing data**: MRMS, GOES, the NWS forecast, station totals or a
   different SPC day/type. A `DATA:` request makes the app load them (sidebar layers
   included), then the model answers from a second snapshot. Every tilt's gates at each

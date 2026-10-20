@@ -489,7 +489,11 @@ mod tests {
         assert!((near.north - crop[2]).abs() < 0.05, "north {}", near.north);
         assert!((near.west - crop[1]).abs() < 0.05, "west {}", near.west);
         assert!((near.east - crop[3]).abs() < 0.05, "east {}", near.east);
-        assert!(near.width > 1400 && near.width < 1800, "width {}", near.width);
+        assert!(
+            near.width > 1400 && near.width < 1800,
+            "width {}",
+            near.width
+        );
         eprintln!(
             "{}: {}x{} · {:.3}..{:.3}N {:.3}..{:.3}E · {}",
             m.product.label(),

@@ -116,8 +116,8 @@ mod tests {
         let (w, h) = (5usize, 3usize);
         let mut values: Vec<f32> = (0..w * h).map(|i| (i % w) as f32).collect();
         // Punch a hole through every cell that would cross level 2.5.
-        values[0 * w + 2] = f32::NAN;
-        values[1 * w + 2] = f32::NAN;
+        values[2] = f32::NAN;
+        values[w + 2] = f32::NAN;
         values[2 * w + 2] = f32::NAN;
         assert!(contour_segments(w, h, &values, 2.5).is_empty());
         assert!(contour_segments(1, 5, &[1.0; 5], 0.5).is_empty());

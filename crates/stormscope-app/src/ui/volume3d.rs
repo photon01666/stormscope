@@ -816,6 +816,11 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     // bare ground — a plate saying so is noise).
     if let Some((pos, report)) = probe.filter(|(_, r)| r.max.is_some()) {
         let unit = moment.unit();
+        // Categorical products (HCA) read by name; numeric ones by value.
+        let value_text = |v: f32| match moment.value_label(v) {
+            Some(label) => format!("{} {label}", moment.label()),
+            None => format!("{} {:.0} {}", moment.label(), v, unit),
+        };
         let marker = |hit: &radar_render::ProbeHit, color: Color32| -> Option<egui::Pos2> {
             let p = project([hit.pos_km[0], hit.pos_km[1], hit.pos_km[2] * ve])?;
             let g = project([hit.pos_km[0], hit.pos_km[1], 0.0])?;
@@ -829,9 +834,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         if let Some(first) = &report.first {
             // The probe reads in miles and feet, like the rest of the pane.
             lines.push(format!(
-                "first {:.0} {} @ {:.1}k ft · {:.0} mi {}",
-                first.value,
-                unit,
+                "first {} @ {:.1}k ft · {:.0} mi {}",
+                value_text(first.value),
                 first.pos_km[2] * FT_PER_KM / 1000.0,
                 first.range_km / KM_PER_MILE,
                 compass16(first.bearing_deg),
@@ -842,9 +846,8 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         }
         if let Some(max) = &report.max {
             lines.push(format!(
-                "max {:.0} {} @ {:.1}k ft · {:.0} mi {}",
-                max.value,
-                unit,
+                "max {} @ {:.1}k ft · {:.0} mi {}",
+                value_text(max.value),
                 max.pos_km[2] * FT_PER_KM / 1000.0,
                 max.range_km / KM_PER_MILE,
                 compass16(max.bearing_deg),

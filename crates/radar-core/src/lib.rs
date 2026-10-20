@@ -12,6 +12,7 @@ pub mod sampling;
 pub mod sites;
 pub mod vcp;
 pub mod warnings;
+pub mod winter;
 
 use chrono::{DateTime, Utc};
 
@@ -48,6 +49,15 @@ pub enum Moment {
     /// Storm-relative radial velocity (m/s) — radial velocity minus the
     /// storm motion projected onto each radial.
     StormRelativeVelocity,
+    /// Hydrometeor classification (categorical) — rain / heavy rain / dry
+    /// snow / wet snow / mixed / ice crystals / graupel-hail / clutter,
+    /// from the dual-pol trio (Z, ZDR, CC) and KDP.
+    Hydrometeor,
+    /// Snowfall rate (in/h) from the reflectivity via a winter Z-S relation.
+    SnowRate,
+    /// Melting-layer / 0 °C level (kft) from the correlation-coefficient
+    /// bright band.
+    MeltingLayer,
 }
 
 impl Moment {
@@ -66,6 +76,9 @@ impl Moment {
             Moment::EchoTops => "TOPS",
             Moment::Mesh => "MEHS",
             Moment::StormRelativeVelocity => "SRM",
+            Moment::Hydrometeor => "HCA",
+            Moment::SnowRate => "SNOW",
+            Moment::MeltingLayer => "MELT",
         }
     }
 
@@ -84,7 +97,19 @@ impl Moment {
             Moment::EchoTops => "kft",
             Moment::Mesh => "in",
             Moment::StormRelativeVelocity => "m/s",
+            Moment::Hydrometeor => "",
+            Moment::SnowRate => "in/h",
+            Moment::MeltingLayer => "kft",
         }
+    }
+
+    /// Human label for a categorical value — the HCA classes — instead of a
+    /// bare number. `None` for numeric moments.
+    pub fn value_label(&self, value: f32) -> Option<&'static str> {
+        if *self != Moment::Hydrometeor {
+            return None;
+        }
+        crate::winter::HydrometeorClass::from_value(value).map(|class| class.label())
     }
 }
 

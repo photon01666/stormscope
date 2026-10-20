@@ -18,6 +18,7 @@
 //! the app paints overlays at `response.rect.min + view_px`.
 
 pub mod colormap;
+pub mod contour;
 pub mod iso;
 pub mod projection;
 pub mod raster;
@@ -27,6 +28,7 @@ pub mod tracks;
 pub mod volume3d;
 
 pub use colormap::{ColorTable, Stop};
+pub use contour::{Segment, contour_segments};
 pub use iso::{IsoMesh, IsoParams, build_isosurfaces};
 pub use projection::{
     MapView, MercProjector, gate_latlon, initial_bearing_deg, lonlat_to_merc_px, merc_px_to_lonlat,

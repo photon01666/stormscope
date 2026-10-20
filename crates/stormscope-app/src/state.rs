@@ -408,6 +408,10 @@ pub struct AppState {
     /// The 2D map's hover probe: the value of the displayed product at the
     /// pointer, with its beam height and distance from the radar.
     pub map_probe: bool,
+    /// Draw the 0 °C level overlay: isohypses of the melting-layer product
+    /// (the CC bright band) every 2 kft. On by default — winter's answer to
+    /// "is that rain or snow where I live?".
+    pub show_melting_layer: bool,
     /// NWS warning polygons draped on the 3D ground. Its own switch and its
     /// own wash strength, so the 3D scene can keep the warnings even when the
     /// 2D map's alert layer is off (and vice versa). The fill reads like the
@@ -627,6 +631,7 @@ impl Default for AppState {
             view3d_shell_preset: ShellPreset::Convective,
             view3d_probe: true,
             map_probe: true,
+            show_melting_layer: true,
             view3d_alerts: true,
             view3d_alerts_fill: 1.0,
             view3d_alerts_top_kft: 30.0,

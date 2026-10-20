@@ -65,15 +65,36 @@ impl Warning {
     /// products are excluded on purpose — they are not storms, and treating
     /// them like warnings would make the alerts badge cry wolf all winter.
     pub fn is_winter_storm(&self) -> bool {
-        [
-            "Winter Storm",
-            "Ice Storm",
-            "Blizzard",
-            "Snow Squall",
-            "Lake Effect Snow",
-            "Heavy Snow",
-        ]
-        .iter()
-        .any(|family| self.event.contains(family))
+        !self.event.contains("Advisory")
+            && [
+                "Winter Storm",
+                "Ice Storm",
+                "Blizzard",
+                "Snow Squall",
+                "Lake Effect Snow",
+                "Heavy Snow",
+            ]
+            .iter()
+            .any(|family| self.event.contains(family))
+    }
+
+    /// Winter-weather advisories and similar lower-urgency winter products
+    /// (Winter Weather, Lake Effect Snow, Freezing Rain, Wind Chill, Frost).
+    /// They get the winter color at advisory weight — visible on the map as
+    /// winter — but they never pulse the alerts badge: an advisory is not a
+    /// storm.
+    pub fn is_winter_advisory(&self) -> bool {
+        self.event.contains("Advisory")
+            && [
+                "Winter",
+                "Snow",
+                "Ice",
+                "Freez",
+                "Frost",
+                "Wind Chill",
+                "Lake Effect",
+            ]
+            .iter()
+            .any(|family| self.event.contains(family))
     }
 }

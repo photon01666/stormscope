@@ -507,6 +507,29 @@ fn product_doc(m: Moment) -> ProductDoc {
             how: "Set the storm motion (toward + speed) in the 3D Controls window. Rotation \
                   then reads as a cleaner couplet; a wrong motion smears the signature.",
         },
+        Moment::Hydrometeor => ProductDoc {
+            name: "Hydrometeor Classification",
+            what: "What the radar thinks the targets are, in eight classes: rain, heavy rain, \
+                   dry snow, wet snow, mixed, ice crystals, graupel/hail, clutter/debris. \
+                   Built from Z, ZDR, CC and KDP on the lowest cut.",
+            how: "The winter workhorse: dry snow reads white, wet snow pale ice, the melting \
+                  layer lavender, rain blue. Read it with the 0 °C level and the snow rate — \
+                  the probe names the class under the cursor.",
+        },
+        Moment::SnowRate => ProductDoc {
+            name: "Snowfall Rate",
+            what: "Snowfall rate in inches per hour from reflectivity, via a winter Z-S \
+                   relation (20 dBZ ≈ 0.5 in/h, 30 dBZ ≈ 1.5 in/h, about a 10:1 ratio).",
+            how: "A hint, not a gauge: it is masked above 38 dBZ (rain or hail, not snow) \
+                  and below 5 dBZ (noise). Use it for the banding structure, not totals.",
+        },
+        Moment::MeltingLayer => ProductDoc {
+            name: "0 °C Level",
+            what: "The melting-layer height in kft, from the correlation-coefficient bright \
+                   band — the radar's view of the 0 °C level (a few hundred feet below it).",
+            how: "Rain below, snow above; the map's 0 °C level overlay contours it every \
+                  2 kft. A falling level means the snow is reaching lower.",
+        },
     }
 }
 
@@ -632,6 +655,11 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 .on_hover_text(
                     "Hover the map for the value under the cursor: product value, \
                      beam height, distance and bearing from the radar",
+                );
+            ui.checkbox(&mut app.state.show_melting_layer, "0 °C level")
+                .on_hover_text(
+                    "Isohypses of the melting-layer product (the radar's 0 °C level, \
+                     from the CC bright band) every 2 kft — rain below, snow above",
                 );
             control_window_wheel(ui, &sliders, |target, steps| match target {
                 0 => {

@@ -186,6 +186,43 @@ const TOPS_STOPS: &[Stop] = &[
     (70.0, [255, 0, 255, 255]),
 ];
 
+/// Hydrometeor classification: one flat color per class, at the class
+/// index (1-8). Values are exact integers, so the interpolation between
+/// stops never runs — the stops only need the right colors at 1..8.
+const HCA_STOPS: &[Stop] = &[
+    (1.0, [60, 200, 255, 255]),  // rain
+    (2.0, [0, 110, 240, 255]),   // heavy rain
+    (3.0, [245, 250, 255, 255]), // dry snow
+    (4.0, [150, 215, 255, 255]), // wet snow
+    (5.0, [185, 160, 220, 255]), // mixed / melting layer
+    (6.0, [120, 255, 235, 255]), // ice crystals
+    (7.0, [255, 90, 70, 255]),   // graupel / hail
+    (8.0, [125, 125, 125, 255]), // clutter / debris
+];
+
+/// Snowfall rate (in/h): pale blue through green to hot pink for the bands
+/// that bury roads.
+const SNOW_STOPS: &[Stop] = &[
+    (0.0, [40, 80, 140, 0]),
+    (0.25, [90, 160, 255, 255]),
+    (0.5, [120, 220, 255, 255]),
+    (1.0, [90, 220, 140, 255]),
+    (1.5, [255, 225, 90, 255]),
+    (2.5, [255, 140, 60, 255]),
+    (4.0, [255, 70, 120, 255]),
+];
+
+/// Melting-layer / 0 °C level height (kft): a cold-to-warm height ramp, so
+/// "where the snow is melting" reads at a glance.
+const MELT_STOPS: &[Stop] = &[
+    (1.0, [70, 90, 200, 0]),
+    (4.0, [80, 140, 255, 255]),
+    (8.0, [70, 220, 230, 255]),
+    (12.0, [110, 220, 120, 255]),
+    (16.0, [255, 220, 80, 255]),
+    (20.0, [255, 90, 80, 255]),
+];
+
 /// Maximum Estimated Hail Size (inches): transparent below a quarter inch,
 /// then the hail-size ramp viewers read for severe cores.
 const MEHS_STOPS: &[Stop] = &[
@@ -214,6 +251,9 @@ fn stops_for(kind: Moment) -> &'static [Stop] {
         Moment::EchoTops => TOPS_STOPS,
         Moment::Mesh => MEHS_STOPS,
         Moment::StormRelativeVelocity => VELOCITY_STOPS,
+        Moment::Hydrometeor => HCA_STOPS,
+        Moment::SnowRate => SNOW_STOPS,
+        Moment::MeltingLayer => MELT_STOPS,
     }
 }
 

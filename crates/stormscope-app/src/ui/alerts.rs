@@ -81,6 +81,7 @@ pub(super) fn event_group_rank(event: &str) -> u8 {
         || event.contains("Snow")
         || event.contains("Blizzard")
         || event.contains("Freez")
+        || event.contains("Frost")
     {
         6
     } else if event.contains("Wind") {
@@ -158,6 +159,10 @@ pub(super) fn warning_color(w: &Warning) -> egui::Color32 {
         // Ice blue: these are the warnings winter radar work is about, and
         // they used to be the same neutral white as a wind advisory.
         egui::Color32::from_rgb(150, 210, 255)
+    } else if w.is_winter_advisory() {
+        // Advisories keep the winter identity at lower weight, so a Winter
+        // Weather Advisory reads as winter without competing with a warning.
+        egui::Color32::from_rgb(118, 165, 210)
     } else {
         egui::Color32::from_white_alpha(140)
     }
@@ -1862,8 +1867,13 @@ mod tests {
         assert!(p("Freeze Warning").is_none(), "not a storm family");
         assert!(
             p("Winter Weather Advisory").is_none(),
-            "advisory, not warning"
+            "advisory, not warning: winter color, never a pulse"
         );
+        assert!(
+            p("Lake Effect Snow Advisory").is_none(),
+            "an advisory is not a storm, even when its family is"
+        );
+        assert!(p("Winter Storm Watch").is_some(), "winter watches pulse");
         assert_eq!(
             pulse_color(&warn("w", "Winter Storm Warning", 35.0, -97.0, true)),
             egui::Color32::from_rgb(150, 210, 255)
@@ -1935,6 +1945,26 @@ mod tests {
         assert_ne!(
             warning_color(&warn("z", "Freeze Warning", 35.0, -97.0, true)),
             egui::Color32::from_rgb(150, 210, 255)
+        );
+        // Advisories: winter-colored but dimmer, and never the storm blue.
+        let advisory = warning_color(&warn("a", "Winter Weather Advisory", 35.0, -97.0, true));
+        assert_eq!(advisory, egui::Color32::from_rgb(118, 165, 210));
+        assert_ne!(
+            advisory,
+            warning_color(&warn("w", "Winter Storm Warning", 35.0, -97.0, true))
+        );
+        assert_eq!(
+            warning_color(&warn("l", "Lake Effect Snow Advisory", 35.0, -97.0, true)),
+            advisory
+        );
+        assert_eq!(
+            warning_color(&warn("f", "Wind Chill Advisory", 35.0, -97.0, true)),
+            advisory
+        );
+        // A wind advisory is not winter weather.
+        assert_ne!(
+            warning_color(&warn("n", "Wind Advisory", 35.0, -97.0, true)),
+            advisory
         );
     }
 }

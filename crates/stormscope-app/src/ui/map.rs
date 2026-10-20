@@ -698,6 +698,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         }
     }
 
+    // --- Layer 3.4: the 0 °C level -----------------------------------------
+    draw_melting_layer(&painter, origin, &view, app);
+
     // --- Layer 3.5: SPC outlook *outlines* over the radar -----------------
     // Only the risk boundaries, so they stay legible across rain echoes.
     draw_outlooks(&painter, origin, &view, app, false);
@@ -846,13 +849,11 @@ impl MapProbe {
     fn lines(&self, moment: radar_core::Moment) -> Vec<String> {
         let unit = moment.unit();
         let mut out = Vec::with_capacity(3);
-        out.push(format!(
-            "{} {:.0} {} · {:.1}°",
-            moment.label(),
-            self.value,
-            unit,
-            self.elev_deg
-        ));
+        let value_text = match moment.value_label(self.value) {
+            Some(label) => format!("{} {label}", moment.label()),
+            None => format!("{} {:.0} {}", moment.label(), self.value, unit),
+        };
+        out.push(format!("{value_text} · {:.1}°", self.elev_deg));
         out.push(format!(
             "{:.1}k ft · {} {}",
             self.height_km * radar_render::FT_PER_KM / 1000.0,
@@ -1195,6 +1196,123 @@ pub(super) fn format_miles(miles: f64) -> String {
         format!("{miles:.1} mi")
     } else {
         format!("{miles:.0} mi")
+    }
+}
+
+/// The 0 °C level: isohypses of the melting-layer product (the radar's CC
+/// bright band), every 2 kft. Contours beat a color wash here — the echoes
+/// underneath stay visible, and "snow below 6 kft, rain above" reads at a
+/// glance.
+///
+/// The product is a single height field on the lowest cut, so this does not
+/// follow the tilt selector; it is the state of the atmosphere, not a slice.
+fn draw_melting_layer(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
+    if !app.state.show_melting_layer {
+        return;
+    }
+    let Some(volume) = app.state.display_volume() else {
+        return;
+    };
+    let Some(site) = radar_core::sites::site(&app.state.site_id) else {
+        return;
+    };
+    let Some(sweep) = volume
+        .sweeps
+        .iter()
+        .find(|s| s.moment(radar_core::Moment::MeltingLayer).is_some())
+    else {
+        return;
+    };
+    let Some(md) = sweep.moment(radar_core::Moment::MeltingLayer) else {
+        return;
+    };
+    // Coarse polar grid: ~180 columns and ~2 km rows. The contour is a height
+    // field (smooth by nature), so this loses nothing and keeps the per-frame
+    // cost trivial.
+    let ray_step = (md.ray_count / 180).max(1);
+    let gate_step = ((2000.0 / md.gate_size_m.max(1.0)).ceil() as usize).max(1);
+    let cols = md.ray_count.div_ceil(ray_step);
+    let rows = md.gate_count.div_ceil(gate_step);
+    if cols < 2 || rows < 2 {
+        return;
+    }
+    let mut grid = vec![f32::NAN; cols * rows];
+    for c in 0..cols {
+        let r = (c * ray_step).min(md.ray_count.saturating_sub(1));
+        for row in 0..rows {
+            let g = (row * gate_step).min(md.gate_count.saturating_sub(1));
+            if let Some(v) = md.value(r, g) {
+                grid[row * cols + c] = v;
+            }
+        }
+    }
+
+    // Grid coordinates → the scene: azimuth (interpolated between the sampled
+    // rays, wrap-aware) and the gate's slant range.
+    let az_at = |c: f32| -> f32 {
+        let i = (c.floor() as usize).min(cols.saturating_sub(1));
+        let t = (c - i as f32).clamp(0.0, 1.0);
+        let a = sweep
+            .azimuths_deg
+            .get(i * ray_step)
+            .copied()
+            .unwrap_or(i as f32 * sweep.azimuth_width_deg);
+        let b = sweep
+            .azimuths_deg
+            .get((i + 1) * ray_step)
+            .copied()
+            .unwrap_or(a);
+        let d = ((b - a + 540.0) % 360.0) - 180.0;
+        a + d * t
+    };
+    let slant_m = |row: f32| {
+        let gate = row * gate_step as f32;
+        md.range_start_m + gate * md.gate_size_m
+    };
+    let to_screen = |c: f32, row: f32| -> egui::Pos2 {
+        let (lat, lon) = radar_render::gate_latlon(
+            site.latitude,
+            site.longitude,
+            az_at(c),
+            0.0,
+            slant_m(row).max(0.0),
+        );
+        let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+        egui::pos2(origin.x + vx as f32, origin.y + vy as f32)
+    };
+
+    let view_rect = egui::Rect::from_min_size(
+        origin,
+        egui::vec2(view.width() as f32, view.height() as f32),
+    );
+    let color = egui::Color32::from_rgb(140, 220, 255).gamma_multiply(0.8);
+    for level in [4.0f32, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0] {
+        let segments = radar_render::contour_segments(cols, rows, &grid, level);
+        let mut label_at: Option<egui::Pos2> = None;
+        for [a, b] in &segments {
+            let (p1, p2) = (to_screen(a.0, a.1), to_screen(b.0, b.1));
+            painter.add(egui::Shape::line(
+                vec![p1, p2],
+                egui::Stroke::new(1.1, color),
+            ));
+            if label_at.is_none() && view_rect.contains(p1) {
+                label_at = Some(p1);
+            }
+        }
+        // Label alternate contours so the field reads without a plate per
+        // segment (6 / 10 / 14 kft anchors the scale).
+        if (level as i32) % 4 == 2
+            && let Some(p) = label_at
+        {
+            draw_tag_label(
+                painter,
+                p + egui::vec2(4.0, -3.0),
+                egui::Align2::LEFT_BOTTOM,
+                &format!("{level:.0}k ft"),
+                egui::FontId::proportional(9.5),
+                color,
+            );
+        }
     }
 }
 

@@ -724,6 +724,10 @@ mod tests {
             radar_core::Moment::Vil,
             radar_core::Moment::EchoTops,
             radar_core::Moment::Mesh,
+            // The winter set: present and in range on real dual-pol data.
+            radar_core::Moment::Hydrometeor,
+            radar_core::Moment::SnowRate,
+            radar_core::Moment::MeltingLayer,
         ] {
             let md = vol
                 .sweeps
@@ -743,6 +747,15 @@ mod tests {
             assert!(max.is_finite() && max >= 0.0, "{m:?} max {max}");
             if m == radar_core::Moment::Vil {
                 assert!(max < 500.0, "VIL out of range: {max}");
+            }
+            if m == radar_core::Moment::SnowRate {
+                assert!(max <= 4.0, "snow rate out of range: {max}");
+            }
+            if m == radar_core::Moment::MeltingLayer {
+                assert!(max <= 25.0, "melting layer out of range: {max} kft");
+            }
+            if m == radar_core::Moment::Hydrometeor {
+                assert!((1.0..=8.0).contains(&max), "HCA class out of range: {max}");
             }
         }
     }

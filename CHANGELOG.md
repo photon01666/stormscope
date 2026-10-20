@@ -28,7 +28,10 @@ log; entries start at the first public release.
   column plus the strongest echo inside the disk with its distance/direction,
   the percentage of the area with ≥20 dBZ, the nearest echo and any warnings —
   never a single gate. The map fits the whole searched area while the report
-  window shows "Looking at …".
+  window shows "Looking at …". If another NEXRAD is materially closer to that
+  area (30% and 40 mi closer, within range), the app switches to it, loads its
+  volume and samples from there — no more "Wichita" answered by a radar 140
+  miles away.
 - The snapshot now also carries **SRM** when built, the **GOES** pixel
   brightness, spectrum width/differential phase, and an **echo-region
   overview**: connected areas of ≥20 dBZ on the lowest cut, each with its

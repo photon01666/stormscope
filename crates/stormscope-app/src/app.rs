@@ -501,7 +501,37 @@ impl StormApp {
     fn pump(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                DataMsg::Volume(v) => self.state.push_volume(v),
+                DataMsg::Volume(v) => {
+                    let site = v.meta.site_id.clone();
+                    self.state.push_volume(v);
+                    // A LOOK that needed a closer radar waits for its first
+                    // volume, then runs against that volume.
+                    if self.state.ai_pending_site.as_deref() == Some(site.as_str()) {
+                        let points = self.state.ai_pending_look.take().unwrap_or_default();
+                        self.state.ai_pending_site = None;
+                        self.state.ai_pending_site_at = None;
+                        if !points.is_empty() {
+                            let samples: Vec<LookPointSample> = points
+                                .into_iter()
+                                .map(|(label, lat, lon, radius_mi)| LookPointSample {
+                                    label,
+                                    lat,
+                                    lon,
+                                    radius_mi,
+                                })
+                                .collect();
+                            let names = samples
+                                .iter()
+                                .map(|p| p.label.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            log::info!("AI look continues on {site}: {names}");
+                            self.state.ai_looking_at = Some(format!("{names} (from {site})"));
+                            self.state.ai_pending = true;
+                            self.send_ai(self.state.ai_question_ctx.clone(), samples);
+                        }
+                    }
+                }
                 DataMsg::Alerts(a) => {
                     self.state.alerts_slow = a;
                     self.state.alerts = crate::state::merge_alerts(
@@ -651,6 +681,9 @@ impl StormApp {
                         self.state.ai_pending = false;
                         self.state.ai_look_depth = 0;
                         self.state.ai_looking_at = None;
+                        self.state.ai_pending_look = None;
+                        self.state.ai_pending_site = None;
+                        self.state.ai_pending_site_at = None;
                         self.state.ai_error = None;
                         let hint = if error.to_ascii_lowercase().contains("unavailable") {
                             " — OpenCode Go may be having a temporary outage; press Retry."
@@ -841,6 +874,9 @@ impl StormApp {
         self.state.ai_question_ctx = asked.clone();
         self.state.ai_look_depth = 0;
         self.state.ai_looking_at = None;
+        self.state.ai_pending_look = None;
+        self.state.ai_pending_site = None;
+        self.state.ai_pending_site_at = None;
         self.send_ai(asked, Vec::new());
     }
 
@@ -867,6 +903,9 @@ impl StormApp {
         self.state.ai_last_question = question.clone();
         self.state.ai_look_depth = 0;
         self.state.ai_looking_at = None;
+        self.state.ai_pending_look = None;
+        self.state.ai_pending_site = None;
+        self.state.ai_pending_site_at = None;
         self.send_ai(question, Vec::new());
     }
 
@@ -929,6 +968,38 @@ impl StormApp {
         };
         let _ = crate::ai_actions::apply(&action, &mut self.state);
         self.state.ai_actions = Some(format!("looking at {names}"));
+
+        // A station 140 mi away sees this area at 15k ft through a wide
+        // beam. If another NEXRAD is materially closer, switch to it first
+        // and run the look when its first volume lands.
+        if let Some(best) = self.closest_site_for(&points) {
+            let current_id = self.state.site_id.clone();
+            if best != current_id {
+                log::info!("AI look: switching {current_id} -> {best} for {names}");
+                self.state.ai_pending_look = Some(
+                    points
+                        .iter()
+                        .map(|p| (p.label.clone(), p.lat, p.lon, p.radius_mi))
+                        .collect(),
+                );
+                self.state.ai_pending_site = Some(best.clone());
+                self.state.ai_pending_site_at = Some(std::time::Instant::now());
+                self.state.ai_looking_at = Some(format!("{names} (nearest radar {best})"));
+                self.state.ai_pending = true;
+                self.state.ai_error = None;
+                self.ai_note(format!(
+                    "Switching to {best} — the closest radar to {names} — for a sharper look."
+                ));
+                self.state.ai_look_depth = 1;
+                // The question is about current weather; a site switch loads
+                // live data, so leave archive mode with it.
+                self.state.mode = crate::state::Mode::Live;
+                self.state.loop_state = crate::state::LoopState::Paused;
+                self.select_site(&best);
+                return true;
+            }
+        }
+
         self.state.ai_looking_at = Some(names);
         self.state.ai_look_depth = 1;
         self.state.ai_pending = true;
@@ -936,6 +1007,60 @@ impl StormApp {
         let question = self.state.ai_question_ctx.clone();
         self.send_ai(question, points);
         true
+    }
+
+    /// The NEXRAD whose beam is materially closer to the area than the
+    /// selected one (or None when the current site is already the closest).
+    fn closest_site_for(&self, points: &[LookPointSample]) -> Option<String> {
+        let (mut lat, mut lon, mut n) = (0.0f64, 0.0f64, 0.0f64);
+        for point in points {
+            lat += point.lat;
+            lon += point.lon;
+            n += 1.0;
+        }
+        if n == 0.0 {
+            return None;
+        }
+        let (lat, lon) = (lat / n, lon / n);
+        let current = radar_core::sites::site(&self.state.site_id)?;
+        let current_dist =
+            radar_render::surface_distance_m(current.longitude, current.latitude, lon, lat);
+        let best = radar_core::sites::SITES.iter().min_by(|a, b| {
+            let da = radar_render::surface_distance_m(a.longitude, a.latitude, lon, lat);
+            let db = radar_render::surface_distance_m(b.longitude, b.latitude, lon, lat);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+        let best_dist = radar_render::surface_distance_m(best.longitude, best.latitude, lon, lat);
+        // Only switch when it is clearly worth reloading: inside radar range
+        // and at least 30 %/40 mi closer than what is on screen.
+        let range = 250.0 * 1609.344;
+        if best.id != current.id
+            && best_dist < range
+            && best_dist + 40.0 * 1609.344 < current_dist
+            && best_dist < current_dist * 0.7
+        {
+            Some(best.id.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Abandon a LOOK whose radar switch never delivered a volume.
+    fn pump_ai_site(&mut self) {
+        let Some(at) = self.state.ai_pending_site_at else {
+            return;
+        };
+        if at.elapsed() < std::time::Duration::from_secs(30) {
+            return;
+        }
+        let site = self.state.ai_pending_site.take().unwrap_or_default();
+        self.state.ai_pending_look = None;
+        self.state.ai_pending_site_at = None;
+        self.state.ai_looking_at = None;
+        self.state.ai_pending = false;
+        self.ai_note(format!(
+            "Could not load {site} for a closer look; press Retry."
+        ));
     }
 
     /// A zoom that fits every searched area (centre + radius) into the map.
@@ -1281,6 +1406,7 @@ impl StormApp {
         self.pump_srm();
         self.pump_mrms();
         self.pump_goes();
+        self.pump_ai_site();
         self.handle_input(ui.ctx());
 
         // Texture accounting (debug): the app's GPU-side footprint, and the

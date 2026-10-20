@@ -166,7 +166,10 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   radius) returning the strongest echo, its distance/direction, the percentage
   of the area with ≥20 dBZ, the nearest echo and any warnings. The map fits the
   whole searched area, and the model answers from that area summary instead of
-  a single gate.
+  a single gate. If another NEXRAD is materially closer to the area than the
+  selected one, the app **switches to it automatically** (a "Switching to
+  KICT…" note), loads its volume, and samples from there — a station 140 mi
+  away sees the area through a wide, high beam.
 - **Ask it questions** in a chat transcript: every question and answer stays
   in the window (you can scroll back, copy, clear), follow-ups keep the whole
   conversation in context, and a failed call is retried automatically and kept

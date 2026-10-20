@@ -633,6 +633,11 @@ pub struct AppState {
     pub ai_look_depth: u8,
     /// Places the model asked to sample before answering ("Wichita").
     pub ai_looking_at: Option<String>,
+    /// A LOOK waiting for the nearest radar's volume: (label, lat, lon, radius).
+    pub ai_pending_look: Option<Vec<(String, f64, f64, f64)>>,
+    /// Site being loaded for that look, and when the switch began.
+    pub ai_pending_site: Option<String>,
+    pub ai_pending_site_at: Option<std::time::Instant>,
     /// What the current report was built from ("KTWX 12:04Z · 3 markers").
     pub ai_snapshot: Option<String>,
     pub ai_generated_at: Option<std::time::Instant>,
@@ -869,6 +874,9 @@ impl Default for AppState {
             ai_question_ctx: None,
             ai_look_depth: 0,
             ai_looking_at: None,
+            ai_pending_look: None,
+            ai_pending_site: None,
+            ai_pending_site_at: None,
             ai_snapshot: None,
             ai_generated_at: None,
             ai_test_pending: false,

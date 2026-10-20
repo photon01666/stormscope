@@ -144,7 +144,12 @@ pub fn system_prompt() -> String {
      1-3 mile radius. Never mention the directive itself.\n\
      - If the user asks a question instead of requesting a brief, answer that question directly \
      from the snapshot: lead with the answer, give the supporting numbers, and keep it under 150 \
-     words unless the data demands more. Keep the same units and the MAP option."
+     words unless the data demands more. Keep the same units and the MAP option.\n\
+     - For a LOOK/area question, answer about THAT AREA first: coverage, nearest echo, then the \
+     strongest echo and its direction. Don't lead with the markers or call an echo not a core \
+     without stating what is stronger and where; the user is asking what is happening there. \
+     `radar.site` in the snapshot is the radar the samples came from (the app switches to the \
+     closest one automatically when needed)."
         .to_string()
 }
 

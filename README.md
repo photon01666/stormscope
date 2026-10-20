@@ -174,6 +174,12 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   heading, speed and arrival estimates. If only one scan is available it uses
   explicit motion in warning/MCD text and says when neither exists. The chat
   history is sent to the model as real user/assistant turns, not pasted text.
+- It can **request missing data**: MRMS, GOES, the NWS forecast, station totals or a
+  different SPC day/type. A `DATA:` request makes the app load them (sidebar layers
+  included), then the model answers from a second snapshot. Every tilt's gates at each
+  sampled column are in the snapshot too, so tilt-specific questions get the real gate.
+- The window is edge-resizable and has a **chat height** slider, so the transcript can
+  be made as tall or short as you like.
 - **Ask it questions** in a chat transcript: every question and answer stays
   in the window (you can scroll back, copy, clear), follow-ups keep the whole
   conversation in context, and a failed call is retried automatically and kept

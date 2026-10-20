@@ -122,6 +122,15 @@ pub fn system_prompt() -> String {
      look comes back clear while `echo_regions` shows a region nearby, look again at that region. \
      When you answer after a LOOK, centre the MAP on that area and choose a zoom that shows the \
      whole disk (not a single point).\n\
+     - If the answer needs data that `data_status` says is missing — MRMS, GOES, the NWS \
+     forecast, station totals, or a different SPC day/type — reply with ONLY:\n\
+     DATA: {\"mrms\": true, \"goes\": true, \"forecast\": {\"lat\": 39.05, \"lon\": -95.68, \
+     \"label\": \"Topeka\"}, \"totals\": {\"lat\": 39.05, \"lon\": -95.68}, \"spc\": {\"day\": 2, \
+     \"kind\": \"tornado\"}}\n\
+     Include only what you need. The app fetches it and sends a second snapshot; then answer \
+     fully. One DATA round per question.\n\
+     - `cuts` lists every elevation at each sampled column (reflectivity, velocity, ZDR, CC), so \
+     a question about a specific tilt uses that tilt's actual gate.\n\
      - You are at the screen with the spotter. When the answer refers to anything the map can \
      show — a cell, a velocity couplet, a hail core, the echo top, the melting layer, a warning, \
      an approaching line — you MUST use the MAP directive to focus it: centre/zoom the marker or \
@@ -191,6 +200,27 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
                 "radar tracks from two consecutive scans"
             },
             "note": "min_dbz_filter hides weaker echoes from the map; the brief samples the raw gates.",
+        }),
+    );
+
+    root.insert(
+        "data_status".into(),
+        json!({
+            "mrms_loaded": input.mrms.is_some(),
+            "mrms_time_utc": input.mrms.and_then(|m| m.first()).map(|m| m.time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            "goes_loaded": input.goes.is_some(),
+            "goes_time_utc": input.goes.and_then(|g| g.first()).map(|g| g.time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            "forecast_loaded": input.forecast.is_some(),
+            "forecast_place": input.forecast.map(|f| f.place.clone()),
+            "observation_loaded": input.observation.is_some(),
+            "storm_reports_loaded": !input.lsrs.is_empty(),
+            "mcds_loaded": !input.mcds.is_empty(),
+            "station_totals_loaded": !input.totals.is_empty(),
+            "spc_outlook_loaded": input.outlook.is_some(),
+            "spc_day": input.outlook.map(|o| o.day),
+            "spc_type": input.outlook.map(|o| o.ty.label()),
+            "srm_loaded": input.srm_volume.is_some(),
+            "note": "MRMS/GOES/forecast/totals/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them.",
         }),
     );
 
@@ -986,6 +1016,50 @@ fn radar_column(volume: &Volume, bearing: f32, range_km: f32) -> Value {
     }
     if let Some((v, _)) = gate(volume, Moment::MeltingLayer, bearing, range_km) {
         column.insert("melting_level_kft".into(), json!(round1f(v)));
+    }
+
+    // Every cut at this column, so tilt-specific questions get the actual
+    // gate: reflectivity, velocity, ZDR and CC at that elevation.
+    let mut cuts: Vec<Value> = Vec::new();
+    for sweep in &volume.sweeps {
+        let Some(ref_md) = sweep.moment(Moment::Reflectivity) else {
+            continue;
+        };
+        let Some((ref_dbz, height)) = gate_on_sweep(ref_md, sweep, bearing, range_km) else {
+            continue;
+        };
+        let mut cut = Map::new();
+        cut.insert(
+            "elev_deg".into(),
+            json!(round1f(
+                if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
+                    sweep.elevation_measured_deg
+                } else {
+                    sweep.elevation_deg
+                }
+            )),
+        );
+        cut.insert("height_kft".into(), json!(round1f(height)));
+        cut.insert("ref_dbz".into(), json!(round(ref_dbz)));
+        if let Some(md) = sweep.moment(Moment::Velocity) {
+            if let Some((v, _)) = gate_on_sweep(md, sweep, bearing, range_km) {
+                cut.insert("vel_mph".into(), json!(round(ms_to_mph(v))));
+            }
+        }
+        if let Some(md) = sweep.moment(Moment::DifferentialReflectivity) {
+            if let Some((v, _)) = gate_on_sweep(md, sweep, bearing, range_km) {
+                cut.insert("zdr_db".into(), json!(round1f(v)));
+            }
+        }
+        if let Some(md) = sweep.moment(Moment::CorrelationCoefficient) {
+            if let Some((v, _)) = gate_on_sweep(md, sweep, bearing, range_km) {
+                cut.insert("cc".into(), json!(round2(v)));
+            }
+        }
+        cuts.push(Value::Object(cut));
+    }
+    if !cuts.is_empty() {
+        column.insert("cuts".into(), json!(cuts));
     }
 
     let sampler = radar_core::sampling::VolumeSampler::new(volume, Moment::Reflectivity);

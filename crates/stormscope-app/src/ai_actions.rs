@@ -117,13 +117,54 @@ pub struct LookPoint {
     pub radius_mi: Option<f64>,
 }
 
-/// Split a reply into the prose the user reads, an optional manoeuvre and an
-/// optional request for more data. Directive lines never reach the report;
-/// unparseable ones are dropped too.
-pub fn split_reply(reply: &str) -> (String, Option<MapAction>, Option<LookRequest>) {
+/// A request to fetch optional data before answering. Everything is optional;
+/// the app fills only what is missing.
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+pub struct DataRequest {
+    #[serde(default)]
+    pub mrms: Option<bool>,
+    #[serde(default)]
+    pub goes: Option<bool>,
+    #[serde(default)]
+    pub forecast: Option<DataPoint>,
+    #[serde(default)]
+    pub totals: Option<DataPoint>,
+    #[serde(default)]
+    pub spc: Option<DataSpc>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DataPoint {
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DataSpc {
+    #[serde(default)]
+    pub day: Option<u8>,
+    /// "categorical" | "tornado" | "wind" | "hail".
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+/// Split a reply into the prose the user reads, an optional manoeuvre, an
+/// optional LOOK and an optional data request. Directive lines never reach the
+/// report; unparseable ones are dropped too.
+pub fn split_reply(
+    reply: &str,
+) -> (
+    String,
+    Option<MapAction>,
+    Option<LookRequest>,
+    Option<DataRequest>,
+) {
     let mut prose = Vec::new();
     let mut action = None;
     let mut look = None;
+    let mut data = None;
     for line in reply.lines() {
         let trimmed = line.trim();
         if let Some(json) = strip_directive(trimmed, "MAP:") {
@@ -138,9 +179,15 @@ pub fn split_reply(reply: &str) -> (String, Option<MapAction>, Option<LookReques
             }
             continue;
         }
+        if let Some(json) = strip_directive(trimmed, "DATA:") {
+            if data.is_none() {
+                data = serde_json::from_str::<DataRequest>(json.trim()).ok();
+            }
+            continue;
+        }
         prose.push(line);
     }
-    (prose.join("\n").trim().to_string(), action, look)
+    (prose.join("\n").trim().to_string(), action, look, data)
 }
 
 fn strip_directive<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
@@ -357,10 +404,11 @@ mod tests {
     #[test]
     fn directives_are_stripped_and_parsed() {
         let reply = "**Home**\nA line of storms is 12 mi west.\n\nMAP: {\"product\":\"VEL\",\"tilt_deg\":0.5,\"pane\":\"split\",\"view3d_yaw\":35}\n";
-        let (text, action, look) = split_reply(reply);
+        let (text, action, look, data) = split_reply(reply);
         assert!(!text.contains("MAP"), "{text}");
         assert!(text.contains("12 mi west"));
         assert!(look.is_none());
+        assert!(data.is_none());
         let action = action.expect("a directive");
         assert_eq!(action.product.as_deref(), Some("VEL"));
         assert_eq!(action.view3d_yaw, Some(35.0));
@@ -369,24 +417,38 @@ mod tests {
     #[test]
     fn look_requests_are_parsed_and_stripped() {
         let reply = "LOOK: {\"points\":[{\"lat\":37.69,\"lon\":-97.34,\"label\":\"Wichita\"}],\"product\":\"REF\"}";
-        let (text, action, look) = split_reply(reply);
+        let (text, action, look, data) = split_reply(reply);
         assert!(text.is_empty());
         assert!(action.is_none());
+        assert!(data.is_none());
         let look = look.expect("a look request");
         assert_eq!(look.points.len(), 1);
         assert_eq!(look.points[0].label.as_deref(), Some("Wichita"));
     }
 
     #[test]
+    fn data_requests_are_parsed() {
+        let reply = "DATA: {\"forecast\":{\"lat\":39.05,\"lon\":-95.68,\"label\":\"Topeka\"},\"mrms\":true,\"spc\":{\"day\":2,\"kind\":\"tornado\"}}";
+        let (text, _, _, data) = split_reply(reply);
+        assert!(text.is_empty());
+        let data = data.expect("a data request");
+        assert_eq!(data.mrms, Some(true));
+        assert_eq!(data.forecast.as_ref().map(|p| p.lat), Some(39.05));
+        assert_eq!(data.spc.and_then(|s| s.day), Some(2));
+    }
+
+    #[test]
     fn bad_or_missing_directives_are_harmless() {
-        let (text, action, look) = split_reply("Just prose.");
+        let (text, action, look, data) = split_reply("Just prose.");
         assert_eq!(text, "Just prose.");
         assert!(action.is_none());
         assert!(look.is_none());
-        let (text, action, look) = split_reply("Prose.\nMAP: {not json}");
+        assert!(data.is_none());
+        let (text, action, look, data) = split_reply("Prose.\nMAP: {not json}");
         assert_eq!(text, "Prose.");
         assert!(action.is_none());
         assert!(look.is_none());
+        assert!(data.is_none());
     }
 
     #[test]

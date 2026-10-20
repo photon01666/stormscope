@@ -626,6 +626,8 @@ pub struct AppState {
     pub ai_question: String,
     /// The whole conversation shown in the window (kept for the session).
     pub ai_messages: Vec<AiChatMessage>,
+    /// Height of the transcript viewport (window is also edge-resizable).
+    pub ai_chat_height: f32,
     /// The question the current request chain is answering (survives the
     /// LOOK round-trip).
     pub ai_question_ctx: Option<String>,
@@ -641,6 +643,13 @@ pub struct AppState {
     /// Volumes received from that site since the switch (two are needed for
     /// scan-to-scan motion).
     pub ai_pending_site_volumes: u8,
+    /// 0 = no data fetch yet; 1 = the follow-up after a DATA request.
+    pub ai_data_depth: u8,
+    /// Layers/data the current DATA round is waiting for.
+    pub ai_pending_data: Vec<String>,
+    pub ai_pending_data_at: Option<std::time::Instant>,
+    /// The last LOOK areas, so a DATA re-ask keeps its `requested_samples`.
+    pub ai_last_look: Vec<(String, f64, f64, f64)>,
     /// What the current report was built from ("KTWX 12:04Z · 3 markers").
     pub ai_snapshot: Option<String>,
     pub ai_generated_at: Option<std::time::Instant>,
@@ -874,6 +883,7 @@ impl Default for AppState {
             ai_last_question: None,
             ai_question: String::new(),
             ai_messages: load_ai_chat(),
+            ai_chat_height: 280.0,
             ai_question_ctx: None,
             ai_look_depth: 0,
             ai_looking_at: None,
@@ -881,6 +891,10 @@ impl Default for AppState {
             ai_pending_site: None,
             ai_pending_site_at: None,
             ai_pending_site_volumes: 0,
+            ai_data_depth: 0,
+            ai_pending_data: Vec::new(),
+            ai_pending_data_at: None,
+            ai_last_look: Vec::new(),
             ai_snapshot: None,
             ai_generated_at: None,
             ai_test_pending: false,

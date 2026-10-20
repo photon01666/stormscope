@@ -39,6 +39,11 @@ log; entries start at the first public release.
   that previous scan on purpose (about 5 MB) instead of relying on a cached
   one, so a fresh station has two frames immediately. Chat history is sent as
   actual user/assistant role messages.
+- **On-demand data**: a `DATA:` directive loads MRMS, GOES, the NWS forecast,
+  station totals or a different SPC day/type, then re-asks the model with the
+  new snapshot. The sidebar layer switches on automatically while it fetches.
+  The snapshot also carries every tilt's gates at each column.
+- The AI window is resizable and has a chat-height slider.
 - The snapshot now also carries **SRM** when built, the **GOES** pixel
   brightness, spectrum width/differential phase, and an **echo-region
   overview**: connected areas of ≥20 dBZ on the lowest cut, each with its

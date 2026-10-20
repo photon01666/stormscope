@@ -240,13 +240,14 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
         .default_size(size)
         .max_height(max_h)
         .min_size(egui::vec2(400.0, 300.0))
+        .resizable(true)
         .default_pos(egui::pos2(
             18.0,
             (ctx.content_rect().height() - size.y - 74.0).max(64.0),
         ))
         .show(ctx, |ui| {
             super::apply_text_scale(ui, text_scale);
-            ui.set_width((size.x - 40.0).max(340.0));
+            ui.set_min_width(400.0);
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!(
@@ -344,7 +345,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             }
 
             ui.separator();
-            let chat_h = (size.y * 0.44).clamp(160.0, 380.0);
+            let chat_h = app.state.ai_chat_height.clamp(120.0, 900.0);
             egui::ScrollArea::vertical()
                 .id_salt("stormscope.ai.chat")
                 .stick_to_bottom(true)
@@ -491,6 +492,13 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .into(),
                     );
                 }
+                ui.add(
+                    egui::Slider::new(&mut app.state.ai_chat_height, 120.0..=700.0)
+                        .text("chat height"),
+                )
+                .on_hover_text(
+                    "Drag to resize the transcript; drag the window edges to resize the popup",
+                );
             });
 
             ui.add_space(2.0);

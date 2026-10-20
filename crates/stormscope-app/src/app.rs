@@ -588,6 +588,7 @@ impl StormApp {
                     self.state.totals = v;
                     self.state.totals_fetched_at = Some(std::time::Instant::now());
                     log::debug!("totals loaded from {} stations", self.state.totals.len());
+                    self.pump_ai_data();
                 }
                 DataMsg::Forecast(f) => {
                     log::debug!(
@@ -602,6 +603,7 @@ impl StormApp {
                     // The request is done: without this the dedupe stamp would
                     // block the 15-minute refresh forever.
                     self.state.forecast_requested = None;
+                    self.pump_ai_data();
                 }
                 DataMsg::OutlookDiscussion(day, text) => {
                     log::debug!("outlook day {day} discussion: {} bytes", text.len());
@@ -614,6 +616,7 @@ impl StormApp {
                         .unwrap_or_else(|| "?".into());
                     log::debug!("outlook day {} loaded (issued {label})", o.day);
                     self.state.outlook = Some(o);
+                    self.pump_ai_data();
                 }
                 DataMsg::Status(s) => self.state.status_text = s,
                 DataMsg::Error(e) => {
@@ -657,6 +660,7 @@ impl StormApp {
                         self.state.status_text = format!("MRMS mosaic · {at}");
                     }
                     self.state.mrms = Some((mosaics, std::time::Instant::now()));
+                    self.pump_ai_data();
                 }
                 DataMsg::Goes { images } => {
                     self.state.goes_pending = None;
@@ -681,14 +685,20 @@ impl StormApp {
                         );
                     }
                     self.state.goes = Some((images, std::time::Instant::now()));
+                    self.pump_ai_data();
                 }
                 DataMsg::AiBrief(result) => match result {
                     Ok(reply) => {
-                        let (prose, action, look) = crate::ai_actions::split_reply(&reply);
+                        let (prose, action, look, data) = crate::ai_actions::split_reply(&reply);
                         let can_look = self.state.ai_look_depth < 2;
                         let looked = can_look && look.is_some_and(|look| self.ai_look(look));
                         if !looked {
-                            self.ai_finish(prose, action);
+                            let can_fetch = self.state.ai_data_depth == 0;
+                            let fetched =
+                                can_fetch && data.is_some_and(|data| self.ai_request_data(data));
+                            if !fetched {
+                                self.ai_finish(prose, action);
+                            }
                         }
                     }
                     Err(error) => {
@@ -699,6 +709,9 @@ impl StormApp {
                         self.state.ai_pending_look = None;
                         self.state.ai_pending_site = None;
                         self.state.ai_pending_site_at = None;
+                        self.state.ai_data_depth = 0;
+                        self.state.ai_pending_data.clear();
+                        self.state.ai_pending_data_at = None;
                         self.state.ai_error = None;
                         let hint = if error.to_ascii_lowercase().contains("unavailable") {
                             " — OpenCode Go may be having a temporary outage; press Retry."
@@ -893,6 +906,10 @@ impl StormApp {
         self.state.ai_pending_site = None;
         self.state.ai_pending_site_at = None;
         self.state.ai_pending_site_volumes = 0;
+        self.state.ai_data_depth = 0;
+        self.state.ai_pending_data.clear();
+        self.state.ai_pending_data_at = None;
+        self.state.ai_last_look.clear();
         self.send_ai(asked, Vec::new());
     }
 
@@ -923,6 +940,9 @@ impl StormApp {
         self.state.ai_pending_site = None;
         self.state.ai_pending_site_at = None;
         self.state.ai_pending_site_volumes = 0;
+        self.state.ai_data_depth = 0;
+        self.state.ai_pending_data.clear();
+        self.state.ai_pending_data_at = None;
         self.send_ai(question, Vec::new());
     }
 
@@ -1024,6 +1044,132 @@ impl StormApp {
         let question = self.state.ai_question_ctx.clone();
         self.send_ai(question, points);
         true
+    }
+
+    fn last_look_samples(&self) -> Vec<LookPointSample> {
+        self.state
+            .ai_last_look
+            .iter()
+            .map(|(label, lat, lon, radius_mi)| LookPointSample {
+                label: label.clone(),
+                lat: *lat,
+                lon: *lon,
+                radius_mi: *radius_mi,
+            })
+            .collect()
+    }
+
+    /// Fetch whatever the model asked for and re-ask once it lands. Returns
+    /// false when the request named nothing new (the caller then answers
+    /// normally).
+    fn ai_request_data(&mut self, request: crate::ai_actions::DataRequest) -> bool {
+        let mut waiting: Vec<String> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        if request.mrms == Some(true) && self.state.mrms.is_none() {
+            self.state.show_mrms = true;
+            waiting.push("mrms".into());
+            notes.push("MRMS".into());
+        }
+        if request.goes == Some(true) && self.state.goes.is_none() {
+            self.state.show_goes = true;
+            waiting.push("goes".into());
+            notes.push("GOES".into());
+        }
+        if let Some(point) = &request.forecast {
+            self.state.forecast = None;
+            self.state.observation = None;
+            self.state.forecast_point = Some((point.lat, point.lon));
+            self.state.forecast_requested = Some((point.lat, point.lon));
+            let _ = self.tx.send(DataCmd::LoadForecast(point.lat, point.lon));
+            waiting.push("forecast".into());
+            notes.push("NWS forecast".into());
+        }
+        if let Some(point) = &request.totals {
+            self.state.totals.clear();
+            self.state.totals_target = Some((point.lat, point.lon));
+            self.state.totals_requested = Some((point.lat, point.lon, std::time::Instant::now()));
+            let _ = self.tx.send(DataCmd::LoadTotals(point.lat, point.lon));
+            waiting.push("totals".into());
+            notes.push("station totals".into());
+        }
+        if let Some(spc) = &request.spc {
+            let day = spc.day.unwrap_or(1).clamp(1, 3);
+            let ty = match spc.kind.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                Some("tornado") => radar_core::outlooks::OutlookType::Tornado,
+                Some("wind") => radar_core::outlooks::OutlookType::Wind,
+                Some("hail") => radar_core::outlooks::OutlookType::Hail,
+                _ => radar_core::outlooks::OutlookType::Categorical,
+            };
+            let outdated = self
+                .state
+                .outlook
+                .as_ref()
+                .is_none_or(|o| o.day != day || o.ty != ty);
+            if outdated {
+                self.state.outlook = None;
+                self.state.outlook_day = day;
+                self.state.outlook_type = ty;
+                let _ = self.tx.send(DataCmd::LoadOutlook(day, ty));
+                waiting.push("spc".into());
+                notes.push(format!("SPC day {day} {}", ty.label()));
+            }
+        }
+        if waiting.is_empty() {
+            return false;
+        }
+        self.state.ai_data_depth = 1;
+        self.state.ai_pending_data = waiting;
+        self.state.ai_pending_data_at = Some(std::time::Instant::now());
+        self.state.ai_pending = true;
+        self.state.ai_looking_at = Some(format!("loading {}", notes.join(", ")));
+        self.ai_note(format!("Fetching {} for the analysis…", notes.join(", ")));
+        true
+    }
+
+    /// Re-ask when every requested layer has landed (or the wait timed out).
+    fn pump_ai_data(&mut self) {
+        if self.state.ai_pending_data.is_empty() {
+            return;
+        }
+        let timed_out = self
+            .state
+            .ai_pending_data_at
+            .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(45));
+        let missing: Vec<String> = self
+            .state
+            .ai_pending_data
+            .iter()
+            .filter(|layer| !self.ai_data_ready(layer))
+            .cloned()
+            .collect();
+        if !missing.is_empty() && !timed_out {
+            return;
+        }
+        self.state.ai_pending_data.clear();
+        self.state.ai_pending_data_at = None;
+        self.state.ai_looking_at = None;
+        self.state.ai_data_depth = 1;
+        if !missing.is_empty() {
+            self.ai_note(format!(
+                "Some data did not load ({}); asking with what is available.",
+                missing.join(", ")
+            ));
+        }
+        self.state.ai_pending = true;
+        let question = self.state.ai_question_ctx.clone();
+        let look = self.last_look_samples();
+        self.send_ai(question, look);
+    }
+
+    fn ai_data_ready(&self, layer: &str) -> bool {
+        match layer {
+            "mrms" => self.state.mrms.is_some(),
+            "goes" => self.state.goes.is_some(),
+            "forecast" => self.state.forecast.is_some(),
+            "totals" => !self.state.totals.is_empty(),
+            "spc" => self.state.outlook.is_some(),
+            _ => true,
+        }
     }
 
     /// The NEXRAD whose beam is materially closer to the area than the
@@ -1267,6 +1413,12 @@ impl StormApp {
         if history.last().is_some_and(|(role, _)| role == "user") {
             history.pop();
         }
+        if !look.is_empty() {
+            self.state.ai_last_look = look
+                .iter()
+                .map(|p| (p.label.clone(), p.lat, p.lon, p.radius_mi))
+                .collect();
+        }
         let keep = history.len().saturating_sub(8);
         let history: Vec<(String, String)> = history[keep..].to_vec();
 
@@ -1486,6 +1638,7 @@ impl StormApp {
         self.pump_mrms();
         self.pump_goes();
         self.pump_ai_site();
+        self.pump_ai_data();
         self.handle_input(ui.ctx());
 
         // Texture accounting (debug): the app's GPU-side footprint, and the

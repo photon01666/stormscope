@@ -6,6 +6,11 @@
 !/crates/radar-decode/tests/fixtures/.gitignore
 !/crates/radar-decode/tests/fixtures/download.sh
 
+# Local screenshot scratch (ad-hoc captures used to verify a change must not
+# be committed — the README's deliberate images live under docs/)
+/overlay*.png
+/screenshot*.png
+
 # Editor / OS cruft
 *.swp
 .DS_Store

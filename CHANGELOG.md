@@ -35,7 +35,10 @@ log; entries start at the first public release.
   model, so storm cells with heading/speed/arrival exist; tracks are derived
   on demand from the two newest frames even if the map has not drawn yet. If
   only one scan arrives, explicit motion in warning/MCD text is used, and a
-  missing vector is stated rather than guessed.
+  missing vector is stated rather than guessed. The site switch now fetches
+  that previous scan on purpose (about 5 MB) instead of relying on a cached
+  one, so a fresh station has two frames immediately. Chat history is sent as
+  actual user/assistant role messages.
 - The snapshot now also carries **SRM** when built, the **GOES** pixel
   brightness, spectrum width/differential phase, and an **echo-region
   overview**: connected areas of ≥20 dBZ on the lowest cut, each with its

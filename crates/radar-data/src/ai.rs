@@ -73,10 +73,29 @@ impl AiConfig {
     }
 }
 
-/// Ask the model for a reply. `session` is sent as `x-opencode-session`; Go's
-/// docs ask clients to identify a conversation with a stable value so routing
-/// and prompt caching work.
+/// One previous turn from the app's chat, sent as a real role message so the
+/// model sees an actual conversation (not prose pasted into one prompt).
+#[derive(Debug, Clone)]
+pub struct ChatTurn {
+    pub role: String,
+    pub content: String,
+}
+
+/// Ask the model for a reply with an empty history.
 pub fn complete(config: &AiConfig, system: &str, user: &str, session: &str) -> Result<String> {
+    complete_chat(config, system, &[], user, session)
+}
+
+/// Ask with prior conversation turns. `session` is sent as
+/// `x-opencode-session`; Go's docs ask clients to identify a conversation so
+/// routing and prompt caching work.
+pub fn complete_chat(
+    config: &AiConfig,
+    system: &str,
+    history: &[ChatTurn],
+    user: &str,
+    session: &str,
+) -> Result<String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(120))
         .user_agent(concat!("stormscope/", env!("CARGO_PKG_VERSION")))
@@ -84,10 +103,7 @@ pub fn complete(config: &AiConfig, system: &str, user: &str, session: &str) -> R
         .context("building the AI HTTP client")?;
     let mut body = serde_json::json!({
         "model": config.model.trim(),
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user },
-        ],
+        "messages": messages_json(system, history, user),
         "temperature": 0.35,
         "max_tokens": config.max_tokens.clamp(64, 4096),
     });
@@ -146,6 +162,24 @@ pub fn complete(config: &AiConfig, system: &str, user: &str, session: &str) -> R
             ""
         }
     )
+}
+
+/// system + real prior turns + the current user message.
+fn messages_json(system: &str, history: &[ChatTurn], user: &str) -> serde_json::Value {
+    let mut messages = vec![serde_json::json!({ "role": "system", "content": system })];
+    for turn in history {
+        if turn.content.trim().is_empty() {
+            continue;
+        }
+        let role = if turn.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
+        messages.push(serde_json::json!({ "role": role, "content": turn.content }));
+    }
+    messages.push(serde_json::json!({ "role": "user", "content": user }));
+    serde_json::Value::Array(messages)
 }
 
 struct Failure {
@@ -330,6 +364,27 @@ mod tests {
         let (message, retryable) = reply_text(r#"{"choices":[]}"#).unwrap_err();
         assert!(retryable, "{message}");
         assert!(message.contains("empty"), "{message}");
+    }
+
+    #[test]
+    fn history_is_sent_as_real_role_messages() {
+        let history = vec![
+            ChatTurn {
+                role: "user".into(),
+                content: "what about Wichita?".into(),
+            },
+            ChatTurn {
+                role: "assistant".into(),
+                content: "A line is west of the city.".into(),
+            },
+        ];
+        let messages = messages_json("system", &history, "latest");
+        let array = messages.as_array().expect("array");
+        assert_eq!(array.len(), 4);
+        assert_eq!(array[0]["role"], "system");
+        assert_eq!(array[1]["role"], "user");
+        assert_eq!(array[2]["role"], "assistant");
+        assert_eq!(array[3]["content"], "latest");
     }
 
     #[test]

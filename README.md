@@ -172,7 +172,8 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   away sees the area through a wide, high beam. After the switch it waits for
   a **second scan**, because motion needs two volumes: storm cells then carry
   heading, speed and arrival estimates. If only one scan is available it uses
-  explicit motion in warning/MCD text and says when neither exists.
+  explicit motion in warning/MCD text and says when neither exists. The chat
+  history is sent to the model as real user/assistant turns, not pasted text.
 - **Ask it questions** in a chat transcript: every question and answer stays
   in the window (you can scroll back, copy, clear), follow-ups keep the whole
   conversation in context, and a failed call is retried automatically and kept

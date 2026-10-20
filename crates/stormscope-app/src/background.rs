@@ -568,14 +568,21 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                 DataCmd::AiBrief {
                     config,
                     system,
+                    history,
                     user,
                     session,
                 } => {
                     // The model may take a while; never hold up the data queue.
                     let out = out.clone();
                     std::thread::spawn(move || {
-                        let result = radar_data::ai::complete(&config, &system, &user, &session)
-                            .map_err(|e| format!("{e:#}"));
+                        let turns: Vec<radar_data::ai::ChatTurn> = history
+                            .into_iter()
+                            .map(|(role, content)| radar_data::ai::ChatTurn { role, content })
+                            .collect();
+                        let result = radar_data::ai::complete_chat(
+                            &config, &system, &turns, &user, &session,
+                        )
+                        .map_err(|e| format!("{e:#}"));
                         let _ = out.send(DataMsg::AiBrief(result));
                     });
                 }
@@ -979,7 +986,24 @@ fn prime_site(
         }
     }
 
-    let queue: VecDeque<radar_data::ArchiveVolumeRef> = cached.into_iter().cloned().collect();
+    let mut queue: VecDeque<radar_data::ArchiveVolumeRef> = cached.into_iter().cloned().collect();
+    // Motion needs the scan immediately before the newest. The queue above
+    // only holds volumes already on disk, so a fresh site would otherwise sit
+    // on one frame until the next scan (5 minutes). Fetch that one scan on
+    // purpose: ~5 MB buys an immediate storm-track vector.
+    if let Some(previous) = vols.get(1) {
+        if !is_cached(source, previous)
+            && !queue
+                .iter()
+                .any(|r| r.volume_start == previous.volume_start)
+        {
+            log::info!(
+                "prime {site}: fetching the previous scan ({}) for motion",
+                crate::timefmt::fmt_central(&previous.volume_start)
+            );
+            queue.push_back(previous.clone());
+        }
+    }
     if !queue.is_empty() {
         log::info!(
             "prime {site}: {} scans already on disk, newest {}",

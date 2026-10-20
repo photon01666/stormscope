@@ -146,6 +146,7 @@ pub enum DataCmd {
     AiBrief {
         config: radar_data::ai::AiConfig,
         system: String,
+        history: Vec<(String, String)>,
         user: String,
         session: String,
     },
@@ -1245,30 +1246,31 @@ impl StormApp {
             now: chrono::Utc::now(),
         });
 
-        let mut user = brief.user.clone();
-        let recent: Vec<&AiChatMessage> = self
+        // Real chat turns: the transcript becomes role messages, and the
+        // current question is restated in the final user message.
+        let mut history: Vec<(String, String)> = self
             .state
             .ai_messages
             .iter()
             .filter(|m| m.role != AiRole::Note)
-            .collect();
-        let start = recent.len().saturating_sub(8);
-        let conversation: Vec<String> = recent[start..]
-            .iter()
             .map(|m| {
-                format!(
-                    "{}: {}",
+                (
                     if m.role == AiRole::User {
-                        "Spotter"
+                        "user".to_string()
                     } else {
-                        "Meteorologist"
+                        "assistant".to_string()
                     },
-                    m.text.chars().take(700).collect::<String>()
+                    m.text.chars().take(1200).collect::<String>(),
                 )
             })
             .collect();
-        user.push_str("\n\nConversation so far:\n");
-        user.push_str(&conversation.join("\n\n"));
+        if history.last().is_some_and(|(role, _)| role == "user") {
+            history.pop();
+        }
+        let keep = history.len().saturating_sub(8);
+        let history: Vec<(String, String)> = history[keep..].to_vec();
+
+        let mut user = brief.user.clone();
         if !look.is_empty() {
             let names = look
                 .iter()
@@ -1282,13 +1284,25 @@ impl StormApp {
                  echo and any warnings. Answer from the area, not a single gate."
             ));
         }
-        user.push_str(
-            "\n\nAnswer the latest Spotter message from this snapshot. Above all, SHOW it: \
-             include a MAP directive that puts the evidence on screen (focus the cell/couplet/ \
-             hail core, switch product or tilt, open the 3D pane or a cross-section, show the \
-             melting layer, mark what matters). Keep it under 150 words unless the data demands \
-             more, keep the units, and still end with the \"Watch for:\" line.",
-        );
+        let asked_text = question
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "Write a brief for my {} marker(s).",
+                    self.state.markers.len()
+                )
+            });
+        user.push_str(&format!(
+            "\n\nThe Spotter's latest message: {asked_text}\n\
+             Answer it from this snapshot. Above all, SHOW it: include a MAP directive that puts \
+             the evidence on screen (focus the cell/couplet/hail core, switch product or tilt, \
+             open the 3D pane or a cross-section, show the melting layer, mark what matters). \
+             Keep it under 150 words unless the data demands more, keep the units, and still end \
+             with the \"Watch for:\" line."
+        ));
 
         let session = format!("stormscope-{}", chrono::Utc::now().timestamp_millis());
         if self
@@ -1296,6 +1310,7 @@ impl StormApp {
             .send(DataCmd::AiBrief {
                 config: self.state.ai_config(),
                 system: brief.system,
+                history,
                 user,
                 session,
             })

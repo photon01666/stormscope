@@ -227,7 +227,6 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     );
     let max_h = (screen.y * 0.85).max(320.0);
     let mut open = app.state.ai_open;
-    let chrome_h = app.state.ai_chrome_h;
     let mut brief = false;
     let mut ask: Option<String> = None;
     let mut restore = false;
@@ -249,6 +248,8 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
         .show(ctx, |ui| {
             super::apply_text_scale(ui, text_scale);
             ui.set_min_width(400.0);
+
+            // Header (always visible, even before the key is configured).
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!(
@@ -298,263 +299,236 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                 return;
             }
 
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Write brief")
-                    .on_hover_text("A short now / next-90-minutes report for every marker")
-                    .clicked()
-                    && !app.state.ai_pending
-                {
-                    brief = true;
-                }
-                if app.state.ai_pending {
-                    ui.spinner();
-                }
-                if !app.state.ai_messages.is_empty() && ui.small_button("Clear chat").clicked() {
-                    clear_chat = true;
-                }
-                if !app.state.ai_annotations.is_empty()
-                    && ui
-                        .small_button("Clear marks")
-                        .on_hover_text("Remove the AI's circles from the 2D and 3D maps")
-                        .clicked()
-                {
-                    clear_marks = true;
-                }
-                if let Some(snapshot) = &app.state.ai_snapshot {
-                    ui.label(egui::RichText::new(snapshot).small().weak());
-                }
-            });
-
-            if let Some(actions) = &app.state.ai_actions {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("Map: {actions}"))
-                            .small()
-                            .weak(),
-                    );
-                    if ui
-                        .small_button("Restore previous view")
-                        .on_hover_text("Put the map and 3D pane back the way they were")
-                        .clicked()
-                    {
-                        restore = true;
-                    }
-                    ui.label(egui::RichText::new("(behind this window)").small().weak());
-                });
-            }
-
-            ui.separator();
-            // The transcript fills the window. Use the *current* available
-            // height, not last frame's: with a stale height, shrinking the
-            // window made the content taller than the frame and egui grew it
-            // straight back. Reserve the measured footer (chrome minus what
-            // has been drawn so far).
-            let before_chat = ui.min_rect().height();
-            let footer_h = if chrome_h > before_chat + 20.0 {
-                (chrome_h - before_chat).max(120.0)
-            } else {
-                (220.0 * text_scale).clamp(140.0, 360.0)
-            };
-            let avail = ui.available_height();
-            let screen_h = ctx.content_rect().height();
-            let live = (avail.is_finite() && avail > 80.0 && avail < screen_h * 0.97)
-                .then(|| (avail - footer_h).clamp(80.0, 1400.0));
-            // Also bound by the window's stored size, so an auto-sizing frame
-            // cannot make the chat taller than the frame the user dragged.
-            let stored = ctx
-                .memory(|m| m.area_rect(egui::Id::new("stormscope.ai")))
-                .map(|r| (r.height() - 28.0 * text_scale - chrome_h).clamp(80.0, 1400.0));
-            let computed = match (live, stored) {
-                (Some(live), Some(stored)) => live.min(stored),
-                (Some(live), None) => live,
-                (None, Some(stored)) => stored,
-                (None, None) => (size.y * 0.42).clamp(160.0, 400.0),
-            };
-            // While the user is dragging the window, hold the transcript at
-            // its settled height. Recomputing it every frame made the content
-            // chase the pointer; it fills on release.
-            let pointer_down = ctx.input(|i| i.pointer.any_down());
-            let chat_h = if pointer_down && app.state.ai_chat_last > 1.0 {
-                // May shrink with the window (so a small drag cannot force it
-                // back), but never grows until the drag ends.
-                computed.min(app.state.ai_chat_last)
-            } else {
-                app.state.ai_chat_last = computed;
-                computed
-            };
-            egui::ScrollArea::vertical()
-                .id_salt("stormscope.ai.chat")
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .max_height(chat_h)
+            // Toolbar pinned to the top; transcript in the middle; input at the
+            // bottom. Panels (not a hand-computed transcript height) make a
+            // window drag native and smooth: the scroll area simply fills
+            // whatever space is left.
+            egui::Panel::top("stormscope.ai.toolbar")
+                .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    if app.state.ai_messages.is_empty() {
-                        ui.label(
-                            egui::RichText::new(
-                                "Ask about your markers — or write a brief. Every exchange stays \
-                                 here; the model can move the 2D/3D maps and mark what it means.",
-                            )
-                            .weak(),
-                        );
-                    }
-                    let hidden = app.state.ai_messages.len().saturating_sub(20);
-                    if hidden > 0 {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{hidden} older message{} hidden — Clear chat to reset",
-                                if hidden == 1 { "" } else { "s" }
-                            ))
-                            .small()
-                            .weak(),
-                        );
-                    }
-                    for message in &app.state.ai_messages[hidden..] {
-                        match message.role {
-                            AiRole::User => {
-                                ui.label(
-                                    egui::RichText::new("You")
-                                        .small()
-                                        .strong()
-                                        .color(egui::Color32::from_gray(160)),
-                                );
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(message.text.trim()))
-                                        .selectable(true)
-                                        .wrap(),
-                                );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Write brief")
+                            .on_hover_text("A short now / next-90-minutes report for every marker")
+                            .clicked()
+                            && !app.state.ai_pending
+                        {
+                            brief = true;
+                        }
+                        if app.state.ai_pending {
+                            ui.spinner();
+                        }
+                        if !app.state.ai_messages.is_empty()
+                            && ui.small_button("Clear chat").clicked()
+                        {
+                            clear_chat = true;
+                        }
+                        if !app.state.ai_annotations.is_empty()
+                            && ui
+                                .small_button("Clear marks")
+                                .on_hover_text("Remove the AI's circles from the 2D and 3D maps")
+                                .clicked()
+                        {
+                            clear_marks = true;
+                        }
+                        if let Some(snapshot) = &app.state.ai_snapshot {
+                            ui.label(egui::RichText::new(snapshot).small().weak());
+                        }
+                    });
+                    if let Some(actions) = &app.state.ai_actions {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("Map: {actions}"))
+                                    .small()
+                                    .weak(),
+                            );
+                            if ui
+                                .small_button("Restore previous view")
+                                .on_hover_text("Put the map and 3D pane back the way they were")
+                                .clicked()
+                            {
+                                restore = true;
                             }
-                            AiRole::Assistant => {
-                                ui.label(
-                                    egui::RichText::new("Meteorologist")
-                                        .small()
-                                        .strong()
-                                        .color(egui::Color32::from_rgb(120, 200, 255)),
-                                );
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(clean_report(
-                                        &message.text,
-                                    )))
-                                    .selectable(true)
-                                    .wrap(),
-                                );
-                                if ui.small_button("Copy").clicked() {
-                                    ui.ctx().copy_text(clean_report(&message.text));
-                                }
-                            }
-                            AiRole::Note => {
-                                let color = if message.text.starts_with("Request failed") {
-                                    egui::Color32::from_rgb(240, 120, 110)
-                                } else {
-                                    egui::Color32::from_gray(160)
-                                };
-                                ui.colored_label(color, &message.text);
+                            ui.label(egui::RichText::new("(behind this window)").small().weak());
+                        });
+                    }
+                    ui.add_space(2.0);
+                });
+
+            egui::Panel::bottom("stormscope.ai.footer")
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    ui.separator();
+                    if !app.state.ai_pending
+                        && app.state.ai_messages.last().is_some_and(|m| {
+                            m.role == AiRole::Note && m.text.starts_with("Request failed")
+                        })
+                        && ui.button("Retry").clicked()
+                    {
+                        retry = true;
+                    }
+                    ui.horizontal(|ui| {
+                        let hint = "Ask the meteorologist — e.g. \"is the hail core going to hit the \
+                                    north pin?\"";
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut app.state.ai_question)
+                                .desired_width((ui.available_width() - 72.0).max(100.0))
+                                .hint_text(hint),
+                        );
+                        let submit = response.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            && !app.state.ai_pending;
+                        if (ui.button("Ask").clicked() || submit) && !app.state.ai_pending {
+                            let question = app.state.ai_question.trim().to_string();
+                            if !question.is_empty() {
+                                ask = Some(question);
                             }
                         }
-                        ui.add_space(7.0);
-                    }
-                    if app.state.ai_pending {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            if let Some(looking) = &app.state.ai_looking_at {
-                                ui.label(
-                                    egui::RichText::new(format!("Looking at {looking}…")).weak(),
-                                );
-                            } else {
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Show me:").small().weak());
+                        if ui
+                            .small_button("the worst hazard")
+                            .on_hover_text("Point the map at the most dangerous feature and explain it")
+                            .clicked()
+                            && !app.state.ai_pending
+                        {
+                            ask = Some(
+                                "Show me the worst hazard right now on the map and explain what I am \
+                                 looking at."
+                                    .into(),
+                            );
+                        }
+                        if ui
+                            .small_button("the 3D structure")
+                            .on_hover_text("Open the 3D pane on the most dangerous cell")
+                            .clicked()
+                            && !app.state.ai_pending
+                        {
+                            ask = Some(
+                                "Show me the 3D structure of the most dangerous cell, with a \
+                                 cross-section if it helps, and explain it."
+                                    .into(),
+                            );
+                        }
+                        if ui
+                            .small_button("what happens next")
+                            .on_hover_text("Focus the storm that arrives next and show its motion")
+                            .clicked()
+                            && !app.state.ai_pending
+                        {
+                            ask = Some(
+                                "Show me on the map what happens in the next 60 minutes at my markers."
+                                    .into(),
+                            );
+                        }
+                    });
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Sends decoded radar samples, coordinates, alerts and forecast text to {}. \
+                             No screenshot is taken, no image is sent, no session history.",
+                            short_host(&app.state.ai_base_url)
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                });
+
+            egui::CentralPanel::no_frame().show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("stormscope.ai.chat")
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if app.state.ai_messages.is_empty() {
                                 ui.label(
                                     egui::RichText::new(
-                                        "Sampling the radar, warnings and forecast…",
+                                        "Ask about your markers — or write a brief. Every exchange \
+                                         stays here; the model can move the 2D/3D maps and mark \
+                                         what it means.",
                                     )
                                     .weak(),
                                 );
                             }
+                            let hidden = app.state.ai_messages.len().saturating_sub(20);
+                            if hidden > 0 {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{hidden} older message{} hidden — Clear chat to reset",
+                                        if hidden == 1 { "" } else { "s" }
+                                    ))
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                            for message in &app.state.ai_messages[hidden..] {
+                                match message.role {
+                                    AiRole::User => {
+                                        ui.label(
+                                            egui::RichText::new("You")
+                                                .small()
+                                                .strong()
+                                                .color(egui::Color32::from_gray(160)),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(egui::RichText::new(
+                                                message.text.trim(),
+                                            ))
+                                            .selectable(true)
+                                            .wrap(),
+                                        );
+                                    }
+                                    AiRole::Assistant => {
+                                        ui.label(
+                                            egui::RichText::new("Meteorologist")
+                                                .small()
+                                                .strong()
+                                                .color(egui::Color32::from_rgb(120, 200, 255)),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(egui::RichText::new(clean_report(
+                                                &message.text,
+                                            )))
+                                            .selectable(true)
+                                            .wrap(),
+                                        );
+                                        if ui.small_button("Copy").clicked() {
+                                            ui.ctx().copy_text(clean_report(&message.text));
+                                        }
+                                    }
+                                    AiRole::Note => {
+                                        let color = if message.text.starts_with("Request failed") {
+                                            egui::Color32::from_rgb(240, 120, 110)
+                                        } else {
+                                            egui::Color32::from_gray(160)
+                                        };
+                                        ui.colored_label(color, &message.text);
+                                    }
+                                }
+                                ui.add_space(7.0);
+                            }
+                            if app.state.ai_pending {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    if let Some(looking) = &app.state.ai_looking_at {
+                                        ui.label(
+                                            egui::RichText::new(format!("Looking at {looking}…"))
+                                                .weak(),
+                                        );
+                                    } else {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "Sampling the radar, warnings and forecast…",
+                                            )
+                                            .weak(),
+                                        );
+                                    }
+                                });
+                            }
                         });
-                    }
                 });
-            let transcript_h = (ui.min_rect().height() - before_chat).max(0.0);
-
-            if !app.state.ai_pending
-                && app
-                    .state
-                    .ai_messages
-                    .last()
-                    .is_some_and(|m| m.role == AiRole::Note && m.text.starts_with("Request failed"))
-            {
-                if ui.button("Retry").clicked() {
-                    retry = true;
-                }
-            }
-
-            ui.horizontal(|ui| {
-                let hint = "Ask the meteorologist — e.g. \"is the hail core going to hit the \
-                            north pin?\"";
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut app.state.ai_question)
-                        .desired_width((ui.available_width() - 72.0).max(100.0))
-                        .hint_text(hint),
-                );
-                let submit = response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && !app.state.ai_pending;
-                if (ui.button("Ask").clicked() || submit) && !app.state.ai_pending {
-                    let question = app.state.ai_question.trim().to_string();
-                    if !question.is_empty() {
-                        ask = Some(question);
-                    }
-                }
-            });
-
-            ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new("Show me:").small().weak());
-                if ui
-                    .small_button("the worst hazard")
-                    .on_hover_text("Point the map at the most dangerous feature and explain it")
-                    .clicked()
-                    && !app.state.ai_pending
-                {
-                    ask = Some(
-                        "Show me the worst hazard right now on the map and explain what I am \
-                         looking at."
-                            .into(),
-                    );
-                }
-                if ui
-                    .small_button("the 3D structure")
-                    .on_hover_text("Open the 3D pane on the most dangerous cell")
-                    .clicked()
-                    && !app.state.ai_pending
-                {
-                    ask = Some(
-                        "Show me the 3D structure of the most dangerous cell, with a \
-                         cross-section if it helps, and explain it."
-                            .into(),
-                    );
-                }
-                if ui
-                    .small_button("what happens next")
-                    .on_hover_text("Focus the storm that arrives next and show its motion")
-                    .clicked()
-                    && !app.state.ai_pending
-                {
-                    ask = Some(
-                        "Show me on the map what happens in the next 60 minutes at my markers."
-                            .into(),
-                    );
-                }
-            });
-
-            ui.add_space(2.0);
-            ui.label(
-                egui::RichText::new(format!(
-                    "Sends decoded radar samples, coordinates, alerts and forecast text to {}. \
-                     No screenshot is taken, no image is sent, no session history.",
-                    short_host(&app.state.ai_base_url)
-                ))
-                .small()
-                .weak(),
-            );
-            app.state.ai_chrome_h = (ui.min_rect().height() - transcript_h).clamp(120.0, 1200.0);
         });
     app.state.ai_open = open;
     if brief {

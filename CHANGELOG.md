@@ -3,6 +3,44 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## Unreleased
+
+**AI meteorologist (optional)**
+- A **Meteorologist** window: one short now / next-90-minutes brief for every
+  marker on the map, built from a compact snapshot of what the app already
+  sees — the sampled radar column at each pin (surface gates, column max,
+  VIL/echo tops/MEHS, HCA, snow rate, melting level), warnings containing or
+  near it, tracked cells with arrival estimates, spotter reports, SPC
+  outlook/MCD context, station totals and the NWS forecast.
+- **Ask questions** about the brief ("is the hail core going to hit the north
+  pin?"); follow-ups keep the previous answer in context and are answered from
+  the same snapshot.
+- **It can look before it speaks**: a question about a place with no marker
+  ("is it raining in Wichita?") gets a `LOOK:` round-trip — the app samples
+  radar, MRMS, satellite and warnings at those coordinates, moves the map
+  there, and sends a second snapshot. The report window shows "Looking at …"
+  while that runs.
+- The snapshot now also carries **SRM** when built and the **GOES** pixel
+  brightness at each point. It is decoded data throughout: no screenshot is
+  taken or sent.
+- **It shows, not just tells**: a reply can carry a whitelisted `MAP:`
+  directive that pans/zooms the 2D map, switches product and tilt, opens the
+  3D pane, sets the camera, cuts a cross-section, or shows the 0 °C level.
+  It can also **mark the maps**: labelled circles for a suspected tornado
+  under a warning, a hail core or a wind threat, and altitude-tagged marks
+  drawn as a pole with a ring at that height in the 3D pane (updraft tops and
+  other 3D-only features). The window reports what changed and offers
+  one-click *Restore previous view* and *Clear marks*.
+- The opener is a chip at the **bottom-left of the 2D map**.
+- Settings → **AI meteorologist…** is pre-filled for **OpenCode Go**
+  (`https://opencode.ai/inference/go/v1`, `deepseek-v4.1-flash`); paste the API
+  key there (or use `OPENCODE_API_KEY`). OpenAI and local Ollama/LM Studio
+  endpoints work too, with a connection test.
+- Off until configured; requests are sent only when you press *Write brief* /
+  *Ask*, and contain the JSON snapshot only (no images or history). The key is
+  stored only if you tick "remember", in `ai.json` (0600), and never leaves the
+  machine except to the endpoint you set.
+
 ## v1.4.6 — 2026-10-20
 
 **Winter analysis: hydrometeor classification, snow rate, the 0 °C level**

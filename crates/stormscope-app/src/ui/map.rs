@@ -752,6 +752,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- User-placed pins (above radar + warnings, below measure tool) ---
     draw_markers(&painter, origin, &view, app);
 
+    // --- AI marks: suspected tornado, hail core, updraft (above pins) ----
+    draw_ai_annotations(&painter, origin, &view, app);
+
     // --- Storm report dots (small precise targets, on top) ----------------
     super::reports::draw_lsrs(&painter, origin, &view, app);
 
@@ -3012,6 +3015,42 @@ fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
             &label,
             egui::FontId::proportional(14.0),
             amber,
+        );
+    }
+}
+
+/// The model's marks: a labelled circle at the ground position, with the
+/// altitude appended when the feature belongs in 3D.
+fn draw_ai_annotations(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+) {
+    for annotation in &app.state.ai_annotations {
+        let (x, y) = view.lonlat_to_view_px(annotation.lon, annotation.lat);
+        let center = egui::pos2(origin.x + x as f32, origin.y + y as f32);
+        let mpp = radar_render::meters_per_pixel(annotation.lat, view.zoom).max(1.0);
+        let radius_px = (annotation.radius_mi * 1609.344 / mpp).clamp(4.0, 400.0) as f32;
+        let color = egui::Color32::from_rgb(
+            annotation.kind.rgb()[0],
+            annotation.kind.rgb()[1],
+            annotation.kind.rgb()[2],
+        );
+        painter.circle_filled(center, radius_px, color.gamma_multiply(0.16));
+        painter.circle_stroke(center, radius_px, egui::Stroke::new(1.8, color));
+        painter.circle_filled(center, 3.0, color);
+        let mut label = annotation.label.clone();
+        if annotation.alt_kft > 0.5 {
+            label.push_str(&format!(" · {:.0}k ft", annotation.alt_kft));
+        }
+        draw_tag_label(
+            painter,
+            egui::pos2(center.x + radius_px + 6.0, center.y - 6.0),
+            egui::Align2::LEFT_BOTTOM,
+            &label,
+            egui::FontId::proportional(13.0),
+            color,
         );
     }
 }

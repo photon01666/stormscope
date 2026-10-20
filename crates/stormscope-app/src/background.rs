@@ -565,6 +565,33 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                         tiles: cached_sizes.1,
                     });
                 }
+                DataCmd::AiBrief {
+                    config,
+                    system,
+                    user,
+                    session,
+                } => {
+                    // The model may take a while; never hold up the data queue.
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let result = radar_data::ai::complete(&config, &system, &user, &session)
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = out.send(DataMsg::AiBrief(result));
+                    });
+                }
+                DataCmd::AiTest { config } => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let result = radar_data::ai::complete(
+                            &config,
+                            "You are a connectivity test.",
+                            "Reply with exactly: connected",
+                            "stormscope-ai-test",
+                        )
+                        .map_err(|e| format!("{e:#}"));
+                        let _ = out.send(DataMsg::AiTest(result));
+                    });
+                }
                 DataCmd::Shutdown => break,
             },
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}

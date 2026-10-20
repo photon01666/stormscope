@@ -783,6 +783,73 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         );
     }
 
+    // --- AI marks: the ground ring, plus an altitude pole in 3D -----------
+    // A suspected tornado is a ground circle; a hail core or updraft top gets
+    // a pole to its `alt_kft`, which is exactly the thing 2D cannot show.
+    for annotation in &app.state.ai_annotations {
+        let x = ((annotation.lon - site.longitude) * 111.32 * cos_lat) as f32;
+        let y = ((annotation.lat - site.latitude) * 110.574) as f32;
+        if (x * x + y * y).sqrt() > max_r.max(1.0) * 1.2 {
+            continue;
+        }
+        let color = Color32::from_rgb(
+            annotation.kind.rgb()[0],
+            annotation.kind.rgb()[1],
+            annotation.kind.rgb()[2],
+        );
+        let radius_km = annotation.radius_mi as f32 * KM_PER_MILE;
+        let mut ring = Vec::with_capacity(25);
+        for step in 0..=24 {
+            let angle = step as f32 / 24.0 * std::f32::consts::TAU;
+            let world = [
+                x + radius_km * angle.sin(),
+                y + radius_km * angle.cos(),
+                0.0,
+            ];
+            match project(world) {
+                Some(ndc) => ring.push(ndc_to_screen(ndc)),
+                None => {
+                    ring.clear();
+                    break;
+                }
+            }
+        }
+        if ring.len() >= 4 {
+            painter.add(egui::Shape::closed_line(ring, Stroke::new(1.6, color)));
+        }
+        let Some(ground_ndc) = project([x, y, 0.0]) else {
+            continue;
+        };
+        let ground = ndc_to_screen(ground_ndc);
+        let top_km = annotation.alt_kft.max(0.0) / 3.280_84;
+        let top = if top_km > 0.05 {
+            project([x, y, top_km * ve]).map(ndc_to_screen)
+        } else {
+            None
+        };
+        if let Some(top) = top {
+            painter.line_segment([ground, top], Stroke::new(1.8, color));
+            painter.circle_stroke(top, 4.5, Stroke::new(1.6, color));
+            painter.circle_filled(top, 1.8, color);
+            painter.text(
+                top + Vec2::new(7.0, -4.0),
+                Align2::LEFT_BOTTOM,
+                &annotation.label,
+                FontId::proportional(12.0 * scale),
+                color,
+            );
+        } else {
+            painter.circle_filled(ground, 3.0, color);
+            painter.text(
+                ground + Vec2::new(7.0, -4.0),
+                Align2::LEFT_BOTTOM,
+                &annotation.label,
+                FontId::proportional(12.0 * scale),
+                color,
+            );
+        }
+    }
+
     // --- Data probe: the echo under the cursor ----------------------------
     // The camera works in *display* space (Z exaggerated), so the ray is
     // un-exaggerated before marching the physical volume; the hit is

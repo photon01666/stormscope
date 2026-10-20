@@ -184,6 +184,65 @@ pub enum PaneMax {
     View3d,
 }
 
+/// What an AI map mark means; drives its colour and where it reads best.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiAnnotationKind {
+    Tornado,
+    Hail,
+    Wind,
+    Flood,
+    /// An updraft / storm-top feature that only makes sense in 3D.
+    Updraft,
+    Generic,
+}
+
+impl AiAnnotationKind {
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            AiAnnotationKind::Tornado => [255, 90, 180],
+            AiAnnotationKind::Hail => [255, 175, 60],
+            AiAnnotationKind::Wind => [255, 225, 90],
+            AiAnnotationKind::Flood => [80, 220, 150],
+            AiAnnotationKind::Updraft => [120, 200, 255],
+            AiAnnotationKind::Generic => [200, 200, 200],
+        }
+    }
+}
+
+/// A mark the AI put on the maps: a labelled circle on the 2D map and a ring
+/// (plus an altitude pole in 3D) in the volume pane.
+#[derive(Debug, Clone)]
+pub struct AiAnnotation {
+    pub lat: f64,
+    pub lon: f64,
+    /// Circle radius on the ground, miles.
+    pub radius_mi: f64,
+    /// Height of the feature (kft AGL); 0 = surface. 3D-only features use this.
+    pub alt_kft: f32,
+    pub label: String,
+    pub kind: AiAnnotationKind,
+}
+
+/// The view the AI is allowed to change, captured before a `MAP:` manoeuvre
+/// so the report window can put everything back.
+#[derive(Debug, Clone)]
+pub struct AiViewSaved {
+    pub center_lat: f64,
+    pub center_lon: f64,
+    pub zoom: f64,
+    pub moment: Moment,
+    pub tilt_deg: f32,
+    pub view3d_open: bool,
+    pub pane_max: PaneMax,
+    pub view3d_yaw: f32,
+    pub view3d_pitch: f32,
+    pub view3d_dist_km: f32,
+    pub view3d_ve: f32,
+    pub view3d_section: bool,
+    pub view3d_section_az: f32,
+    pub show_melting_layer: bool,
+}
+
 /// One frame in the animation ring.
 pub struct Frame {
     pub volume_start: DateTime<Utc>,
@@ -526,6 +585,51 @@ pub struct AppState {
     /// expand taps. Rewritten every frame the bubble draws.
     pub measure_bubble_rect: Option<egui::Rect>,
 
+    // AI meteorologist. Optional and off until configured: the report window
+    // sends one compact JSON snapshot to an OpenAI-compatible endpoint (default
+    // OpenCode Go, `deepseek-v4.1-flash`) and shows the model's short brief.
+    pub ai_open: bool,
+    /// Shrink the report to a small bar so the map the model moved stays visible.
+    pub ai_compact: bool,
+    /// The Settings → "AI meteorologist…" popup (endpoint/model/key).
+    pub ai_settings_open: bool,
+    pub ai_base_url: String,
+    pub ai_model: String,
+    pub ai_api_key: String,
+    /// Reveal the key field instead of drawing dots.
+    pub ai_show_key: bool,
+    /// Persist the key in `ai.json` (0600). Off by default.
+    pub ai_remember_key: bool,
+    /// A request is in flight (one at a time).
+    pub ai_pending: bool,
+    pub ai_error: Option<String>,
+    pub ai_report: Option<String>,
+    /// The spotter's question the current answer belongs to (`None` = the
+    /// automatic marker brief).
+    pub ai_last_question: Option<String>,
+    /// Draft of the "Ask the meteorologist" box (persists across frames).
+    pub ai_question: String,
+    /// The question the current request chain is answering (survives the
+    /// LOOK round-trip).
+    pub ai_question_ctx: Option<String>,
+    /// 0 = no look yet; 1 = the follow-up snapshot after a LOOK request.
+    pub ai_look_depth: u8,
+    /// Places the model asked to sample before answering ("Wichita").
+    pub ai_looking_at: Option<String>,
+    /// What the current report was built from ("KTWX 12:04Z · 3 markers").
+    pub ai_snapshot: Option<String>,
+    pub ai_generated_at: Option<std::time::Instant>,
+    pub ai_test_pending: bool,
+    pub ai_test_status: Option<String>,
+    /// What the model changed on the map ("VEL · 3D split · slice 90°"), if the
+    /// last answer carried a `MAP:` directive.
+    pub ai_actions: Option<String>,
+    /// The view from before that manoeuvre, for "Restore previous view".
+    pub ai_view_before: Option<AiViewSaved>,
+    /// Marks the model placed on the 2D and 3D maps (a suspected tornado, a
+    /// hail core, an updraft top…). Replaced by each answer that marks.
+    pub ai_annotations: Vec<AiAnnotation>,
+
     /// Playhead advance accumulator for LoopState::Playing.
     _acc: f32,
 }
@@ -535,6 +639,26 @@ impl Default for AppState {
         // Scripted screenshots: `STORMSCOPE_LAYERS=mrms,goes` opens the data
         // overlays at launch, the same spirit as `STORMSCOPE_3D_OPEN`.
         let layers = std::env::var("STORMSCOPE_LAYERS").unwrap_or_default();
+        // AI endpoint: the Settings popup's saved values, seeded by the
+        // environment. The base URL and model default to OpenCode Go
+        // (`deepseek-v4.1-flash`); the key is left for the user to paste.
+        let ai = load_ai_prefs();
+        let ai_base_url = std::env::var("STORMSCOPE_AI_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or(ai.base_url.clone())
+            .unwrap_or_else(|| radar_data::ai::OPENCODE_GO_BASE.to_string());
+        let ai_model = std::env::var("STORMSCOPE_AI_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or(ai.model.clone())
+            .unwrap_or_else(|| radar_data::ai::OPENCODE_GO_MODEL.to_string());
+        let ai_api_key = std::env::var(radar_data::ai::OPENCODE_GO_KEY_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| std::env::var("STORMSCOPE_AI_KEY").ok())
+            .or(ai.api_key.clone())
+            .unwrap_or_default();
         let site = radar_core::sites::site(radar_core::DEFAULT_SITE)
             .unwrap_or_else(|| radar_core::sites::SITES.first().expect("site catalog"));
         Self {
@@ -711,20 +835,73 @@ impl Default for AppState {
             measure_label_offset: None,
             measure_expanded: false,
             measure_bubble_rect: None,
+            ai_open: false,
+            ai_compact: false,
+            ai_settings_open: false,
+            ai_base_url,
+            ai_model,
+            ai_api_key,
+            ai_show_key: false,
+            ai_remember_key: ai.remember_key.unwrap_or(ai.api_key.is_some()),
+            ai_pending: false,
+            ai_error: None,
+            ai_report: None,
+            ai_last_question: None,
+            ai_question: String::new(),
+            ai_question_ctx: None,
+            ai_look_depth: 0,
+            ai_looking_at: None,
+            ai_snapshot: None,
+            ai_generated_at: None,
+            ai_test_pending: false,
+            ai_test_status: None,
+            ai_actions: None,
+            ai_view_before: None,
+            ai_annotations: Vec::new(),
             _acc: 0.0,
         }
     }
 }
 
-/// `~/.config/stormscope/markers.json`, where user pins are persisted.
-fn markers_path() -> std::path::PathBuf {
+/// `~/.config/stormscope`, where the app's own small JSON files live.
+fn config_dir() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
                 .join(".config")
         });
-    base.join("stormscope").join("markers.json")
+    base.join("stormscope")
+}
+
+/// `~/.config/stormscope/markers.json`, where user pins are persisted.
+fn markers_path() -> std::path::PathBuf {
+    config_dir().join("markers.json")
+}
+
+/// `~/.config/stormscope/ai.json`: endpoint, model and (only with the
+/// "remember" box ticked) the API key.
+fn ai_path() -> std::path::PathBuf {
+    config_dir().join("ai.json")
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct AiPrefs {
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    remember_key: Option<bool>,
+}
+
+fn load_ai_prefs() -> AiPrefs {
+    match std::fs::read_to_string(ai_path()) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => AiPrefs::default(),
+    }
 }
 
 fn load_markers() -> Vec<MapMarker> {
@@ -752,6 +929,53 @@ impl AppState {
                 }
             }
             Err(e) => log::warn!("markers serialize: {e}"),
+        }
+    }
+
+    /// Write the AI endpoint configuration. The key is only written when the
+    /// user ticked "remember"; the file is created 0600 either way.
+    pub fn persist_ai(&self) {
+        let prefs = AiPrefs {
+            base_url: Some(self.ai_base_url.clone()),
+            model: Some(self.ai_model.clone()),
+            api_key: self.ai_remember_key.then(|| self.ai_api_key.clone()),
+            remember_key: Some(self.ai_remember_key),
+        };
+        let Ok(json) = serde_json::to_string_pretty(&prefs) else {
+            return;
+        };
+        let path = ai_path();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("AI settings dir: {e}");
+                return;
+            }
+        }
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(json.as_bytes()) {
+                    log::warn!("AI settings write: {e}");
+                }
+            }
+            Err(e) => log::warn!("AI settings open: {e}"),
+        }
+    }
+
+    /// The RadioSite-independent AI config the background worker needs.
+    pub fn ai_config(&self) -> radar_data::ai::AiConfig {
+        radar_data::ai::AiConfig {
+            base_url: self.ai_base_url.clone(),
+            model: self.ai_model.clone(),
+            api_key: self.ai_api_key.clone(),
+            ..Default::default()
         }
     }
 

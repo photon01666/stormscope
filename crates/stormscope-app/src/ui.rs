@@ -4,7 +4,8 @@ use crate::app::StormApp;
 use crate::state::{Mode, PaneMax};
 use radar_core::Moment;
 
-mod alerts;
+mod ai;
+pub(crate) mod alerts;
 mod forecast;
 mod map;
 mod reports;
@@ -57,6 +58,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // NOAA detail popup for one alert (browser "Details", or a map click on a
     // warning polygon).
     alerts::alert_detail_popup(ui.ctx(), app);
+
+    // AI meteorologist: the optional brief / question window and its settings.
+    ai::ai_windows(ui.ctx(), app);
 
     // NWS forecast window (station by default, or a point picked on the map).
     forecast::forecast_window(ui.ctx(), app);
@@ -171,6 +175,7 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             if controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
+            ai_chip(ui, full, app, scale);
         }
         // The 3D pane maximized: volume fills the middle, "Split" brings the
         // map back and "Fit" re-frames the camera.
@@ -222,6 +227,7 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             if controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
+            ai_chip(ui, full, app, scale);
         }
         // Side-by-side split with a draggable divider.
         (true, PaneMax::None) => {
@@ -261,6 +267,7 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
 
             crate::ui::volume3d::show_pane(ui, app, v3_rect);
 
+            ai_chip(ui, map_rect, app, scale);
             let map_max = pane_chip(
                 ui,
                 egui::pos2(map_rect.max.x - 8.0 * scale, chip_y(map_rect)),
@@ -334,6 +341,45 @@ fn pane_chip_bottom(
         egui::Button::new(egui::RichText::new(label).small())
             .fill(egui::Color32::from_black_alpha(170)),
     )
+}
+
+/// Like [`pane_chip_bottom`], but pinned by its bottom-left corner.
+fn pane_chip_bottom_left(
+    ui: &mut egui::Ui,
+    left_bottom: egui::Pos2,
+    label: &str,
+    scale: f32,
+) -> egui::Response {
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE);
+    let size = galley.size() + egui::vec2(16.0 * scale, 9.0 * scale);
+    let rect = egui::Rect::from_min_size(egui::pos2(left_bottom.x, left_bottom.y - size.y), size);
+    ui.put(
+        rect,
+        egui::Button::new(egui::RichText::new(label).small())
+            .fill(egui::Color32::from_black_alpha(170)),
+    )
+}
+
+/// The AI meteorologist opener, bottom-left of whichever 2D map is on screen.
+fn ai_chip(ui: &mut egui::Ui, rect: egui::Rect, app: &mut StormApp, scale: f32) {
+    let chip = pane_chip_bottom_left(
+        ui,
+        egui::pos2(rect.min.x + 8.0 * scale, rect.max.y - 8.0 * scale),
+        "AI Meteorologist",
+        scale,
+    )
+    .on_hover_text(
+        "An AI meteorologist writes a short now / next-90-minutes brief for every marker, \
+         answers questions, and can move the 2D/3D maps to show its answer. Configure the \
+         endpoint in Settings → AI meteorologist.",
+    );
+    if chip.clicked() {
+        log::debug!("AI meteorologist window opened from the map chip");
+        app.state.ai_open = true;
+    }
 }
 
 /// Place a controls window near the matching pane's bottom-right, clamped
@@ -1815,6 +1861,21 @@ fn settings_menu(ui: &mut egui::Ui, app: &mut StormApp) {
             })
             .weak()
             .small(),
+        );
+        ui.separator();
+        ui.label(egui::RichText::new("AI").strong());
+        ui.add_space(4.0);
+        if ui
+            .button("AI meteorologist…")
+            .on_hover_text("Configure the endpoint, model and API key for the brief")
+            .clicked()
+        {
+            app.state.ai_settings_open = true;
+        }
+        ui.label(
+            egui::RichText::new("OpenCode Go · deepseek-v4.1-flash by default")
+                .weak()
+                .small(),
         );
     });
 }

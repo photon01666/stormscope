@@ -58,6 +58,10 @@ pub enum DataMsg {
     Goes {
         images: Vec<Arc<radar_data::goes::GoesImage>>,
     },
+    /// The AI meteorologist's reply, or the error to show in its window.
+    AiBrief(Result<String, String>),
+    /// Result of the Settings popup's connectivity test.
+    AiTest(Result<String, String>),
     /// One historical warning's raw NWS product text (`None` = the fetch
     /// failed; an Error message accompanies it).
     ArchiveText {
@@ -136,6 +140,18 @@ pub enum DataCmd {
     LoadOutlookDiscussion(u8),
     /// Fetch the NWS gridpoint forecast for a coordinate.
     LoadForecast(f64, f64),
+    /// Ask the AI meteorologist for a brief or an answer (spawned on its own
+    /// thread so a slow model never holds up the data coordinator).
+    AiBrief {
+        config: radar_data::ai::AiConfig,
+        system: String,
+        user: String,
+        session: String,
+    },
+    /// Connectivity test for the Settings popup.
+    AiTest {
+        config: radar_data::ai::AiConfig,
+    },
     /// Delete every downloaded radar volume from disk (`l2/`).
     ClearRadar,
     /// Delete every cached basemap tile from disk (`tiles/`).
@@ -620,6 +636,34 @@ impl StormApp {
                     }
                     self.state.goes = Some((images, std::time::Instant::now()));
                 }
+                DataMsg::AiBrief(result) => match result {
+                    Ok(reply) => {
+                        let (prose, action, look) = crate::ai_actions::split_reply(&reply);
+                        let can_look = self.state.ai_look_depth == 0;
+                        let looked = can_look && look.is_some_and(|look| self.ai_look(look));
+                        if !looked {
+                            self.ai_finish(prose, action);
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("AI meteorologist: {error}");
+                        self.state.ai_pending = false;
+                        self.state.ai_look_depth = 0;
+                        self.state.ai_looking_at = None;
+                        self.state.ai_error = Some(error);
+                    }
+                },
+                DataMsg::AiTest(result) => {
+                    self.state.ai_test_pending = false;
+                    self.state.ai_test_status = Some(match result {
+                        Ok(reply) => format!(
+                            "Connected — {} replied: {}",
+                            self.state.ai_model,
+                            reply.chars().take(80).collect::<String>()
+                        ),
+                        Err(error) => format!("Failed: {error}"),
+                    });
+                }
                 DataMsg::Srm { key, volume } => {
                     if self.state.srm_pending == Some(key) {
                         self.state.srm_pending = None;
@@ -767,6 +811,243 @@ impl StormApp {
     /// Keep the MRMS mosaic fresh while its layer is on: fetch the newest
     /// composite on first enable and every ten minutes after (the product
     /// updates every two, but the overlay is context, not a warning feed).
+    /// Build a fresh snapshot and ask the AI. `question` = None writes the
+    /// marker brief; Some(_) answers the spotter's question against the same
+    /// data. One request chain at a time (a LOOK round may add one more call).
+    pub fn ai_request(&mut self, question: Option<String>) {
+        if self.state.ai_pending {
+            return;
+        }
+        let asked = question.filter(|q| !q.trim().is_empty());
+        self.state.ai_question_ctx = asked.clone();
+        self.state.ai_look_depth = 0;
+        self.state.ai_looking_at = None;
+        self.send_ai(asked, Vec::new());
+    }
+
+    /// The first half of a LOOK round: sample the places the model named,
+    /// centre the map on the first one, and ask again with the extra data.
+    /// Returns false when the request had no usable points.
+    fn ai_look(&mut self, look: crate::ai_actions::LookRequest) -> bool {
+        let points: Vec<(String, f64, f64)> = look
+            .points
+            .iter()
+            .take(3)
+            .filter(|p| {
+                p.lat.is_finite()
+                    && p.lon.is_finite()
+                    && (-85.0..=85.0).contains(&p.lat)
+                    && (-180.0..=180.0).contains(&p.lon)
+            })
+            .map(|p| {
+                (
+                    p.label
+                        .clone()
+                        .filter(|l| !l.trim().is_empty())
+                        .unwrap_or_else(|| format!("{:.2}, {:.2}", p.lat, p.lon)),
+                    p.lat,
+                    p.lon,
+                )
+            })
+            .collect();
+        if points.is_empty() {
+            return false;
+        }
+        let names = points
+            .iter()
+            .map(|(label, _, _)| label.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::info!("AI meteorologist looks at: {names}");
+        // Show where it is looking while the second call runs (and keep the
+        // previous view restorable). The product comes from the LOOK request.
+        let action = crate::ai_actions::MapAction {
+            center_lat: Some(points[0].1),
+            center_lon: Some(points[0].2),
+            zoom: Some(9.0),
+            product: look.product.clone(),
+            ..Default::default()
+        };
+        let _ = crate::ai_actions::apply(&action, &mut self.state);
+        self.state.ai_actions = Some(format!("looking at {names}"));
+        self.state.ai_looking_at = Some(names);
+        self.state.ai_look_depth = 1;
+        self.state.ai_pending = true;
+        self.state.ai_error = None;
+        let question = self.state.ai_question_ctx.clone();
+        self.send_ai(question, points);
+        true
+    }
+
+    /// Display a final reply (after any LOOK round) and apply its map move.
+    fn ai_finish(&mut self, prose: String, action: Option<crate::ai_actions::MapAction>) {
+        self.state.ai_pending = false;
+        self.state.ai_look_depth = 0;
+        self.state.ai_looking_at = None;
+        self.state.ai_report = Some(prose);
+        self.state.ai_generated_at = Some(std::time::Instant::now());
+        self.state.ai_actions = None;
+        if let Some(action) = action {
+            let summary = crate::ai_actions::apply(&action, &mut self.state);
+            if !summary.is_empty() {
+                log::info!("AI view: {summary}");
+                self.state.ai_actions = Some(summary);
+            }
+        }
+    }
+
+    /// Build the snapshot (optionally with the LOOK samples), compose the
+    /// prompts and send the request. Callers own the pending flags.
+    fn send_ai(&mut self, question: Option<String>, look: Vec<(String, f64, f64)>) {
+        if self.state.markers.is_empty() {
+            self.state.ai_error = Some("Place at least one marker on the map first.".into());
+            self.state.ai_pending = false;
+            return;
+        }
+        let Some(site) = radar_core::sites::site(&self.state.site_id) else {
+            self.state.ai_error = Some("No radar site selected.".into());
+            self.state.ai_pending = false;
+            return;
+        };
+        let Some(volume) = self.state.current().map(|f| Arc::clone(&f.volume)) else {
+            self.state.ai_error = Some("No radar volume loaded yet.".into());
+            self.state.ai_pending = false;
+            return;
+        };
+        if !self.state.ai_config().is_configured() {
+            self.state.ai_error =
+                Some("Add your OpenCode Go API key in Settings → AI meteorologist.".into());
+            self.state.ai_settings_open = true;
+            self.state.ai_pending = false;
+            return;
+        }
+        let tracks: &[radar_render::StormTrack] = self
+            .tracks_cache
+            .as_ref()
+            .map(|(_, t)| t.as_slice())
+            .unwrap_or(&[]);
+        let mrms = self.state.mrms.as_ref().map(|(m, _)| m.as_slice());
+        let goes = self.state.goes.as_ref().map(|(i, _)| i.as_slice());
+        let srm = self.state.srm_cache.as_ref().map(|(_, v)| v.as_ref());
+        let brief = crate::brief::build(&crate::brief::BriefInputs {
+            site,
+            mode: match self.state.mode {
+                crate::state::Mode::Live => "live",
+                crate::state::Mode::Archive => "archive",
+            },
+            volume: &volume,
+            min_dbz: self.state.min_dbz,
+            markers: &self.state.markers,
+            marker_etas: &self.marker_etas,
+            tracks,
+            alerts: &self.state.alerts,
+            outlook: self.state.outlook.as_ref(),
+            mcds: &self.state.mcds,
+            lsrs: &self.state.lsrs,
+            forecast: self.state.forecast.as_ref(),
+            forecast_point: self.state.forecast_point,
+            forecast_age_min: self
+                .state
+                .forecast_fetched_at
+                .map(|t| t.elapsed().as_secs() / 60),
+            observation: self.state.observation.as_ref(),
+            totals: &self.state.totals,
+            mrms,
+            view_moment: self.state.moment,
+            view_tilt_deg: self.state.tilt_deg,
+            view_center: (self.state.view.center_lat, self.state.view.center_lon),
+            view_zoom: self.state.view.zoom,
+            view3d_open: self.state.view3d_open,
+            show_melting_layer: self.state.show_melting_layer,
+            look_points: &look,
+            srm_volume: srm,
+            goes,
+            now: chrono::Utc::now(),
+        });
+
+        let mut user = brief.user.clone();
+        if !look.is_empty() {
+            let names = look
+                .iter()
+                .map(|(label, _, _)| label.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            user.push_str(&format!(
+                "\n\nYou asked to look at: {names}. The app sampled those places and put them \
+                 under \"requested_samples\" (the same radar/MRMS/warnings values as a marker). \
+                 Now answer the question or request fully from this snapshot, and include the MAP \
+                 directive that shows the spot to the user."
+            ));
+        }
+        if let Some(q) = &question {
+            // Follow-ups keep the previous answer in context, so "show me
+            // that" works: the model knows what "that" is.
+            let previous = self
+                .state
+                .ai_report
+                .as_ref()
+                .map(|r| {
+                    format!(
+                        "\n\nYour previous answer to this spotter:\n{}",
+                        r.chars().take(1600).collect::<String>()
+                    )
+                })
+                .unwrap_or_default();
+            user.push_str(&previous);
+            user.push_str(&format!(
+                "\n\nFollow-up question from the spotter: {}\n\
+                 Answer it directly from the snapshot. Above all, SHOW it: include a MAP \
+                 directive that puts the evidence on screen (focus the cell/couplet/hail core, \
+                 switch product or tilt, open the 3D pane or a cross-section, show the melting \
+                 layer). Keep it under 150 words unless the data demands more, keep the units, \
+                 and still end with the \"Watch for:\" line.",
+                q.trim()
+            ));
+        }
+
+        let session = format!("stormscope-{}", chrono::Utc::now().timestamp_millis());
+        if self
+            .tx
+            .send(DataCmd::AiBrief {
+                config: self.state.ai_config(),
+                system: brief.system,
+                user,
+                session,
+            })
+            .is_err()
+        {
+            self.state.ai_error = Some("The data thread is not running.".into());
+            self.state.ai_pending = false;
+            return;
+        }
+        self.state.ai_pending = true;
+        self.state.ai_error = None;
+        self.state.ai_snapshot = Some(brief.label);
+        self.state.ai_last_question = question.map(|q| q.trim().to_string());
+    }
+
+    /// Send a tiny prompt to check the endpoint, model and key.
+    pub fn ai_test(&mut self) {
+        if self.state.ai_test_pending {
+            return;
+        }
+        if !self.state.ai_config().is_configured() {
+            self.state.ai_test_status =
+                Some("Add the API key first (or use a local endpoint).".into());
+            return;
+        }
+        if self
+            .tx
+            .send(DataCmd::AiTest {
+                config: self.state.ai_config(),
+            })
+            .is_ok()
+        {
+            self.state.ai_test_pending = true;
+            self.state.ai_test_status = Some("Testing the endpoint…".into());
+        }
+    }
+
     fn pump_mrms(&mut self) {
         if !self.state.show_mrms {
             return;

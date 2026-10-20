@@ -8,8 +8,10 @@
 //! This module owns UI + state wiring only; heavy work (fetch, decode,
 //! rasterize) happens on background threads whose results are polled each frame.
 
+mod ai_actions;
 mod app;
 mod background;
+mod brief;
 pub mod render3d;
 mod state;
 mod timefmt;

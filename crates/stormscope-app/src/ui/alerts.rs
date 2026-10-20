@@ -403,7 +403,7 @@ pub(super) fn significant_near<'a>(
 
 /// Ray-casting point-in-polygon test against an exterior ring. NWS warning
 /// polygons are single-ring in practice, so holes are ignored.
-pub(super) fn ring_contains(ring: &[(f64, f64)], lon: f64, lat: f64) -> bool {
+pub(crate) fn ring_contains(ring: &[(f64, f64)], lon: f64, lat: f64) -> bool {
     if ring.len() < 3 {
         return false;
     }

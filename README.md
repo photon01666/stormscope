@@ -150,6 +150,37 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
 - Units: the 3D pane and the alerts UI speak **miles and feet**; products use
   their native units (dBZ, m/s, deg/km, kg/m², kft, inches).
 
+**AI meteorologist (optional)**
+- A **Meteorologist** window writes a short *now / next 90 minutes* brief for
+  every marker on the map, from one compact snapshot of what stormscope
+  already knows: the sampled radar column at each pin (surface gates, column
+  maximum, VIL / echo tops / MEHS, HCA, snow rate, melting level, SRM,
+  velocity extremes), MRMS and satellite pixels, warnings containing or near
+  it, tracked cells and their arrival estimates, spotter reports, SPC
+  outlook/MCD context, station totals and the NWS forecast. It is decoded
+  data — **no screenshot is taken or sent**.
+- If a question is about a place with no marker ("is it raining in Wichita?"),
+  it can ask the app to **look** there: the requested coordinates are sampled
+  (radar, MRMS, satellite, warnings), the map moves to them, and the model
+  answers from the second snapshot instead of guessing.
+- **Ask it questions** about the brief ("will the hail core hit the north
+  pin?") and it answers from the same snapshot, keeping the previous answer in
+  context.
+- It can **show you** rather than just tell you: the reply may carry a
+  whitelisted map directive that pans/zooms the 2D map, switches product and
+  tilt, opens the 3D pane, sets the camera, cuts a cross-section or shows the
+  0 °C level — with one click to restore the previous view. It can also drop
+  **labelled circles** on the map (a suspected tornado under a warning, a hail
+  core), and marks with an altitude get a pole to that height in the 3D pane —
+  for the things only 3D can show, like an updraft top.
+- The opener sits at the **bottom-left of the 2D map**; the endpoint is set in
+  Settings → AI meteorologist.
+- Works with **OpenCode Go** (the popup is pre-filled with
+  `https://opencode.ai/inference/go/v1` and `deepseek-v4.1-flash`; paste your
+  key), OpenAI, or a local Ollama/LM Studio server. Off until configured, and
+  a request is sent only when you press *Write brief* / *Ask*. The snapshot is
+  plain JSON — no images, no session history.
+
 ## Install
 
 **Prebuilt binary** (Linux x86_64, glibc): grab the asset from the
@@ -230,10 +261,14 @@ memory/texture accounting.
 | [IEM](https://mesonet.agron.iastate.edu/) (Iowa Environmental Mesonet) | Archived warning polygons (VTEC day files) and archived NWS product text | Iowa State University; public data, requested politely (rate-limited, cached) |
 | [SPC](https://www.spc.noaa.gov/) | Day 1–3 categorical outlooks, mesoscale discussions | US Government work |
 | [Wikimedia Maps](https://maps.wikimedia.org/) (`osm-intl`), with [OpenStreetMap](https://www.openstreetmap.org/) fallback | Basemap tiles | © OpenStreetMap contributors, ODbL — attribution is drawn on the map |
+| [OpenCode Go](https://opencode.ai/v2/docs/console/go/) (optional) | AI meteorologist brief and follow-up answers | Your own subscription/key; the JSON snapshot goes only to the endpoint you configure |
 
 Requests are anonymous, cached on disk, and rate-limited; there is no
 telemetry. Tiles are fetched at low volume and the dark theme is synthesized
-locally from the light tiles.
+locally from the light tiles. The optional AI brief is the one request that
+carries a credential; it is sent only when you press the button, and the key
+stays on your machine (environment variable or `~/.config/stormscope/ai.json`,
+mode 0600).
 
 ## Architecture
 

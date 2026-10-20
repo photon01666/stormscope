@@ -13,6 +13,7 @@ pub fn local_overlay_box(site_lat: f64, site_lon: f64) -> [f64; 4] {
     ]
 }
 
+pub mod ai;
 pub mod alerts;
 pub mod cache;
 pub mod forecast;

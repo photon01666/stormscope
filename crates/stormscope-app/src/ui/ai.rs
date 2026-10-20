@@ -241,10 +241,10 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
         .max_height(max_h)
         .min_size(egui::vec2(400.0, 300.0))
         .resizable(true)
-        .default_pos(egui::pos2(
-            18.0,
-            (ctx.content_rect().height() - size.y - 74.0).max(64.0),
-        ))
+        // Start near the top: a window parked at the bottom hits the
+        // constrain rect as soon as the bottom edge is dragged down, which
+        // reads as a 10 px jump before it catches up.
+        .default_pos(egui::pos2(18.0, 64.0))
         .show(ctx, |ui| {
             super::apply_text_scale(ui, text_scale);
             ui.set_min_width(400.0);

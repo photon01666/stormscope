@@ -20,9 +20,13 @@ log; entries start at the first public release.
   radar, MRMS, satellite and warnings at those coordinates, moves the map
   there, and sends a second snapshot. The report window shows "Looking at …"
   while that runs.
-- The snapshot now also carries **SRM** when built and the **GOES** pixel
-  brightness at each point. It is decoded data throughout: no screenshot is
-  taken or sent.
+- The snapshot now also carries **SRM** when built, the **GOES** pixel
+  brightness, spectrum width/differential phase, and an **echo-region
+  overview**: connected areas of ≥20 dBZ on the lowest cut, each with its
+  centroid, strongest cell, size, distance/bearing from the radar and nearest
+  marker. That is what lets it answer "what about the south?" from the actual
+  line rather than from blind compass samples. It is decoded data throughout:
+  no screenshot is taken or sent.
 - **It shows, not just tells**: a reply can carry a whitelisted `MAP:`
   directive that pans/zooms the 2D map, switches product and tilt, opens the
   3D pane, sets the camera, cuts a cross-section, or shows the 0 °C level.

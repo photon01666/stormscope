@@ -832,7 +832,7 @@ impl StormApp {
         let points: Vec<(String, f64, f64)> = look
             .points
             .iter()
-            .take(3)
+            .take(6)
             .filter(|p| {
                 p.lat.is_finite()
                     && p.lon.is_finite()

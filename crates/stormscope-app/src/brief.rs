@@ -93,12 +93,20 @@ pub fn system_prompt() -> String {
      - Length: under 220 words for up to 3 markers, under 350 words otherwise.\n\
      - No screenshot is taken or sent. Every value comes from the decoded radar volume and the \
      loaded overlays sampled by the app.\n\
+     - `echo_regions` is the spatial overview: connected areas of >=20 dBZ on the lowest cut \
+     (max dBZ, centroid, size, distance/bearing from the radar, nearest marker). Use it to see \
+     where precipitation actually is, especially things the markers miss (a line to the south, \
+     a cell beyond the pins). If the question is about a direction or area (\"what about the \
+     south?\"), find the matching region in this list and look at ITS centroid/edges — never \
+     pick points blindly along a compass direction.\n\
      - The snapshot samples only the markers (and any `requested_samples`). If a question needs \
      data somewhere else — a town the spotter names, a cell outside the pins — do not guess: \
      reply with ONLY a line\n\
      LOOK: {\"points\": [{\"lat\": 37.69, \"lon\": -97.34, \"label\": \"Wichita\"}], \"product\": \"REF\"}\n\
      The app samples radar/MRMS/warnings/satellite at those points, moves the map there, and \
-     sends you a second snapshot. Then answer fully. One look per question, at most 3 points.\n\
+     sends you a second snapshot. Then answer fully. At most 2 looks per question and 6 points \
+     per look; spread the points across the feature when you need its extent. If a look comes \
+     back clear while `echo_regions` shows a region nearby, look again at that region.\n\
      - You are at the screen with the spotter. When the answer refers to anything the map can \
      show — a cell, a velocity couplet, a hail core, the echo top, the melting layer, a warning, \
      an approaching line — you MUST use the MAP directive to focus it: centre/zoom the marker or \
@@ -153,6 +161,11 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             "min_dbz_filter": round(input.min_dbz),
             "note": "min_dbz_filter hides weaker echoes from the map; the brief samples the raw gates.",
         }),
+    );
+
+    root.insert(
+        "echo_regions".into(),
+        json!(echo_regions(volume, site, input.markers)),
     );
 
     root.insert(
@@ -297,6 +310,171 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             if shown.len() == 1 { "" } else { "s" }
         ),
     }
+}
+
+/// Connected areas of ≥20 dBZ on the lowest reflectivity cut — a coarse
+/// spatial overview the model can reason about before it asks to sample a
+/// point. Without this the brief only knows the marker columns and cannot
+/// tell where a line of storms is.
+fn echo_regions(
+    volume: &Volume,
+    site: &radar_core::sites::RadarSite,
+    markers: &[MapMarker],
+) -> Vec<Value> {
+    const MIN_DBZ: f32 = 20.0;
+    const CELL_KM: f32 = 8.0;
+
+    // The lowest cut carrying reflectivity.
+    let Some(sweep) = volume
+        .sweeps
+        .iter()
+        .find(|s| s.moment(Moment::Reflectivity).is_some())
+    else {
+        return Vec::new();
+    };
+    let Some(data) = sweep.moment(Moment::Reflectivity) else {
+        return Vec::new();
+    };
+    let range_km = (data.range_start_m + data.gate_count as f32 * data.gate_size_m) / 1000.0;
+    let n = ((2.0 * range_km) / CELL_KM).ceil() as usize + 1;
+    if n == 0 || n > 200 {
+        return Vec::new();
+    }
+    let mut grid = vec![f32::MIN; n * n];
+    // Sample every ~2° and every ~1.5 km: plenty for 8 km cells.
+    let ray_step = (data.ray_count / 180).max(1);
+    let gate_step = ((1500.0 / data.gate_size_m).round() as usize).max(1);
+    for ray in (0..data.ray_count).step_by(ray_step) {
+        let Some(&az) = sweep.azimuths_deg.get(ray) else {
+            continue;
+        };
+        if !az.is_finite() {
+            continue;
+        }
+        let (sin, cos) = az.to_radians().sin_cos();
+        for gate in (0..data.gate_count).step_by(gate_step) {
+            let Some(v) = data.value(ray, gate) else {
+                continue;
+            };
+            if v < MIN_DBZ {
+                continue;
+            }
+            let r_km = (data.range_start_m + gate as f32 * data.gate_size_m) / 1000.0;
+            if r_km < 12.0 {
+                continue; // the cone of silence / nearby clutter
+            }
+            let x = r_km * sin;
+            let y = r_km * cos;
+            let ix = ((x + range_km) / CELL_KM).round() as isize;
+            let iy = ((y + range_km) / CELL_KM).round() as isize;
+            if ix < 0 || iy < 0 || ix >= n as isize || iy >= n as isize {
+                continue;
+            }
+            let idx = iy as usize * n + ix as usize;
+            if v > grid[idx] {
+                grid[idx] = v;
+            }
+        }
+    }
+
+    // Flood fill the occupied cells into regions.
+    let mut seen = vec![false; n * n];
+    let mut regions: Vec<(f64, Value)> = Vec::new();
+    let cell_mi = CELL_KM as f64 / 1.609_344;
+    for start in 0..n * n {
+        if seen[start] || grid[start] < MIN_DBZ {
+            continue;
+        }
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut cells = 0usize;
+        let mut max_dbz = f32::MIN;
+        let mut strongest = (0.0f64, 0.0f64);
+        let mut sum_x = 0.0f64;
+        let mut sum_y = 0.0f64;
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX;
+        let mut max_y = f64::MIN;
+        while let Some(idx) = stack.pop() {
+            let (ix, iy) = (idx % n, idx / n);
+            cells += 1;
+            let x = ix as f64 * CELL_KM as f64 - range_km as f64;
+            let y = iy as f64 * CELL_KM as f64 - range_km as f64;
+            if grid[idx] > max_dbz {
+                max_dbz = grid[idx];
+                strongest = (x, y);
+            }
+            sum_x += x;
+            sum_y += y;
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+            for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                let nx = ix as i32 + dx;
+                let ny = iy as i32 + dy;
+                if nx < 0 || ny < 0 || nx >= n as i32 || ny >= n as i32 {
+                    continue;
+                }
+                let nidx = ny as usize * n + nx as usize;
+                if !seen[nidx] && grid[nidx] >= MIN_DBZ {
+                    seen[nidx] = true;
+                    stack.push(nidx);
+                }
+            }
+        }
+        if cells < 4 {
+            continue;
+        }
+        let cx = sum_x / cells as f64;
+        let cy = sum_y / cells as f64;
+        let lat = site.latitude + cy / 110.574;
+        let lon = site.longitude + cx / (111.32 * site.latitude.to_radians().cos());
+        let area_sq_mi = cells as f64 * cell_mi * cell_mi;
+        let width_mi = (max_x - min_x) / 1.609_344 + cell_mi;
+        let height_mi = (max_y - min_y) / 1.609_344 + cell_mi;
+        // Distance and direction from the site.
+        let (site_dist, site_bearing) = {
+            let d = cx.hypot(cy);
+            let b = cx.atan2(cy).to_degrees().rem_euclid(360.0);
+            (d / 1.609_344, b)
+        };
+        // Nearest marker, so the model can relate a region to the user's pins.
+        let mut nearest: Option<(f64, &str, f64)> = None;
+        for marker in markers {
+            let d = radar_render::surface_distance_m(lon, lat, marker.lon, marker.lat) / 1609.344;
+            if nearest.is_none_or(|(nd, _, _)| d < nd) {
+                let bearing = radar_render::initial_bearing_deg(marker.lon, marker.lat, lon, lat);
+                nearest = Some((d, marker.label.as_str(), bearing));
+            }
+        }
+        let nearest_json = nearest.map(|(d, name, bearing)| {
+            json!({
+                "marker": if name.trim().is_empty() { "marker" } else { name },
+                "distance_mi": round1(d),
+                "direction": compass16(bearing),
+            })
+        });
+        let value = json!({
+            "max_dbz": round(max_dbz),
+            "area_sq_mi": round1(area_sq_mi),
+            "width_mi": round1(width_mi),
+            "height_mi": round1(height_mi),
+            "centroid": { "lat": round4(lat), "lon": round4(lon) },
+            "strongest_at": {
+                "lat": round4(site.latitude + strongest.1 / 110.574),
+                "lon": round4(site.longitude
+                    + strongest.0 / (111.32 * site.latitude.to_radians().cos())),
+            },
+            "distance_from_radar_mi": round1(site_dist),
+            "bearing_from_radar": compass16(site_bearing),
+            "nearest_marker": nearest_json,
+        });
+        regions.push((area_sq_mi * max_dbz as f64, value));
+    }
+    regions.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    regions.into_iter().take(6).map(|(_, v)| v).collect()
 }
 
 fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) -> Value {
@@ -570,6 +748,12 @@ fn radar_column(volume: &Volume, bearing: f32, range_km: f32) -> Value {
     }
     if let Some((v, _)) = gate(volume, Moment::Velocity, bearing, range_km) {
         surface.insert("velocity_mph".into(), json!(round(ms_to_mph(v))));
+    }
+    if let Some((v, _)) = gate(volume, Moment::SpectrumWidth, bearing, range_km) {
+        surface.insert("spectrum_width_mph".into(), json!(round(ms_to_mph(v))));
+    }
+    if let Some((v, _)) = gate(volume, Moment::DifferentialPhase, bearing, range_km) {
+        surface.insert("phi_deg".into(), json!(round(v)));
     }
     if let Some((v, _)) = gate(volume, Moment::DifferentialReflectivity, bearing, range_km) {
         surface.insert("zdr_db".into(), json!(round1f(v)));
@@ -996,6 +1180,65 @@ mod tests {
                 brief.user
             );
         }
+    }
+
+    #[test]
+    fn echo_regions_find_a_line_south_of_the_radar() {
+        use radar_core::{MomentCalibration, MomentData, Sweep, Volume, VolumeMeta};
+        let calibration = MomentCalibration {
+            scale: 1.0,
+            offset: 2.0,
+            threshold: 0.0,
+        };
+        let rays: Vec<f32> = (0..360).map(|i| i as f32).collect();
+        let mut data = vec![0i16; 360 * 700];
+        for r in 0..360 {
+            // Only the southern rays carry the line.
+            if !(165.0..=195.0).contains(&rays[r]) {
+                continue;
+            }
+            for g in 400..600 {
+                data[r * 700 + g] = 47;
+            }
+        }
+        let sweep = Sweep {
+            elevation_deg: 0.5,
+            elevation_measured_deg: 0.5,
+            azimuth_width_deg: 1.0,
+            azimuths_deg: rays,
+            moments: vec![MomentData {
+                kind: Moment::Reflectivity,
+                calibration,
+                range_start_m: 0.0,
+                gate_size_m: 250.0,
+                gate_count: 700,
+                ray_count: 360,
+                data,
+            }],
+        };
+        let volume = Volume {
+            meta: VolumeMeta {
+                site_id: "KTWX".into(),
+                volume_start: chrono::Utc::now(),
+                vcp: None,
+                sequence_number: None,
+                sweep_count: 1,
+                moments: vec![Moment::Reflectivity],
+            },
+            sweeps: vec![sweep],
+        };
+        let site = radar_core::sites::site("KTWX").expect("site");
+        let regions = echo_regions(&volume, site, &[]);
+        assert!(!regions.is_empty(), "the southern band must be found");
+        let region = &regions[0];
+        assert!(region["max_dbz"].as_f64().unwrap() >= 40.0, "{region}");
+        assert_eq!(region["bearing_from_radar"], "S", "{region}");
+        assert!(
+            region["distance_from_radar_mi"].as_f64().unwrap() > 50.0,
+            "{region}"
+        );
+        let strongest = &region["strongest_at"];
+        assert!(strongest["lat"].as_f64().unwrap() < site.latitude);
     }
 
     #[test]

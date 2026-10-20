@@ -432,7 +432,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                     );
                 }
                 egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
+                    .auto_shrink([false, true])
                     .max_height((screen.y * 0.30).clamp(140.0, 360.0))
                     .show(ui, |ui| {
                         ui.add(

@@ -155,8 +155,10 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   every marker on the map, from one compact snapshot of what stormscope
   already knows: the sampled radar column at each pin (surface gates, column
   maximum, VIL / echo tops / MEHS, HCA, snow rate, melting level, SRM,
-  velocity extremes), MRMS and satellite pixels, warnings containing or near
-  it, tracked cells and their arrival estimates, spotter reports, SPC
+  velocity extremes), a coarse **echo-region overview** (connected ≥20 dBZ
+  areas with centroid, strongest cell, size and distance) so it can see
+  features away from the pins, MRMS and satellite pixels, warnings containing
+  or near it, tracked cells and their arrival estimates, spotter reports, SPC
   outlook/MCD context, station totals and the NWS forecast. It is decoded
   data — **no screenshot is taken or sent**.
 - If a question is about a place with no marker ("is it raining in Wichita?"),

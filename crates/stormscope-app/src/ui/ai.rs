@@ -531,6 +531,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
         app.state.ai_annotations.clear();
         app.state.ai_view_before = None;
         app.state.ai_snapshot = None;
+        app.state.persist_ai_chat();
     }
 }
 

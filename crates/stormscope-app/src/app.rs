@@ -864,6 +864,7 @@ impl StormApp {
             let cut = self.state.ai_messages.len() - 60;
             self.state.ai_messages.drain(..cut);
         }
+        self.state.persist_ai_chat();
     }
 
     fn ai_note(&mut self, text: String) {

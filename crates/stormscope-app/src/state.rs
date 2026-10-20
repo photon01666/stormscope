@@ -185,7 +185,7 @@ pub enum PaneMax {
 }
 
 /// One line of the meteorologist conversation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AiRole {
     User,
     Assistant,
@@ -193,7 +193,7 @@ pub enum AiRole {
     Note,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AiChatMessage {
     pub role: AiRole,
     pub text: String,
@@ -865,7 +865,7 @@ impl Default for AppState {
             ai_report: None,
             ai_last_question: None,
             ai_question: String::new(),
-            ai_messages: Vec::new(),
+            ai_messages: load_ai_chat(),
             ai_question_ctx: None,
             ai_look_depth: 0,
             ai_looking_at: None,
@@ -915,6 +915,26 @@ struct AiPrefs {
     remember_key: Option<bool>,
 }
 
+/// `~/.config/stormscope/ai-chat.json`: the last conversation, capped, so a
+/// restart does not lose what was said and answered.
+fn ai_chat_path() -> std::path::PathBuf {
+    config_dir().join("ai-chat.json")
+}
+
+fn load_ai_chat() -> Vec<AiChatMessage> {
+    match std::fs::read_to_string(ai_chat_path()) {
+        Ok(s) => {
+            let mut messages: Vec<AiChatMessage> = serde_json::from_str(&s).unwrap_or_default();
+            if messages.len() > 60 {
+                let cut = messages.len() - 60;
+                messages.drain(..cut);
+            }
+            messages
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
 fn load_ai_prefs() -> AiPrefs {
     match std::fs::read_to_string(ai_path()) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
@@ -947,6 +967,37 @@ impl AppState {
                 }
             }
             Err(e) => log::warn!("markers serialize: {e}"),
+        }
+    }
+
+    /// Write the conversation to disk (0600), capped. Best-effort: a failed
+    /// write must never lose the session.
+    pub fn persist_ai_chat(&self) {
+        let Ok(json) = serde_json::to_string_pretty(&self.ai_messages) else {
+            return;
+        };
+        let path = ai_chat_path();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("AI chat dir: {e}");
+                return;
+            }
+        }
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(json.as_bytes()) {
+                    log::warn!("AI chat write: {e}");
+                }
+            }
+            Err(e) => log::warn!("AI chat open: {e}"),
         }
     }
 

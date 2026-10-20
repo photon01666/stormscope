@@ -184,6 +184,21 @@ pub enum PaneMax {
     View3d,
 }
 
+/// One line of the meteorologist conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiRole {
+    User,
+    Assistant,
+    /// An error or status note (never sent to the model).
+    Note,
+}
+
+#[derive(Debug, Clone)]
+pub struct AiChatMessage {
+    pub role: AiRole,
+    pub text: String,
+}
+
 /// What an AI map mark means; drives its colour and where it reads best.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiAnnotationKind {
@@ -609,6 +624,8 @@ pub struct AppState {
     pub ai_last_question: Option<String>,
     /// Draft of the "Ask the meteorologist" box (persists across frames).
     pub ai_question: String,
+    /// The whole conversation shown in the window (kept for the session).
+    pub ai_messages: Vec<AiChatMessage>,
     /// The question the current request chain is answering (survives the
     /// LOOK round-trip).
     pub ai_question_ctx: Option<String>,
@@ -848,6 +865,7 @@ impl Default for AppState {
             ai_report: None,
             ai_last_question: None,
             ai_question: String::new(),
+            ai_messages: Vec::new(),
             ai_question_ctx: None,
             ai_look_depth: 0,
             ai_looking_at: None,

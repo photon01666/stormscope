@@ -165,9 +165,10 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   it can ask the app to **look** there: the requested coordinates are sampled
   (radar, MRMS, satellite, warnings), the map moves to them, and the model
   answers from the second snapshot instead of guessing.
-- **Ask it questions** about the brief ("will the hail core hit the north
-  pin?") and it answers from the same snapshot, keeping the previous answer in
-  context.
+- **Ask it questions** in a chat transcript: every question and answer stays
+  in the window (you can scroll back, copy, clear), follow-ups keep the whole
+  conversation in context, and a failed call is retried automatically and kept
+  as a retryable error instead of losing what you asked.
 - It can **show you** rather than just tell you: the reply may carry a
   whitelisted map directive that pans/zooms the 2D map, switches product and
   tilt, opens the 3D pane, sets the camera, cuts a cross-section or shows the

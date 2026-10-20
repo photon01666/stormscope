@@ -5,6 +5,7 @@
 //! `crate::ai_actions`; this module is presentation and request triggering.
 
 use crate::app::StormApp;
+use crate::state::AiRole;
 
 /// Curated OpenCode Go models (the provider adds/removes models over time —
 /// the field is editable, this is just a shortcut).
@@ -222,21 +223,23 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     let text_scale = (app.sidebar_scale * 0.75).clamp(1.0, 1.8);
     let size = egui::vec2(
         (screen.x * 0.33).clamp(460.0, 720.0),
-        (screen.y * 0.56).clamp(340.0, 620.0),
+        (screen.y * 0.62).clamp(380.0, 700.0),
     );
-    let max_h = (screen.y * 0.82).max(300.0);
+    let max_h = (screen.y * 0.85).max(320.0);
     let mut open = app.state.ai_open;
     let mut brief = false;
     let mut ask: Option<String> = None;
     let mut restore = false;
-    let mut clear = false;
+    let mut clear_chat = false;
+    let mut clear_marks = false;
+    let mut retry = false;
 
     egui::Window::new("AI meteorologist")
         .id(egui::Id::new("stormscope.ai"))
         .open(&mut open)
         .default_size(size)
         .max_height(max_h)
-        .min_size(egui::vec2(380.0, 240.0))
+        .min_size(egui::vec2(400.0, 300.0))
         .default_pos(egui::pos2(
             18.0,
             (ctx.content_rect().height() - size.y - 74.0).max(64.0),
@@ -293,17 +296,10 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                 return;
             }
 
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let label = if app.state.ai_pending {
-                    "Working…"
-                } else if app.state.ai_report.is_some() {
-                    "Refresh brief"
-                } else {
-                    "Write brief"
-                };
                 if ui
-                    .button(label)
+                    .button("Write brief")
                     .on_hover_text("A short now / next-90-minutes report for every marker")
                     .clicked()
                     && !app.state.ai_pending
@@ -313,8 +309,8 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                 if app.state.ai_pending {
                     ui.spinner();
                 }
-                if app.state.ai_report.is_some() && ui.small_button("Clear").clicked() {
-                    clear = true;
+                if !app.state.ai_messages.is_empty() && ui.small_button("Clear chat").clicked() {
+                    clear_chat = true;
                 }
                 if !app.state.ai_annotations.is_empty()
                     && ui
@@ -322,15 +318,125 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                         .on_hover_text("Remove the AI's circles from the 2D and 3D maps")
                         .clicked()
                 {
-                    clear = true;
+                    clear_marks = true;
                 }
                 if let Some(snapshot) = &app.state.ai_snapshot {
                     ui.label(egui::RichText::new(snapshot).small().weak());
                 }
             });
 
+            if let Some(actions) = &app.state.ai_actions {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Map: {actions}"))
+                            .small()
+                            .weak(),
+                    );
+                    if ui
+                        .small_button("Restore previous view")
+                        .on_hover_text("Put the map and 3D pane back the way they were")
+                        .clicked()
+                    {
+                        restore = true;
+                    }
+                    ui.label(egui::RichText::new("(behind this window)").small().weak());
+                });
+            }
+
+            ui.separator();
+            let chat_h = (size.y * 0.44).clamp(160.0, 380.0);
+            egui::ScrollArea::vertical()
+                .id_salt("stormscope.ai.chat")
+                .stick_to_bottom(true)
+                .auto_shrink([false, false])
+                .max_height(chat_h)
+                .show(ui, |ui| {
+                    if app.state.ai_messages.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "Ask about your markers — or write a brief. Every exchange stays \
+                                 here; the model can move the 2D/3D maps and mark what it means.",
+                            )
+                            .weak(),
+                        );
+                    }
+                    for message in &app.state.ai_messages {
+                        match message.role {
+                            AiRole::User => {
+                                ui.label(
+                                    egui::RichText::new("You")
+                                        .small()
+                                        .strong()
+                                        .color(egui::Color32::from_gray(160)),
+                                );
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(message.text.trim()))
+                                        .selectable(true)
+                                        .wrap(),
+                                );
+                            }
+                            AiRole::Assistant => {
+                                ui.label(
+                                    egui::RichText::new("Meteorologist")
+                                        .small()
+                                        .strong()
+                                        .color(egui::Color32::from_rgb(120, 200, 255)),
+                                );
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(clean_report(
+                                        &message.text,
+                                    )))
+                                    .selectable(true)
+                                    .wrap(),
+                                );
+                                if ui.small_button("Copy").clicked() {
+                                    ui.ctx().copy_text(clean_report(&message.text));
+                                }
+                            }
+                            AiRole::Note => {
+                                let color = if message.text.starts_with("Request failed") {
+                                    egui::Color32::from_rgb(240, 120, 110)
+                                } else {
+                                    egui::Color32::from_gray(160)
+                                };
+                                ui.colored_label(color, &message.text);
+                            }
+                        }
+                        ui.add_space(7.0);
+                    }
+                    if app.state.ai_pending {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            if let Some(looking) = &app.state.ai_looking_at {
+                                ui.label(
+                                    egui::RichText::new(format!("Looking at {looking}…")).weak(),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Sampling the radar, warnings and forecast…",
+                                    )
+                                    .weak(),
+                                );
+                            }
+                        });
+                    }
+                });
+
+            if !app.state.ai_pending
+                && app
+                    .state
+                    .ai_messages
+                    .last()
+                    .is_some_and(|m| m.role == AiRole::Note && m.text.starts_with("Request failed"))
+            {
+                if ui.button("Retry").clicked() {
+                    retry = true;
+                }
+            }
+
             ui.horizontal(|ui| {
-                let hint = "Ask about these markers — e.g. \"is the hail core going to hit the \
+                let hint = "Ask the meteorologist — e.g. \"is the hail core going to hit the \
                             north pin?\"";
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut app.state.ai_question)
@@ -387,79 +493,6 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                 }
             });
 
-            if let Some(error) = &app.state.ai_error {
-                ui.add_space(4.0);
-                ui.colored_label(egui::Color32::from_rgb(240, 120, 110), error);
-            }
-
-            if let Some(actions) = &app.state.ai_actions {
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("Map: {actions}"))
-                            .small()
-                            .weak(),
-                    );
-                    if ui
-                        .small_button("Restore previous view")
-                        .on_hover_text("Put the map and 3D pane back the way they were")
-                        .clicked()
-                    {
-                        restore = true;
-                    }
-                    ui.label(egui::RichText::new("(behind this window)").small().weak());
-                });
-            }
-
-            ui.separator();
-            if let Some(question) = &app.state.ai_last_question {
-                ui.label(egui::RichText::new(format!("Q: {question}")).strong());
-                ui.add_space(2.0);
-            }
-            if let Some(report) = &app.state.ai_report {
-                if let Some(at) = app.state.ai_generated_at {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "written {}s ago · {}",
-                            at.elapsed().as_secs(),
-                            app.state
-                                .ai_snapshot
-                                .clone()
-                                .unwrap_or_else(|| "snapshot".into())
-                        ))
-                        .small()
-                        .weak(),
-                    );
-                }
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, true])
-                    .max_height((screen.y * 0.30).clamp(140.0, 360.0))
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(clean_report(report)))
-                                .selectable(true)
-                                .wrap(),
-                        );
-                    });
-                if ui.button("Copy").clicked() {
-                    ui.ctx().copy_text(clean_report(report));
-                }
-            } else if let Some(looking) = &app.state.ai_looking_at {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(egui::RichText::new(format!("Looking at {looking}…")).weak());
-                });
-            } else if app.state.ai_pending {
-                ui.label(egui::RichText::new("Sampling the radar, warnings and forecast…").weak());
-            } else {
-                ui.label(
-                    egui::RichText::new(
-                        "Write brief reads every marker; Ask takes one question. Both use the \
-                         same snapshot and may move the map to illustrate the answer.",
-                    )
-                    .weak(),
-                );
-            }
             ui.add_space(2.0);
             ui.label(
                 egui::RichText::new(format!(
@@ -479,16 +512,25 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
         app.state.ai_question.clear();
         app.ai_request(Some(question));
     }
+    if retry {
+        app.ai_retry();
+    }
     if restore && crate::ai_actions::restore(&mut app.state) {
         app.state.ai_actions = None;
     }
-    if clear {
+    if clear_marks && !app.state.ai_annotations.is_empty() {
+        app.state.ai_annotations.clear();
+        app.state.ai_actions = None;
+    }
+    if clear_chat {
+        app.state.ai_messages.clear();
         app.state.ai_report = None;
         app.state.ai_last_question = None;
         app.state.ai_error = None;
         app.state.ai_actions = None;
         app.state.ai_annotations.clear();
         app.state.ai_view_before = None;
+        app.state.ai_snapshot = None;
     }
 }
 

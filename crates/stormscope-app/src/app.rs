@@ -1,7 +1,7 @@
 //! The eframe App: owns AppState, spawns background data threads, polls
 //! their channels each frame, and drives the UI.
 
-use crate::state::{AppState, LoopState};
+use crate::state::{AiChatMessage, AiRole, AppState, LoopState};
 use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -639,7 +639,7 @@ impl StormApp {
                 DataMsg::AiBrief(result) => match result {
                     Ok(reply) => {
                         let (prose, action, look) = crate::ai_actions::split_reply(&reply);
-                        let can_look = self.state.ai_look_depth == 0;
+                        let can_look = self.state.ai_look_depth < 2;
                         let looked = can_look && look.is_some_and(|look| self.ai_look(look));
                         if !looked {
                             self.ai_finish(prose, action);
@@ -650,7 +650,13 @@ impl StormApp {
                         self.state.ai_pending = false;
                         self.state.ai_look_depth = 0;
                         self.state.ai_looking_at = None;
-                        self.state.ai_error = Some(error);
+                        self.state.ai_error = None;
+                        let hint = if error.to_ascii_lowercase().contains("unavailable") {
+                            " — OpenCode Go may be having a temporary outage; press Retry."
+                        } else {
+                            ""
+                        };
+                        self.ai_note(format!("Request failed: {error}{hint}"));
                     }
                 },
                 DataMsg::AiTest(result) => {
@@ -819,10 +825,49 @@ impl StormApp {
             return;
         }
         let asked = question.filter(|q| !q.trim().is_empty());
+        let shown = asked.clone().unwrap_or_else(|| {
+            format!(
+                "Write a brief for my {} marker{}.",
+                self.state.markers.len(),
+                if self.state.markers.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        });
+        self.ai_push(AiRole::User, shown);
         self.state.ai_question_ctx = asked.clone();
         self.state.ai_look_depth = 0;
         self.state.ai_looking_at = None;
         self.send_ai(asked, Vec::new());
+    }
+
+    /// Re-send the last question after a failure, without duplicating it in
+    /// the transcript.
+    pub fn ai_retry(&mut self) {
+        if self.state.ai_pending {
+            return;
+        }
+        while matches!(self.state.ai_messages.last(), Some(m) if m.role == AiRole::Note) {
+            self.state.ai_messages.pop();
+        }
+        let question = self.state.ai_last_question.clone();
+        self.state.ai_look_depth = 0;
+        self.state.ai_looking_at = None;
+        self.send_ai(question, Vec::new());
+    }
+
+    fn ai_push(&mut self, role: AiRole, text: String) {
+        self.state.ai_messages.push(AiChatMessage { role, text });
+        if self.state.ai_messages.len() > 60 {
+            let cut = self.state.ai_messages.len() - 60;
+            self.state.ai_messages.drain(..cut);
+        }
+    }
+
+    fn ai_note(&mut self, text: String) {
+        self.ai_push(AiRole::Note, text);
     }
 
     /// The first half of a LOOK round: sample the places the model named,
@@ -884,6 +929,9 @@ impl StormApp {
         self.state.ai_pending = false;
         self.state.ai_look_depth = 0;
         self.state.ai_looking_at = None;
+        if !prose.trim().is_empty() {
+            self.ai_push(AiRole::Assistant, prose.clone());
+        }
         self.state.ai_report = Some(prose);
         self.state.ai_generated_at = Some(std::time::Instant::now());
         self.state.ai_actions = None;
@@ -900,25 +948,24 @@ impl StormApp {
     /// prompts and send the request. Callers own the pending flags.
     fn send_ai(&mut self, question: Option<String>, look: Vec<(String, f64, f64)>) {
         if self.state.markers.is_empty() {
-            self.state.ai_error = Some("Place at least one marker on the map first.".into());
             self.state.ai_pending = false;
+            self.ai_note("Place at least one marker on the map first.".into());
             return;
         }
         let Some(site) = radar_core::sites::site(&self.state.site_id) else {
-            self.state.ai_error = Some("No radar site selected.".into());
             self.state.ai_pending = false;
+            self.ai_note("No radar site is selected.".into());
             return;
         };
         let Some(volume) = self.state.current().map(|f| Arc::clone(&f.volume)) else {
-            self.state.ai_error = Some("No radar volume loaded yet.".into());
             self.state.ai_pending = false;
+            self.ai_note("No radar volume is loaded yet.".into());
             return;
         };
         if !self.state.ai_config().is_configured() {
-            self.state.ai_error =
-                Some("Add your OpenCode Go API key in Settings → AI meteorologist.".into());
             self.state.ai_settings_open = true;
             self.state.ai_pending = false;
+            self.ai_note("Add your OpenCode Go API key in Settings → AI meteorologist.".into());
             return;
         }
         let tracks: &[radar_render::StormTrack] = self
@@ -966,6 +1013,29 @@ impl StormApp {
         });
 
         let mut user = brief.user.clone();
+        let recent: Vec<&AiChatMessage> = self
+            .state
+            .ai_messages
+            .iter()
+            .filter(|m| m.role != AiRole::Note)
+            .collect();
+        let start = recent.len().saturating_sub(8);
+        let conversation: Vec<String> = recent[start..]
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}: {}",
+                    if m.role == AiRole::User {
+                        "Spotter"
+                    } else {
+                        "Meteorologist"
+                    },
+                    m.text.chars().take(700).collect::<String>()
+                )
+            })
+            .collect();
+        user.push_str("\n\nConversation so far:\n");
+        user.push_str(&conversation.join("\n\n"));
         if !look.is_empty() {
             let names = look
                 .iter()
@@ -974,36 +1044,16 @@ impl StormApp {
                 .join(", ");
             user.push_str(&format!(
                 "\n\nYou asked to look at: {names}. The app sampled those places and put them \
-                 under \"requested_samples\" (the same radar/MRMS/warnings values as a marker). \
-                 Now answer the question or request fully from this snapshot, and include the MAP \
-                 directive that shows the spot to the user."
+                 under \"requested_samples\" (the same radar/MRMS/warnings values as a marker)."
             ));
         }
-        if let Some(q) = &question {
-            // Follow-ups keep the previous answer in context, so "show me
-            // that" works: the model knows what "that" is.
-            let previous = self
-                .state
-                .ai_report
-                .as_ref()
-                .map(|r| {
-                    format!(
-                        "\n\nYour previous answer to this spotter:\n{}",
-                        r.chars().take(1600).collect::<String>()
-                    )
-                })
-                .unwrap_or_default();
-            user.push_str(&previous);
-            user.push_str(&format!(
-                "\n\nFollow-up question from the spotter: {}\n\
-                 Answer it directly from the snapshot. Above all, SHOW it: include a MAP \
-                 directive that puts the evidence on screen (focus the cell/couplet/hail core, \
-                 switch product or tilt, open the 3D pane or a cross-section, show the melting \
-                 layer). Keep it under 150 words unless the data demands more, keep the units, \
-                 and still end with the \"Watch for:\" line.",
-                q.trim()
-            ));
-        }
+        user.push_str(
+            "\n\nAnswer the latest Spotter message from this snapshot. Above all, SHOW it: \
+             include a MAP directive that puts the evidence on screen (focus the cell/couplet/ \
+             hail core, switch product or tilt, open the 3D pane or a cross-section, show the \
+             melting layer, mark what matters). Keep it under 150 words unless the data demands \
+             more, keep the units, and still end with the \"Watch for:\" line.",
+        );
 
         let session = format!("stormscope-{}", chrono::Utc::now().timestamp_millis());
         if self
@@ -1016,8 +1066,8 @@ impl StormApp {
             })
             .is_err()
         {
-            self.state.ai_error = Some("The data thread is not running.".into());
             self.state.ai_pending = false;
+            self.ai_note("The data thread is not running.".into());
             return;
         }
         self.state.ai_pending = true;

@@ -12,9 +12,13 @@ log; entries start at the first public release.
   VIL/echo tops/MEHS, HCA, snow rate, melting level), warnings containing or
   near it, tracked cells with arrival estimates, spotter reports, SPC
   outlook/MCD context, station totals and the NWS forecast.
-- **Ask questions** about the brief ("is the hail core going to hit the north
-  pin?"); follow-ups keep the previous answer in context and are answered from
-  the same snapshot.
+- **Ask questions** in a chat-style transcript: every message you send and
+  every answer stays in the window (scroll, copy, clear), follow-ups keep the
+  whole conversation in context, and nothing is replaced when you ask the next
+  question.
+- Transient gateway failures are handled: the client retries 429/5xx and
+  connection errors, and if the endpoint is still down the question stays in
+  the chat with a **Retry** button instead of vanishing.
 - **It can look before it speaks**: a question about a place with no marker
   ("is it raining in Wichita?") gets a `LOOK:` round-trip — the app samples
   radar, MRMS, satellite and warnings at those coordinates, moves the map

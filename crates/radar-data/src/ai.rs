@@ -91,23 +91,107 @@ pub fn complete(config: &AiConfig, system: &str, user: &str, session: &str) -> R
         "temperature": 0.35,
         "max_tokens": config.max_tokens.clamp(64, 4096),
     });
+    let payload_bytes = body.to_string().len();
+    let mut last: Option<Failure> = None;
+    for attempt in 0..4u32 {
+        match send_once(&client, config, &body, session) {
+            Ok(text) => {
+                log::debug!(
+                    "AI reply: {} bytes -> {} (prompt {} bytes, attempt {})",
+                    text.len(),
+                    config.model,
+                    payload_bytes,
+                    attempt + 1
+                );
+                return Ok(text);
+            }
+            Err(failure) => {
+                log::debug!(
+                    "AI attempt {} failed ({} byte prompt): {}",
+                    attempt + 1,
+                    payload_bytes,
+                    failure.message
+                );
+                let will_retry = failure.retryable && attempt < 3;
+                last = Some(failure);
+                if !will_retry {
+                    break;
+                }
+                // A hiccup at the provider gateway (the Go endpoint can answer
+                // "Endpoint is unavailable" for one request while the next one
+                // works) must not throw away the spotter's question.
+                std::thread::sleep(Duration::from_millis(1_000 * (1u64 << attempt.min(2))));
+            }
+        }
+    }
+    let failure = last.expect("at least one attempt");
+    bail!(
+        "{}{}",
+        failure.message,
+        if failure.retryable {
+            " (after 4 attempts)"
+        } else {
+            ""
+        }
+    )
+}
+
+struct Failure {
+    message: String,
+    retryable: bool,
+}
+
+/// One POST + response classification. Retryable = transport error, 429 or a
+/// 5xx from the gateway; everything else is shown to the user as-is.
+fn send_once(
+    client: &reqwest::blocking::Client,
+    config: &AiConfig,
+    body: &serde_json::Value,
+    session: &str,
+) -> Result<String, Failure> {
     let mut request = client
         .post(config.endpoint())
         .header("x-opencode-session", session)
-        .json(&body);
+        .json(body);
     if !config.api_key.trim().is_empty() {
         request = request.bearer_auth(config.api_key.trim());
     }
-    let response = request.send().context("sending the AI request")?;
+    let response = match request.send() {
+        Ok(response) => response,
+        Err(error) => {
+            return Err(Failure {
+                message: format!("Network error: {error}"),
+                retryable: true,
+            });
+        }
+    };
     let status = response.status();
-    let text = response.text().context("reading the AI response")?;
+    let text = match response.text() {
+        Ok(text) => text,
+        Err(error) => {
+            return Err(Failure {
+                message: format!("Could not read the AI response: {error}"),
+                retryable: true,
+            });
+        }
+    };
     if !status.is_success() {
-        bail!(
-            "{}",
-            error_message(&text).unwrap_or_else(|| format!("HTTP {status}"))
-        );
+        let lower = text.to_ascii_lowercase();
+        let retryable = status.as_u16() == 429
+            || status.is_server_error()
+            || lower.contains("unavailable")
+            || lower.contains("overloaded")
+            || lower.contains("try again");
+        let detail = error_message(&text).unwrap_or_else(|| "no error body".to_string());
+        return Err(Failure {
+            message: format!("HTTP {} · {detail}", status.as_u16()),
+            retryable,
+        });
     }
-    reply_text(&text)
+    reply_text(&text).map_err(|error| Failure {
+        message: format!("{error:#}"),
+        retryable: false,
+    })
 }
 
 /// Pull `choices[0].message.content` out of a chat-completions response.
@@ -253,6 +337,48 @@ mod tests {
                 .contains("x-opencode-session: session-42"),
             "{request}"
         );
+    }
+
+    /// A 503 from the gateway is retried once and the retry's answer wins.
+    #[test]
+    fn retries_a_temporarily_unavailable_endpoint() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            for attempt in 0..2 {
+                let (mut socket, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 8192];
+                let _ = socket.read(&mut buf).expect("read");
+                let response = if attempt == 0 {
+                    let body = r#"{"error":{"message":"Upstream request failed: Endpoint is unavailable.","code":"unavailable"}}"#;
+                    format!(
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                } else {
+                    let body = r#"{"choices":[{"message":{"content":"pong"}}]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                };
+                socket.write_all(response.as_bytes()).expect("write");
+            }
+        });
+        let config = AiConfig {
+            base_url: format!("http://{addr}/v1"),
+            model: "test-model".into(),
+            api_key: String::new(),
+            max_tokens: 16,
+        };
+        let reply = complete(&config, "system", "user", "retry-test").expect("a retried reply");
+        assert_eq!(reply, "pong");
+        server.join().expect("server thread");
     }
 
     /// Real call, driven by the environment (ignored by default):

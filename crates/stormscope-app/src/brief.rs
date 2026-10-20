@@ -57,6 +57,8 @@ pub struct BriefInputs<'a> {
     pub srm_volume: Option<&'a Volume>,
     /// GOES windows (CONUS first, the sharp radar window last).
     pub goes: Option<&'a [std::sync::Arc<radar_data::goes::GoesImage>]>,
+    /// Minutes between the two scans the tracks came from, when known.
+    pub scan_interval_min: Option<i64>,
     pub now: DateTime<Utc>,
 }
 
@@ -149,7 +151,11 @@ pub fn system_prompt() -> String {
      strongest echo and its direction. Don't lead with the markers or call an echo not a core \
      without stating what is stronger and where; the user is asking what is happening there. \
      `radar.site` in the snapshot is the radar the samples came from (the app switches to the \
-     closest one automatically when needed)."
+     closest one automatically when needed).\n\
+     - Motion: use `storm_cells`/`next_arrival_min` when present (radar tracks from two scans). \
+     If `storm_cells` is empty, check `motion` in warnings/MCDs, which often says 'moving east at 30 mph'. Only after both are absent say motion is unavailable — then give the line's \
+     orientation and the trend you can support, and name what is missing (the next scan). Never \
+     guess a bearing."
         .to_string()
 }
 
@@ -177,6 +183,13 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             "elevation_cuts": volume.meta.sweep_count,
             "products": volume.meta.moments.iter().map(|m| m.label()).collect::<Vec<_>>(),
             "min_dbz_filter": round(input.min_dbz),
+            "scan_interval_min": input.scan_interval_min,
+            "storm_tracks": input.tracks.len(),
+            "motion_source": if input.tracks.is_empty() {
+                "none yet (a motion vector needs two scans)"
+            } else {
+                "radar tracks from two consecutive scans"
+            },
             "note": "min_dbz_filter hides weaker echoes from the map; the brief samples the raw gates.",
         }),
     );
@@ -732,6 +745,10 @@ fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) ->
                 "headline": clip(&warning.headline, 200),
                 "description": clip(&warning.description, 420),
                 "instruction": clip(&warning.instruction, 200),
+                "motion": motion_from_text(&format!(
+                    "{} {} {}",
+                    warning.headline, warning.description, warning.instruction
+                )),
             }),
         ));
     }
@@ -785,6 +802,7 @@ fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) ->
                 "concerning": m.concerning,
                 "watch_probability": m.watch_prob,
                 "valid": m.valid,
+                "motion": motion_from_text(&m.text),
             })
         })
         .collect();
@@ -1120,6 +1138,53 @@ fn mrms_at(
     None
 }
 
+/// Pull "moving east at 30 mph" out of NWS text. Radar tracks are the
+/// authority; this is the fallback when a site has only one scan loaded and a
+/// warning/MCD still carries an explicit motion.
+fn motion_from_text(text: &str) -> Value {
+    let lower = text.to_ascii_lowercase();
+    const DIRECTIONS: [&str; 8] = [
+        "northeast",
+        "northwest",
+        "southeast",
+        "southwest",
+        "north",
+        "south",
+        "east",
+        "west",
+    ];
+    for direction in DIRECTIONS {
+        let Some(pos) = lower.find(&format!("moving {direction}")) else {
+            continue;
+        };
+        let tail = &lower[pos + "moving ".len() + direction.len()..];
+        let Some(at) = tail.find(" at ") else {
+            continue;
+        };
+        let after = tail[at + 4..].trim_start();
+        let mut words = after.split_whitespace();
+        let number = words
+            .next()
+            .map(|w| w.trim_end_matches(','))
+            .and_then(|w| w.parse::<f64>().ok());
+        let Some(speed) = number else {
+            continue;
+        };
+        let unit = words.next().unwrap_or("");
+        let speed_mph = if unit.starts_with("kt") || unit.starts_with("knot") {
+            speed * 1.150_78
+        } else {
+            speed
+        };
+        return json!({
+            "direction": direction,
+            "speed_mph": round1(speed_mph),
+            "source": "NWS text",
+        });
+    }
+    Value::Null
+}
+
 fn c_to_f(c: f32) -> f32 {
     c * 9.0 / 5.0 + 32.0
 }
@@ -1320,6 +1385,7 @@ mod tests {
             }],
             srm_volume: None,
             goes: None,
+            scan_interval_min: Some(5),
             now: chrono::Utc::now(),
         });
         assert!(
@@ -1407,6 +1473,19 @@ mod tests {
         );
         let strongest = &region["strongest_at"];
         assert!(strongest["lat"].as_f64().unwrap() < site.latitude);
+    }
+
+    #[test]
+    fn warning_text_yields_motion_but_plain_text_does_not() {
+        let text = "At 4:23 PM CDT, a severe thunderstorm was located 7 miles \
+                    northwest of Hutchinson, moving east at 30 mph.";
+        let motion = motion_from_text(text);
+        assert_eq!(motion["direction"], "east");
+        assert_eq!(motion["speed_mph"], 30.0);
+        let kt = motion_from_text("storms moving northeast at 40 kt");
+        assert_eq!(kt["direction"], "northeast");
+        assert!((kt["speed_mph"].as_f64().unwrap() - 46.0).abs() < 0.1);
+        assert!(motion_from_text("no motion mentioned here").is_null());
     }
 
     #[test]

@@ -412,6 +412,7 @@ impl StormApp {
         self.state.site_id = id.to_string();
         // Tracks from the old site must not smooth into the new site's.
         self.prev_tracks.clear();
+        self.tracks_cache = None;
         self.marker_etas.clear();
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
     }
@@ -507,28 +508,41 @@ impl StormApp {
                     // A LOOK that needed a closer radar waits for its first
                     // volume, then runs against that volume.
                     if self.state.ai_pending_site.as_deref() == Some(site.as_str()) {
-                        let points = self.state.ai_pending_look.take().unwrap_or_default();
-                        self.state.ai_pending_site = None;
-                        self.state.ai_pending_site_at = None;
-                        if !points.is_empty() {
-                            let samples: Vec<LookPointSample> = points
-                                .into_iter()
-                                .map(|(label, lat, lon, radius_mi)| LookPointSample {
-                                    label,
-                                    lat,
-                                    lon,
-                                    radius_mi,
-                                })
-                                .collect();
-                            let names = samples
-                                .iter()
-                                .map(|p| p.label.clone())
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            log::info!("AI look continues on {site}: {names}");
-                            self.state.ai_looking_at = Some(format!("{names} (from {site})"));
-                            self.state.ai_pending = true;
-                            self.send_ai(self.state.ai_question_ctx.clone(), samples);
+                        self.state.ai_pending_site_volumes =
+                            self.state.ai_pending_site_volumes.saturating_add(1);
+                        if self.state.ai_pending_site_volumes < 2 {
+                            // Two scans are what makes a motion vector; the
+                            // backfill usually delivers the previous one within
+                            // seconds of the newest.
+                            if let Some(looking) = self.state.ai_looking_at.take() {
+                                self.state.ai_looking_at =
+                                    Some(format!("{looking} — waiting for the previous scan"));
+                            }
+                        } else {
+                            let points = self.state.ai_pending_look.take().unwrap_or_default();
+                            self.state.ai_pending_site = None;
+                            self.state.ai_pending_site_at = None;
+                            self.state.ai_pending_site_volumes = 0;
+                            if !points.is_empty() {
+                                let samples: Vec<LookPointSample> = points
+                                    .into_iter()
+                                    .map(|(label, lat, lon, radius_mi)| LookPointSample {
+                                        label,
+                                        lat,
+                                        lon,
+                                        radius_mi,
+                                    })
+                                    .collect();
+                                let names = samples
+                                    .iter()
+                                    .map(|p| p.label.clone())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                log::info!("AI look continues on {site}: {names}");
+                                self.state.ai_looking_at = Some(format!("{names} (from {site})"));
+                                self.state.ai_pending = true;
+                                self.send_ai(self.state.ai_question_ctx.clone(), samples);
+                            }
                         }
                     }
                 }
@@ -877,6 +891,7 @@ impl StormApp {
         self.state.ai_pending_look = None;
         self.state.ai_pending_site = None;
         self.state.ai_pending_site_at = None;
+        self.state.ai_pending_site_volumes = 0;
         self.send_ai(asked, Vec::new());
     }
 
@@ -906,6 +921,7 @@ impl StormApp {
         self.state.ai_pending_look = None;
         self.state.ai_pending_site = None;
         self.state.ai_pending_site_at = None;
+        self.state.ai_pending_site_volumes = 0;
         self.send_ai(question, Vec::new());
     }
 
@@ -1054,8 +1070,29 @@ impl StormApp {
             return;
         }
         let site = self.state.ai_pending_site.take().unwrap_or_default();
-        self.state.ai_pending_look = None;
         self.state.ai_pending_site_at = None;
+        let points = self.state.ai_pending_look.take().unwrap_or_default();
+        self.state.ai_pending_site_volumes = 0;
+        if self.state.site_id == site && self.state.current().is_some() && !points.is_empty() {
+            // The scan loaded but the backfill never produced a second one:
+            // answer with what is there and say motion is missing.
+            let samples: Vec<LookPointSample> = points
+                .into_iter()
+                .map(|(label, lat, lon, radius_mi)| LookPointSample {
+                    label,
+                    lat,
+                    lon,
+                    radius_mi,
+                })
+                .collect();
+            self.state.ai_looking_at = Some(format!("{site} (only one scan — no motion vectors)"));
+            self.state.ai_pending = true;
+            self.ai_note(format!(
+                "Only one {site} scan was available, so there is no radar motion yet."
+            ));
+            self.send_ai(self.state.ai_question_ctx.clone(), samples);
+            return;
+        }
         self.state.ai_looking_at = None;
         self.state.ai_pending = false;
         self.ai_note(format!(
@@ -1137,11 +1174,37 @@ impl StormApp {
             self.ai_note("Add your OpenCode Go API key in Settings → AI meteorologist.".into());
             return;
         }
-        let tracks: &[radar_render::StormTrack] = self
-            .tracks_cache
-            .as_ref()
-            .map(|(_, t)| t.as_slice())
-            .unwrap_or(&[]);
+        // The map computes tracks while drawing, but an AI question can
+        // arrive before the first draw (especially right after a site
+        // switch). Derive from the two newest scans here if needed.
+        let tracks_owned: Vec<radar_render::StormTrack> =
+            if let Some((_, tracks)) = &self.tracks_cache {
+                tracks.clone()
+            } else if self.state.ring.len() >= 2 {
+                let n = self.state.ring.len();
+                let prev = &self.state.ring[n - 2];
+                let cur = &self.state.ring[n - 1];
+                radar_render::compute_tracks(
+                    &prev.volume,
+                    &cur.volume,
+                    self.state.tilt_deg,
+                    site.latitude,
+                    site.longitude,
+                )
+            } else {
+                Vec::new()
+            };
+        let scan_interval_min = if self.state.ring.len() >= 2 {
+            let n = self.state.ring.len();
+            Some(
+                (self.state.ring[n - 1].volume_start - self.state.ring[n - 2].volume_start)
+                    .num_minutes()
+                    .max(1),
+            )
+        } else {
+            None
+        };
+        let tracks: &[radar_render::StormTrack] = &tracks_owned;
         let mrms = self.state.mrms.as_ref().map(|(m, _)| m.as_slice());
         let goes = self.state.goes.as_ref().map(|(i, _)| i.as_slice());
         let srm = self.state.srm_cache.as_ref().map(|(_, v)| v.as_ref());
@@ -1178,6 +1241,7 @@ impl StormApp {
             look_points: &look,
             srm_volume: srm,
             goes,
+            scan_interval_min,
             now: chrono::Utc::now(),
         });
 

@@ -638,6 +638,9 @@ pub struct AppState {
     /// Site being loaded for that look, and when the switch began.
     pub ai_pending_site: Option<String>,
     pub ai_pending_site_at: Option<std::time::Instant>,
+    /// Volumes received from that site since the switch (two are needed for
+    /// scan-to-scan motion).
+    pub ai_pending_site_volumes: u8,
     /// What the current report was built from ("KTWX 12:04Z · 3 markers").
     pub ai_snapshot: Option<String>,
     pub ai_generated_at: Option<std::time::Instant>,
@@ -877,6 +880,7 @@ impl Default for AppState {
             ai_pending_look: None,
             ai_pending_site: None,
             ai_pending_site_at: None,
+            ai_pending_site_volumes: 0,
             ai_snapshot: None,
             ai_generated_at: None,
             ai_test_pending: false,

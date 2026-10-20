@@ -42,3 +42,11 @@ earcutr = "0.5"
 [profile.dev]
 # Fast-ish builds while iterating on a big workspace
 debug = 1
+
+# …but dependencies carry *no* debug info. They are most of the size of every
+# test/example binary (a single stormscope test binary was ~300 MB, and a
+# week of test builds left 44 GB of them behind), and nobody debugs through
+# wgpu/egui here. The workspace crates keep `debug = 1` above, so backtraces
+# through app code stay exact.
+[profile.dev.package."*"]
+debug = 0

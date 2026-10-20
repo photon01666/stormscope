@@ -184,8 +184,8 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   different SPC day/type. A `DATA:` request makes the app load them (sidebar layers
   included), then the model answers from a second snapshot. Every tilt's gates at each
   sampled column are in the snapshot too, so tilt-specific questions get the real gate.
-- The window is edge-resizable and has a **chat height** slider, so the transcript can
-  be made as tall or short as you like.
+- The window is edge-resizable: drag any edge or corner and the transcript fills
+  the new size (no fixed chat box).
 - **Ask it questions** in a chat transcript: every question and answer stays
   in the window (you can scroll back, copy, clear), follow-ups keep the whole
   conversation in context, and a failed call is retried automatically and kept

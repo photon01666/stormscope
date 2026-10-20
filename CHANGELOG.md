@@ -43,7 +43,8 @@ log; entries start at the first public release.
   station totals or a different SPC day/type, then re-asks the model with the
   new snapshot. The sidebar layer switches on automatically while it fetches.
   The snapshot also carries every tilt's gates at each column.
-- The AI window is resizable and has a chat-height slider.
+- The AI window is edge-resizable: drag any edge or corner and the transcript
+  fills the window (the fixed chat-height slider is gone).
 - SPC outlooks now carry their **features** (label, name, risk level, approximate
   area) and, for every marker/LOOK area, either `spc_risk` (inside that area) or
   `spc_nearest` (distance to the closest edge). "General Thunderstorms Risk" and

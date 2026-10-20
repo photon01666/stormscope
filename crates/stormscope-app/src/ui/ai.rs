@@ -227,6 +227,8 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     );
     let max_h = (screen.y * 0.85).max(320.0);
     let mut open = app.state.ai_open;
+    let prev_window_h = app.state.ai_window_h;
+    let chrome_h = app.state.ai_chrome_h;
     let mut brief = false;
     let mut ask: Option<String> = None;
     let mut restore = false;
@@ -234,7 +236,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     let mut clear_marks = false;
     let mut retry = false;
 
-    egui::Window::new("AI meteorologist")
+    let response = egui::Window::new("AI meteorologist")
         .id(egui::Id::new("stormscope.ai"))
         .open(&mut open)
         .default_size(size)
@@ -345,7 +347,15 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             }
 
             ui.separator();
-            let chat_h = app.state.ai_chat_height.clamp(120.0, 900.0);
+            // The transcript fills the window: its height is whatever the user
+            // has dragged the window to, minus the measured chrome (header,
+            // toolbar, input, footer). One frame behind the drag, then settles.
+            let chat_h = if prev_window_h > 1.0 && chrome_h > 1.0 {
+                (prev_window_h - 28.0 - chrome_h).clamp(120.0, 1400.0)
+            } else {
+                (size.y * 0.42).clamp(160.0, 400.0)
+            };
+            let before_chat = ui.min_rect().height();
             egui::ScrollArea::vertical()
                 .id_salt("stormscope.ai.chat")
                 .stick_to_bottom(true)
@@ -423,6 +433,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                         });
                     }
                 });
+            let transcript_h = (ui.min_rect().height() - before_chat).max(0.0);
 
             if !app.state.ai_pending
                 && app
@@ -492,13 +503,6 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .into(),
                     );
                 }
-                ui.add(
-                    egui::Slider::new(&mut app.state.ai_chat_height, 120.0..=700.0)
-                        .text("chat height"),
-                )
-                .on_hover_text(
-                    "Drag to resize the transcript; drag the window edges to resize the popup",
-                );
             });
 
             ui.add_space(2.0);
@@ -511,7 +515,11 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                 .small()
                 .weak(),
             );
+            app.state.ai_chrome_h = (ui.min_rect().height() - transcript_h).clamp(120.0, 1200.0);
         });
+    if let Some(response) = &response {
+        app.state.ai_window_h = response.response.rect.height();
+    }
     app.state.ai_open = open;
     if brief {
         app.ai_request(None);

@@ -626,8 +626,10 @@ pub struct AppState {
     pub ai_question: String,
     /// The whole conversation shown in the window (kept for the session).
     pub ai_messages: Vec<AiChatMessage>,
-    /// Height of the transcript viewport (window is also edge-resizable).
-    pub ai_chat_height: f32,
+    /// Last outer window height, and the measured height of everything that is
+    /// not the transcript — the chat fills whatever the user drags the window to.
+    pub ai_window_h: f32,
+    pub ai_chrome_h: f32,
     /// The question the current request chain is answering (survives the
     /// LOOK round-trip).
     pub ai_question_ctx: Option<String>,
@@ -883,7 +885,8 @@ impl Default for AppState {
             ai_last_question: None,
             ai_question: String::new(),
             ai_messages: load_ai_chat(),
-            ai_chat_height: 280.0,
+            ai_window_h: 0.0,
+            ai_chrome_h: 0.0,
             ai_question_ctx: None,
             ai_look_depth: 0,
             ai_looking_at: None,

@@ -441,6 +441,13 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                         .id_salt("stormscope.ai.chat")
                         .stick_to_bottom(true)
                         .auto_shrink([false, false])
+                        // Always reserve the scrollbar: when it appeared or
+                        // vanished on the first pixel of a vertical resize it
+                        // changed the content width and re-wrapped the chat —
+                        // the "judder" at drag start.
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                        )
                         .show(ui, |ui| {
                             if app.state.ai_messages.is_empty() {
                                 ui.label(

@@ -31,7 +31,11 @@ log; entries start at the first public release.
   window shows "Looking at …". If another NEXRAD is materially closer to that
   area (30% and 40 mi closer, within range), the app switches to it, loads its
   volume and samples from there — no more "Wichita" answered by a radar 140
-  miles away.
+  miles away. It also waits for that site's **second scan** before asking the
+  model, so storm cells with heading/speed/arrival exist; tracks are derived
+  on demand from the two newest frames even if the map has not drawn yet. If
+  only one scan arrives, explicit motion in warning/MCD text is used, and a
+  missing vector is stated rather than guessed.
 - The snapshot now also carries **SRM** when built, the **GOES** pixel
   brightness, spectrum width/differential phase, and an **echo-region
   overview**: connected areas of ≥20 dBZ on the lowest cut, each with its

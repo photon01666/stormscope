@@ -852,7 +852,18 @@ impl StormApp {
         while matches!(self.state.ai_messages.last(), Some(m) if m.role == AiRole::Note) {
             self.state.ai_messages.pop();
         }
-        let question = self.state.ai_last_question.clone();
+        // The question lives in the transcript (which survives restarts), so a
+        // Retry after relaunch re-asks the same thing instead of writing a
+        // fresh brief.
+        let question = self
+            .state
+            .ai_messages
+            .iter()
+            .rev()
+            .find(|m| m.role == AiRole::User)
+            .map(|m| m.text.clone())
+            .filter(|text| !text.starts_with("Write a brief for my "));
+        self.state.ai_last_question = question.clone();
         self.state.ai_look_depth = 0;
         self.state.ai_looking_at = None;
         self.send_ai(question, Vec::new());

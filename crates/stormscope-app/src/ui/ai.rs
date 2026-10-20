@@ -366,11 +366,23 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             let stored = ctx
                 .memory(|m| m.area_rect(egui::Id::new("stormscope.ai")))
                 .map(|r| (r.height() - 28.0 * text_scale - chrome_h).clamp(80.0, 1400.0));
-            let chat_h = match (live, stored) {
+            let computed = match (live, stored) {
                 (Some(live), Some(stored)) => live.min(stored),
                 (Some(live), None) => live,
                 (None, Some(stored)) => stored,
                 (None, None) => (size.y * 0.42).clamp(160.0, 400.0),
+            };
+            // While the user is dragging the window, hold the transcript at
+            // its settled height. Recomputing it every frame made the content
+            // chase the pointer; it fills on release.
+            let pointer_down = ctx.input(|i| i.pointer.any_down());
+            let chat_h = if pointer_down && app.state.ai_chat_last > 1.0 {
+                // May shrink with the window (so a small drag cannot force it
+                // back), but never grows until the drag ends.
+                computed.min(app.state.ai_chat_last)
+            } else {
+                app.state.ai_chat_last = computed;
+                computed
             };
             egui::ScrollArea::vertical()
                 .id_salt("stormscope.ai.chat")
@@ -387,7 +399,18 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .weak(),
                         );
                     }
-                    for message in &app.state.ai_messages {
+                    let hidden = app.state.ai_messages.len().saturating_sub(20);
+                    if hidden > 0 {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{hidden} older message{} hidden — Clear chat to reset",
+                                if hidden == 1 { "" } else { "s" }
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                    }
+                    for message in &app.state.ai_messages[hidden..] {
                         match message.role {
                             AiRole::User => {
                                 ui.label(

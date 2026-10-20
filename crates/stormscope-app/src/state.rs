@@ -630,6 +630,9 @@ pub struct AppState {
     /// transcript (header, toolbar, input, footer), so the chat can fill the
     /// rest of whatever size the user drags it to.
     pub ai_chrome_h: f32,
+    /// The settled transcript height, held constant while the pointer is down
+    /// so a window drag is not fighting text re-layout every frame.
+    pub ai_chat_last: f32,
     /// The question the current request chain is answering (survives the
     /// LOOK round-trip).
     pub ai_question_ctx: Option<String>,
@@ -886,6 +889,7 @@ impl Default for AppState {
             ai_question: String::new(),
             ai_messages: load_ai_chat(),
             ai_chrome_h: 0.0,
+            ai_chat_last: 0.0,
             ai_question_ctx: None,
             ai_look_depth: 0,
             ai_looking_at: None,

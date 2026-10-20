@@ -413,6 +413,78 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     outlook_type = ty;
                     refresh_outlook(&outlooks, day, ty, &out);
                 }
+                DataCmd::LoadMrms => {
+                    // Its own worker: the newest file is a several-MB download
+                    // plus a PNG-packed GRIB2 decode, which must not sit in
+                    // front of radar commands.
+                    let out = out.clone();
+                    let site = current_site.clone();
+                    std::thread::spawn(move || {
+                        let source = radar_data::mrms::MrmsSource::new(
+                            radar_data::DiskCache::default_root(),
+                        );
+                        // Only the window around the radar: native 1 km
+                        // resolution instead of a blocky continental image.
+                        let crop = radar_core::sites::site(&site)
+                            .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude));
+                        // Two windows from the one downloaded file: the
+                        // CONUS-wide image (so the layer covers the map when
+                        // zoomed out) and the native-resolution window around
+                        // the radar on top of it.
+                        let product = radar_data::mrms::MrmsProduct::Reflectivity;
+                        let wide = source.latest(product, 3, None);
+                        let near = source.latest(product, 1, crop);
+                        match (wide, near) {
+                            (Ok(wide), Ok(near)) => {
+                                let _ = out.send(DataMsg::Mrms {
+                                    mosaics: vec![
+                                        std::sync::Arc::new(wide),
+                                        std::sync::Arc::new(near),
+                                    ],
+                                });
+                            }
+                            (Err(e), _) | (_, Err(e)) => {
+                                log::warn!("MRMS mosaic: {e:#}");
+                                let _ = out.send(DataMsg::Error(format!("MRMS mosaic: {e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadGoes {
+                    layer,
+                    west_satellite,
+                } => {
+                    // One WMS image per refresh (~1.5 MB); its own worker.
+                    let out = out.clone();
+                    let site = current_site.clone();
+                    std::thread::spawn(move || {
+                        let near_box = radar_core::sites::site(&site)
+                            .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude))
+                            .unwrap_or([34.0, -104.2, 44.0, -88.2]);
+                        // CONUS-wide for coverage, then the sharp local
+                        // window drawn on top.
+                        let fetch = |bbox: [f64; 4]| {
+                            radar_data::goes::GoesSource::new()
+                                .and_then(|src| src.latest(layer, west_satellite, bbox))
+                        };
+                        let wide = fetch([20.0, -130.0, 55.0, -60.0]);
+                        let near = fetch(near_box);
+                        match (wide, near) {
+                            (Ok(wide), Ok(near)) => {
+                                let _ = out.send(DataMsg::Goes {
+                                    images: vec![
+                                        std::sync::Arc::new(wide),
+                                        std::sync::Arc::new(near),
+                                    ],
+                                });
+                            }
+                            (Err(e), _) | (_, Err(e)) => {
+                                log::warn!("GOES overlay: {e:#}");
+                                let _ = out.send(DataMsg::Error(format!("GOES overlay: {e:#}")));
+                            }
+                        }
+                    });
+                }
                 DataCmd::LoadTotals(lat, lon) => {
                     // Its own worker: up to eight observation series is
                     // seconds of network work and must not sit in front of

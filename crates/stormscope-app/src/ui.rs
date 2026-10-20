@@ -615,7 +615,7 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         return;
     }
     let scale = app.sidebar_scale.max(1.0);
-    let size = egui::vec2(300.0 * scale, 132.0 * scale);
+    let size = egui::vec2(300.0 * scale, 210.0 * scale);
     let mut open = true;
     egui::Window::new("Map controls")
         .id(egui::Id::new("stormscope.map_controls"))
@@ -651,6 +651,33 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             }
             let r = ui.add(egui::Slider::new(&mut app.state.opacity, 0.0..=1.0).text("Opacity"));
             sliders.push((1, r.rect));
+            if app.state.show_mrms {
+                let r =
+                    ui.add(egui::Slider::new(&mut app.state.mrms_opacity, 0.05..=1.0).text("MRMS"));
+                sliders.push((10, r.rect));
+            }
+            if app.state.show_goes {
+                let r =
+                    ui.add(egui::Slider::new(&mut app.state.goes_opacity, 0.05..=1.0).text("GOES"));
+                sliders.push((11, r.rect));
+                ui.horizontal(|ui| {
+                    ui.label("Satellite");
+                    egui::ComboBox::from_id_salt("goes-layer")
+                        .selected_text(app.state.goes_layer.label())
+                        .show_ui(ui, |ui| {
+                            for layer in [
+                                radar_data::goes::GoesLayer::Infrared,
+                                radar_data::goes::GoesLayer::GeoColor,
+                            ] {
+                                ui.selectable_value(
+                                    &mut app.state.goes_layer,
+                                    layer,
+                                    layer.label(),
+                                );
+                            }
+                        });
+                });
+            }
             ui.checkbox(&mut app.state.map_probe, "Data probe")
                 .on_hover_text(
                     "Hover the map for the value under the cursor: product value, \
@@ -667,6 +694,14 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 }
                 1 => {
                     app.state.opacity = (app.state.opacity + 0.05 * steps).clamp(0.0, 1.0);
+                }
+                10 => {
+                    app.state.mrms_opacity =
+                        (app.state.mrms_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                }
+                11 => {
+                    app.state.goes_opacity =
+                        (app.state.goes_opacity + 0.05 * steps).clamp(0.05, 1.0);
                 }
                 _ => {}
             });
@@ -1306,6 +1341,52 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // Alerts toggle.
     ui.add_space(6.0);
+    ui.checkbox(&mut app.state.show_mrms, "MRMS mosaic")
+        .on_hover_text(match &app.state.mrms {
+            Some((m, at)) => {
+                let first = m.first();
+                format!(
+                    "{} — the multi-radar composite ({} · fetched {} min ago, \
+                     CONUS + a sharp radar window). Downloads the newest file when \
+                     enabled and every 10 minutes.",
+                    first.map_or("MRMS", |x| x.product.label()),
+                    first.map_or("--:--Z".to_string(), |x| x
+                        .time
+                        .format("%H:%MZ")
+                        .to_string()),
+                    at.elapsed().as_secs() / 60
+                )
+            }
+            None if app.state.mrms_requested_at.is_some() => {
+                "Downloading the multi-radar composite…".to_string()
+            }
+            None => "Multi-radar composite reflectivity, under the radar layer — \
+                     downloads on enable."
+                .to_string(),
+        });
+    ui.checkbox(&mut app.state.show_goes, "GOES satellite")
+        .on_hover_text(match &app.state.goes {
+            Some((img, at)) => {
+                let first = img.first();
+                format!(
+                    "{} from {} — NASA GIBS, fetched {} min ago (CONUS + a sharp \
+                     radar window; refreshes every 10 minutes)",
+                    first.map_or("Satellite", |x| x.layer.label()),
+                    first.map_or("GOES", |x| if x.west_satellite {
+                        "GOES-West"
+                    } else {
+                        "GOES-East"
+                    }),
+                    at.elapsed().as_secs() / 60
+                )
+            }
+            None if app.state.goes_pending.is_some() => {
+                "Downloading the satellite frame…".to_string()
+            }
+            None => "GOES infrared/GeoColor composite under the radar — downloads on \
+                     enable."
+                .to_string(),
+        });
     ui.checkbox(&mut app.state.show_alerts, "Show warnings");
     ui.checkbox(&mut app.state.show_tracks, "Show storm tracks");
     ui.checkbox(&mut app.state.show_lsrs, "Storm reports")

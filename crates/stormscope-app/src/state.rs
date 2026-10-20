@@ -412,6 +412,33 @@ pub struct AppState {
     /// (the CC bright band) every 2 kft. On by default — winter's answer to
     /// "is that rain or snow where I live?".
     pub show_melting_layer: bool,
+    /// Draw the MRMS multi-radar composite under the radar layer.
+    pub show_mrms: bool,
+    /// Wash strength of the MRMS layer (1 = the table's own colors).
+    pub mrms_opacity: f32,
+    /// The newest mosaics (CONUS-wide first, the radar window last) and when
+    /// they were received (refresh policy).
+    pub mrms: Option<(
+        Vec<std::sync::Arc<radar_data::mrms::Mosaic>>,
+        std::time::Instant,
+    )>,
+    /// When the in-flight MRMS fetch was requested (rate limit + retry).
+    pub mrms_requested_at: Option<std::time::Instant>,
+    /// Draw the GOES satellite overlay (NASA GIBS) under the radar.
+    pub show_goes: bool,
+    /// Wash strength of the satellite layer.
+    pub goes_opacity: f32,
+    /// Which satellite product: clean infrared or GeoColor.
+    pub goes_layer: radar_data::goes::GoesLayer,
+    /// The latest frames (CONUS-wide first, the radar window last) and when
+    /// they were received.
+    pub goes: Option<(
+        Vec<std::sync::Arc<radar_data::goes::GoesImage>>,
+        std::time::Instant,
+    )>,
+    /// The (layer, satellite) request in flight, and when it was sent.
+    pub goes_pending: Option<(radar_data::goes::GoesLayer, bool)>,
+    pub goes_requested_at: Option<std::time::Instant>,
     /// NWS warning polygons draped on the 3D ground. Its own switch and its
     /// own wash strength, so the 3D scene can keep the warnings even when the
     /// 2D map's alert layer is off (and vice versa). The fill reads like the
@@ -505,6 +532,9 @@ pub struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
+        // Scripted screenshots: `STORMSCOPE_LAYERS=mrms,goes` opens the data
+        // overlays at launch, the same spirit as `STORMSCOPE_3D_OPEN`.
+        let layers = std::env::var("STORMSCOPE_LAYERS").unwrap_or_default();
         let site = radar_core::sites::site(radar_core::DEFAULT_SITE)
             .unwrap_or_else(|| radar_core::sites::SITES.first().expect("site catalog"));
         Self {
@@ -632,6 +662,16 @@ impl Default for AppState {
             view3d_probe: true,
             map_probe: true,
             show_melting_layer: true,
+            show_mrms: layers.contains("mrms"),
+            mrms_opacity: 0.55,
+            mrms: None,
+            mrms_requested_at: None,
+            show_goes: layers.contains("goes"),
+            goes_opacity: 0.55,
+            goes_layer: radar_data::goes::GoesLayer::Infrared,
+            goes: None,
+            goes_pending: None,
+            goes_requested_at: None,
             view3d_alerts: true,
             view3d_alerts_fill: 1.0,
             view3d_alerts_top_kft: 30.0,

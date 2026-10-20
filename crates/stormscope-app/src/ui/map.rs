@@ -433,6 +433,16 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // warnings and tracks) so they stay visible on top of radar data.
     draw_range_rings(&painter, origin, &view, app);
 
+    // --- Layer 2.1: GOES satellite ------------------------------------------
+    // Under everything radar: the satellite is cloud context, the radar is
+    // the measurement.
+    draw_goes(&painter, origin, &view, app);
+
+    // --- Layer 2.2: MRMS multi-radar mosaic --------------------------------
+    // Under the single-site radar so the local gate detail stays on top; the
+    // mosaic is the surroundings' composite and the context layer.
+    draw_mrms(&painter, origin, &view, app);
+
     // --- Layer 2.5: SPC outlook *fills* ------------------------------------
     // Under the radar so echoes stay crisp; the outline pass (Layer 3.5)
     // re-draws the risk boundaries over the echoes.
@@ -1241,6 +1251,174 @@ pub(super) fn format_miles(miles: f64) -> String {
     } else {
         format!("{miles:.0} mi")
     }
+}
+
+/// The GOES satellite overlay: the GIBS WMS image is already in Web Mercator
+/// and already coloured, so it is a plain georeferenced rect (the map's
+/// projection is Mercator too). Two windows are drawn — the CONUS-wide image
+/// first, the sharp radar-area window on top.
+fn draw_goes(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &mut StormApp) {
+    if !app.state.show_goes {
+        return;
+    }
+    let Some(images) = app.state.goes.as_ref().map(|(images, _)| images.clone()) else {
+        return;
+    };
+    let alpha = (app.state.goes_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    for image in &images {
+        let texture = goes_texture(app, painter.ctx(), image);
+        let (x0, y0) = view.lonlat_to_view_px(image.west, image.north);
+        let (x1, y1) = view.lonlat_to_view_px(image.east, image.south);
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+            egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+        );
+        painter.image(
+            texture.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::from_white_alpha(alpha),
+        );
+    }
+    prune_textures(
+        painter.ctx(),
+        &mut app.goes_tex,
+        "stormscope-goes",
+        images
+            .iter()
+            .map(|i| std::sync::Arc::as_ptr(i) as usize)
+            .collect(),
+    );
+}
+
+/// The satellite frame's texture, rebuilt when the frame changes.
+fn goes_texture(
+    app: &mut StormApp,
+    ctx: &egui::Context,
+    image: &std::sync::Arc<radar_data::goes::GoesImage>,
+) -> egui::TextureHandle {
+    let key = std::sync::Arc::as_ptr(image) as usize;
+    if let Some((_, texture)) = app.goes_tex.iter().find(|(k, _)| *k == key) {
+        return texture.clone();
+    }
+    // Infrared renders the whole disk, warm ground included: as a map overlay
+    // that is an opaque gray sheet (GIBS' background sits near luma 130, cloud
+    // tops at 160-255). Keep the clouds instead — alpha ramps from the warm
+    // background (transparent at ≤140) to the coldest tops (opaque at ≥210),
+    // so the surface dissolves and the cloud field sits over the map.
+    // GeoColor is a proper colour composite and is used as-is.
+    let pixels_rgba: Vec<u8> = if image.layer == radar_data::goes::GoesLayer::Infrared {
+        let mut out = Vec::with_capacity(image.rgba.len());
+        for px in image.rgba.chunks_exact(4) {
+            let luma = (u32::from(px[0]) * 3 + u32::from(px[1]) * 4 + u32::from(px[2])) / 8;
+            let ramp = luma.saturating_sub(140) * 255 / 70;
+            let a = ramp.min(255).min(u32::from(px[3])) as u8;
+            out.extend_from_slice(&[px[0], px[1], px[2], a]);
+        }
+        out
+    } else {
+        image.rgba.clone()
+    };
+    let pixels =
+        egui::ColorImage::from_rgba_unmultiplied([image.width, image.height], &pixels_rgba);
+    let texture = ctx.load_texture(
+        format!("stormscope-goes-{key}"),
+        pixels,
+        egui::TextureOptions::LINEAR,
+    );
+    app.goes_tex.push((key, texture.clone()));
+    texture
+}
+
+/// Keep only the textures whose Arc identities are still on screen, and ask
+/// egui to drop the rest (they are registered under `name-{key}`).
+fn prune_textures(
+    ctx: &egui::Context,
+    cache: &mut Vec<(usize, egui::TextureHandle)>,
+    name: &str,
+    keep: std::collections::HashSet<usize>,
+) {
+    cache.retain(|(key, _)| {
+        if keep.contains(key) {
+            true
+        } else {
+            ctx.forget_image(&format!("{name}-{key}"));
+            false
+        }
+    });
+}
+
+/// The MRMS multi-radar composite: convert the decoded grid to an egui
+/// texture once per window, then draw it georeferenced (it is a regular
+/// lat/lon grid, so the screen rect is just its corners). The CONUS-wide
+/// image goes down first, the native-resolution radar window on top.
+fn draw_mrms(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &mut StormApp) {
+    if !app.state.show_mrms {
+        return;
+    }
+    let Some(mosaics) = app.state.mrms.as_ref().map(|(m, _)| m.clone()) else {
+        return;
+    };
+    let alpha = (app.state.mrms_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    for mosaic in &mosaics {
+        let texture = mrms_texture(app, painter.ctx(), mosaic);
+        let (x0, y0) = view.lonlat_to_view_px(mosaic.west, mosaic.north);
+        let (x1, y1) = view.lonlat_to_view_px(mosaic.east, mosaic.south);
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+            egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+        );
+        painter.image(
+            texture.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::from_white_alpha(alpha),
+        );
+    }
+    prune_textures(
+        painter.ctx(),
+        &mut app.mrms_tex,
+        "stormscope-mrms",
+        mosaics
+            .iter()
+            .map(|m| std::sync::Arc::as_ptr(m) as usize)
+            .collect(),
+    );
+}
+
+/// The mosaic's RGBA texture, rebuilt only when the mosaic changes (the Arc
+/// identity is the key — a refetch always yields a new one).
+fn mrms_texture(
+    app: &mut StormApp,
+    ctx: &egui::Context,
+    mosaic: &std::sync::Arc<radar_data::mrms::Mosaic>,
+) -> egui::TextureHandle {
+    let key = std::sync::Arc::as_ptr(mosaic) as usize;
+    if let Some((_, texture)) = app.mrms_tex.iter().find(|(k, _)| *k == key) {
+        return texture.clone();
+    }
+    let table = match mosaic.product {
+        radar_data::mrms::MrmsProduct::Reflectivity => {
+            radar_render::ColorTable::for_moment(radar_core::Moment::Reflectivity)
+        }
+        // Precipitation rate is a rain-intensity quantity: the VIL ramp is the
+        // intensity ramp the app already uses.
+        radar_data::mrms::MrmsProduct::PrecipRate => {
+            radar_render::ColorTable::for_moment(radar_core::Moment::Vil)
+        }
+    };
+    let mut rgba = Vec::with_capacity(mosaic.values.len() * 4);
+    for value in &mosaic.values {
+        rgba.extend_from_slice(&table.map(*value));
+    }
+    let image = egui::ColorImage::from_rgba_unmultiplied([mosaic.width, mosaic.height], &rgba);
+    let texture = ctx.load_texture(
+        format!("stormscope-mrms-{key}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    );
+    app.mrms_tex.push((key, texture.clone()));
+    texture
 }
 
 /// The 0 °C level: isohypses of the melting-layer product (the radar's CC

@@ -2880,6 +2880,7 @@ dependencies = [
  "chrono-tz",
  "env_logger",
  "flate2",
+ "image",
  "log",
  "nexrad-data",
  "radar-core",

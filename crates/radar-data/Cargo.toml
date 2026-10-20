@@ -21,6 +21,9 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 flate2 = "1"
+# MRMS ships PNG-packed GRIB2 (template 5.41): the data section is a 16-bit
+# grayscale PNG. Only the PNG decoder is needed.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # S3 listing/downloading for the NOAA OpenData buckets (anonymous).
 nexrad-data = { version = "=1.0.0-rc.7", default-features = false, features = ["aws"] }
 # nexrad-data's aws API is async (reqwest); driven from dedicated

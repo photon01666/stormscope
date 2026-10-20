@@ -48,6 +48,16 @@ pub enum DataMsg {
         key: u64,
         volume: Arc<radar_core::Volume>,
     },
+    /// The newest MRMS multi-radar composite: the CONUS-wide image plus the
+    /// sharp window around the radar.
+    Mrms {
+        mosaics: Vec<Arc<radar_data::mrms::Mosaic>>,
+    },
+    /// GOES satellite frames (GIBS WMS images): CONUS-wide and the sharp
+    /// window around the radar.
+    Goes {
+        images: Vec<Arc<radar_data::goes::GoesImage>>,
+    },
     /// One historical warning's raw NWS product text (`None` = the fetch
     /// failed; an Error message accompanies it).
     ArchiveText {
@@ -109,6 +119,13 @@ pub enum DataCmd {
         volume: Arc<radar_core::Volume>,
         toward_deg: f32,
         speed_kt: f32,
+    },
+    /// Fetch the newest MRMS multi-radar composite (the overlay's data).
+    LoadMrms,
+    /// Fetch the latest GOES frame for the chosen layer/satellite.
+    LoadGoes {
+        layer: radar_data::goes::GoesLayer,
+        west_satellite: bool,
     },
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
@@ -181,6 +198,10 @@ pub struct StormApp {
     pub tracks_cache: Option<(u64, Vec<radar_render::StormTrack>)>,
     /// When the in-flight SRM derivation was requested (staleness watchdog).
     pub srm_requested_at: Option<std::time::Instant>,
+    /// Cached MRMS textures, one per window (Arc identity + egui handle).
+    pub mrms_tex: Vec<(usize, egui::TextureHandle)>,
+    /// Cached GOES textures, one per window.
+    pub goes_tex: Vec<(usize, egui::TextureHandle)>,
     /// Geometry key of the cross-section curtain currently uploaded (the
     /// pane rebuilds it when the azimuth, product or volume changes).
     pub view3d_section_key: Option<u64>,
@@ -322,6 +343,8 @@ impl StormApp {
             radar_last_view_sig: 0,
             tracks_cache: None,
             srm_requested_at: None,
+            mrms_tex: Vec::new(),
+            goes_tex: Vec::new(),
             view3d_section_key: None,
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
@@ -557,6 +580,46 @@ impl StormApp {
                         at: std::time::Instant::now(),
                     });
                 }
+                DataMsg::Mrms { mosaics } => {
+                    self.state.mrms_requested_at = None;
+                    if let Some(wide) = mosaics.first() {
+                        log::info!(
+                            "MRMS mosaic: {} images, widest {}x{} at {} ({} dBZ max)",
+                            mosaics.len(),
+                            wide.width,
+                            wide.height,
+                            wide.time.format("%H:%MZ"),
+                            wide.values.iter().copied().fold(f32::MIN, f32::max)
+                        );
+                        let at = wide.time.format("%H:%MZ").to_string();
+                        self.state.status_text = format!("MRMS mosaic · {at}");
+                    }
+                    self.state.mrms = Some((mosaics, std::time::Instant::now()));
+                }
+                DataMsg::Goes { images } => {
+                    self.state.goes_pending = None;
+                    if let Some(first) = images.first() {
+                        log::info!(
+                            "GOES {}: {} images ({}x{} wide) from {} at {}",
+                            first.layer.label(),
+                            images.len(),
+                            first.width,
+                            first.height,
+                            if first.west_satellite {
+                                "GOES-West"
+                            } else {
+                                "GOES-East"
+                            },
+                            first.time.format("%H:%MZ")
+                        );
+                        self.state.status_text = format!(
+                            "GOES {} · {}",
+                            first.layer.label(),
+                            first.time.format("%H:%MZ")
+                        );
+                    }
+                    self.state.goes = Some((images, std::time::Instant::now()));
+                }
                 DataMsg::Srm { key, volume } => {
                     if self.state.srm_pending == Some(key) {
                         self.state.srm_pending = None;
@@ -701,6 +764,96 @@ impl StormApp {
         );
     }
 
+    /// Keep the MRMS mosaic fresh while its layer is on: fetch the newest
+    /// composite on first enable and every ten minutes after (the product
+    /// updates every two, but the overlay is context, not a warning feed).
+    fn pump_mrms(&mut self) {
+        if !self.state.show_mrms {
+            return;
+        }
+        let want = radar_core::sites::site(&self.state.site_id)
+            .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude));
+        let fresh = self.state.mrms.as_ref().is_some_and(|(m, at)| {
+            at.elapsed() < std::time::Duration::from_secs(600)
+                && m.last().is_some_and(|near| {
+                    want.is_none_or(|w| {
+                        (near.south - w[0]).abs() < 0.2
+                            && (near.west - w[1]).abs() < 0.2
+                            && (near.north - w[2]).abs() < 0.2
+                            && (near.east - w[3]).abs() < 0.2
+                    })
+                })
+        });
+        if fresh {
+            return;
+        }
+        // A mosaic covering the wrong window (site switch) or a failed fetch
+        // must not loop: back off between tries, on top of the request gate.
+        if self
+            .state
+            .mrms
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() < std::time::Duration::from_secs(30))
+        {
+            return;
+        }
+        if self
+            .state
+            .mrms_requested_at
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(120))
+        {
+            return;
+        }
+        self.state.mrms_requested_at = Some(std::time::Instant::now());
+        let _ = self.tx.send(DataCmd::LoadMrms);
+    }
+
+    /// Keep the GOES satellite overlay fresh while it is on: fetch on first
+    /// enable, on a layer/satellite change, and every ten minutes after.
+    fn pump_goes(&mut self) {
+        if !self.state.show_goes {
+            return;
+        }
+        let Some(site) = radar_core::sites::site(&self.state.site_id) else {
+            return;
+        };
+        let west = site.longitude < -105.0;
+        let bbox = radar_data::local_overlay_box(site.latitude, site.longitude);
+        let wanted = (self.state.goes_layer, west);
+        let current = self.state.goes.as_ref().is_some_and(|(images, at)| {
+            images.first().is_some_and(|img| {
+                (img.layer, img.west_satellite) == wanted
+                    && at.elapsed() < std::time::Duration::from_secs(600)
+                    && images.last().is_some_and(|near| {
+                        (near.south - bbox[0]).abs() < 0.2
+                            && (near.west - bbox[1]).abs() < 0.2
+                            && (near.north - bbox[2]).abs() < 0.2
+                            && (near.east - bbox[3]).abs() < 0.2
+                    })
+            })
+        });
+        if current {
+            return;
+        }
+        if let Some(pending) = self.state.goes_pending {
+            // A different layer/satellite supersedes the in-flight request;
+            // otherwise wait for it (with a staleness watchdog).
+            let stale = self
+                .state
+                .goes_requested_at
+                .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(180));
+            if pending == wanted && !stale {
+                return;
+            }
+        }
+        self.state.goes_pending = Some(wanted);
+        self.state.goes_requested_at = Some(std::time::Instant::now());
+        let _ = self.tx.send(DataCmd::LoadGoes {
+            layer: wanted.0,
+            west_satellite: wanted.1,
+        });
+    }
+
     /// Ask the data thread for the storm-relative volume the current frame +
     /// motion setting needs. One derivation is in flight at a time: while it
     /// builds (and on playback, where every frame wants its own), the panes
@@ -749,6 +902,8 @@ impl StormApp {
     fn ui_frame(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
         self.pump_srm();
+        self.pump_mrms();
+        self.pump_goes();
         self.handle_input(ui.ctx());
 
         // Texture accounting (debug): the app's GPU-side footprint, and the

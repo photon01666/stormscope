@@ -339,7 +339,7 @@ impl StormApp {
         // A window's resize band is only a few pixels wide by default; on a
         // HiDPI display it is easy to miss it and have the press fall through
         // to the map. Give every window a comfortably grabby edge.
-        cc.egui_ctx.style_mut(|style| {
+        cc.egui_ctx.all_styles_mut(|style| {
             style.interaction.resize_grab_radius_side = 14.0;
             style.interaction.resize_grab_radius_corner = 18.0;
         });

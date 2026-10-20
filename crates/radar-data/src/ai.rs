@@ -38,7 +38,7 @@ impl Default for AiConfig {
             base_url: OPENCODE_GO_BASE.to_string(),
             model: OPENCODE_GO_MODEL.to_string(),
             api_key: String::new(),
-            max_tokens: 700,
+            max_tokens: 2000,
         }
     }
 }
@@ -82,7 +82,7 @@ pub fn complete(config: &AiConfig, system: &str, user: &str, session: &str) -> R
         .user_agent(concat!("stormscope/", env!("CARGO_PKG_VERSION")))
         .build()
         .context("building the AI HTTP client")?;
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": config.model.trim(),
         "messages": [
             { "role": "system", "content": system },
@@ -113,9 +113,21 @@ pub fn complete(config: &AiConfig, system: &str, user: &str, session: &str) -> R
                     failure.message
                 );
                 let will_retry = failure.retryable && attempt < 3;
+                let empty = failure.message.contains("empty reply")
+                    || failure.message.contains("output tokens");
                 last = Some(failure);
                 if !will_retry {
                     break;
+                }
+                if empty {
+                    // Thinking models can spend the whole output budget
+                    // before writing the answer: double it and try again.
+                    let current = body["max_tokens"].as_u64().unwrap_or(2000);
+                    body["max_tokens"] = serde_json::json!((current * 2).min(4096));
+                    log::debug!(
+                        "AI empty reply: raising max_tokens to {}",
+                        body["max_tokens"]
+                    );
                 }
                 // A hiccup at the provider gateway (the Go endpoint can answer
                 // "Endpoint is unavailable" for one request while the next one
@@ -188,26 +200,48 @@ fn send_once(
             retryable,
         });
     }
-    reply_text(&text).map_err(|error| Failure {
-        message: format!("{error:#}"),
-        retryable: false,
-    })
+    match reply_text(&text) {
+        Ok(text) => Ok(text),
+        Err((message, retryable)) => Err(Failure { message, retryable }),
+    }
 }
 
 /// Pull `choices[0].message.content` out of a chat-completions response.
-fn reply_text(body: &str) -> Result<String> {
-    let value: serde_json::Value =
-        serde_json::from_str(body).context("the AI reply was not JSON")?;
-    let content = value
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
+/// Empty replies are retryable: a thinking model can consume the whole output
+/// budget in hidden reasoning and leave `content` empty with
+/// `finish_reason: "length"`.
+fn reply_text(body: &str) -> Result<String, (String, bool)> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| (format!("the AI reply was not JSON: {e}"), false))?;
+    let choice = value.get("choices").and_then(|c| c.get(0));
+    let message = choice.and_then(|c| c.get("message"));
+    let content = message
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
         .unwrap_or("")
         .trim();
     if content.is_empty() {
-        bail!("the model returned an empty reply");
+        let finish = choice
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(|f| f.as_str())
+            .unwrap_or("unknown");
+        let reasoning = message
+            .and_then(|m| m.get("reasoning_content").or_else(|| m.get("reasoning")))
+            .and_then(|r| r.as_str())
+            .map(str::len)
+            .unwrap_or(0);
+        log::warn!(
+            "AI empty reply: finish_reason={finish}, reasoning_chars={reasoning}, body_bytes={}",
+            body.len()
+        );
+        return Err((
+            if finish == "length" {
+                "the model ran out of output tokens before answering".to_string()
+            } else {
+                "the model returned an empty reply".to_string()
+            },
+            true,
+        ));
     }
     Ok(content.to_string())
 }
@@ -293,7 +327,17 @@ mod tests {
     fn replies_are_unwrapped_and_trimmed() {
         let body = r#"{"choices":[{"message":{"role":"assistant","content":"  pong\n"}}]}"#;
         assert_eq!(reply_text(body).unwrap(), "pong");
-        assert!(reply_text(r#"{"choices":[]}"#).is_err());
+        let (message, retryable) = reply_text(r#"{"choices":[]}"#).unwrap_err();
+        assert!(retryable, "{message}");
+        assert!(message.contains("empty"), "{message}");
+    }
+
+    #[test]
+    fn a_length_limited_empty_reply_is_retryable() {
+        let body = r#"{"choices":[{"message":{"content":""},"finish_reason":"length"}]}"#;
+        let (message, retryable) = reply_text(body).unwrap_err();
+        assert!(retryable);
+        assert!(message.contains("output tokens"), "{message}");
     }
 
     /// The whole request path against a loopback OpenAI-compatible server:

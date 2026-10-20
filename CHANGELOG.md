@@ -18,7 +18,10 @@ log; entries start at the first public release.
   question.
 - Transient gateway failures are handled: the client retries 429/5xx and
   connection errors, and if the endpoint is still down the question stays in
-  the chat with a **Retry** button instead of vanishing.
+  the chat with a **Retry** button instead of vanishing. Empty replies are
+  retried too, with a larger output budget (2,000 → 4,096 tokens): a thinking
+  model can spend the whole budget in hidden reasoning before writing the
+  answer, and that no longer becomes a dead end.
 - **It can look before it speaks**: a question about a place with no marker
   ("is it raining in Wichita?") gets a `LOOK:` round-trip — the app samples
   radar, MRMS, satellite and warnings at those coordinates, moves the map

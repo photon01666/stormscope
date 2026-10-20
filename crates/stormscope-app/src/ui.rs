@@ -796,7 +796,7 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             );
             ui.horizontal(|ui| {
                 ui.label("Shells");
-                for (i, dbz) in [30.0f32, 50.0, 65.0].into_iter().enumerate() {
+                for (i, dbz) in app.state.view3d_shell_preset.dbz().into_iter().enumerate() {
                     let mut on = app.state.view3d_iso[i];
                     let resp =
                         ui.add_enabled(ref_like, egui::Checkbox::new(&mut on, format!("{dbz:.0}")));
@@ -809,6 +809,23 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                         .weak()
                         .small(),
                 );
+                egui::ComboBox::from_id_salt("view3d-shell-preset")
+                    .selected_text(app.state.view3d_shell_preset.label())
+                    .width(88.0 * scale)
+                    .show_ui(ui, |ui| {
+                        for preset in crate::state::ShellPreset::ALL {
+                            ui.selectable_value(
+                                &mut app.state.view3d_shell_preset,
+                                preset,
+                                preset.label(),
+                            );
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Which dBZ the three shells mean: the convective set \
+                         (30/50/65) or winter (10/20/30, where snow lives)",
+                    );
             });
 
             // --- Storm-relative motion (the SRM product's inputs) --------
@@ -2297,9 +2314,16 @@ mod tests {
         );
     }
 
+    /// The default echo floor has to serve both seasons: low enough that light
+    /// snow and drizzle (10-25 dBZ) actually draw, high enough that a
+    /// clear-air scan is not a field of speckle. Snow is the stricter case —
+    /// a 30 dBZ floor hid all but the heaviest winter cores — so the default
+    /// sits at 10 and the map Controls slider is the escape hatch.
     #[test]
-    fn default_min_dbz_filters_clear_air_clutter() {
-        assert_eq!(crate::state::AppState::default().min_dbz, 30.0);
+    fn default_min_dbz_shows_snow_but_not_zero() {
+        let floor = crate::state::AppState::default().min_dbz;
+        assert!(floor <= 15.0, "snow lives at 10-25 dBZ, floor is {floor}");
+        assert!(floor > 0.0, "a zero floor is clear-air noise");
     }
 
     #[test]

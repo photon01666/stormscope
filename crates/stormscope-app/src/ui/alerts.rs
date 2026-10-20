@@ -154,6 +154,10 @@ pub(super) fn warning_color(w: &Warning) -> egui::Color32 {
         egui::Color32::from_rgb(255, 220, 60)
     } else if w.is_flash_flood() {
         egui::Color32::from_rgb(80, 255, 120)
+    } else if w.is_winter_storm() {
+        // Ice blue: these are the warnings winter radar work is about, and
+        // they used to be the same neutral white as a wind advisory.
+        egui::Color32::from_rgb(150, 210, 255)
     } else {
         egui::Color32::from_white_alpha(140)
     }
@@ -301,10 +305,15 @@ pub(super) fn significant_priority(w: &Warning) -> Option<u8> {
     // "Flood Warning" is not one of them: it is not radar-driven, and
     // flashing for it looked like a bug (the badge pulsing white).
     let family = if w.is_tornado() {
-        3
+        4
     } else if w.is_severe_thunderstorm() {
-        2
+        3
     } else if w.is_flash_flood() {
+        2
+    } else if w.is_winter_storm() {
+        // Below the convective three, above nothing: a Winter Storm Warning
+        // should pulse the badge (ice blue) on a quiet winter day, but a
+        // tornado warning in the same alert set still owns the badge.
         1
     } else {
         return None;
@@ -326,6 +335,8 @@ pub(super) fn pulse_color(w: &Warning) -> egui::Color32 {
         egui::Color32::from_rgb(255, 220, 60)
     } else if w.is_flash_flood() {
         egui::Color32::from_rgb(80, 255, 120)
+    } else if w.is_winter_storm() {
+        egui::Color32::from_rgb(150, 210, 255)
     } else {
         egui::Color32::from_rgb(255, 255, 255)
     };
@@ -1842,6 +1853,21 @@ mod tests {
             "river flooding is not a storm warning"
         );
         assert!(p("Flood Watch").is_none());
+        // Winter storms pulse too — below the convective three, above
+        // nothing — while freeze products and plain advisories stay out.
+        let winter = p("Winter Storm Warning").expect("winter storm pulses");
+        assert!(winter < p("Flash Flood Warning").unwrap());
+        assert!(p("Snow Squall Warning").is_some());
+        assert!(p("Blizzard Warning").is_some());
+        assert!(p("Freeze Warning").is_none(), "not a storm family");
+        assert!(
+            p("Winter Weather Advisory").is_none(),
+            "advisory, not warning"
+        );
+        assert_eq!(
+            pulse_color(&warn("w", "Winter Storm Warning", 35.0, -97.0, true)),
+            egui::Color32::from_rgb(150, 210, 255)
+        );
         assert!(p("High Wind Warning").is_none());
         assert!(p("Freeze Warning").is_none());
         assert!(p("Special Marine Warning").is_none());
@@ -1895,6 +1921,20 @@ mod tests {
         assert_eq!(
             warning_color(&warn("f", "Flash Flood Warning", 35.0, -97.0, true)),
             egui::Color32::from_rgb(80, 255, 120)
+        );
+        // Winter storms have their own ice blue, and only the storm-based
+        // families: a Freeze Warning stays neutral.
+        assert_eq!(
+            warning_color(&warn("w", "Winter Storm Warning", 35.0, -97.0, true)),
+            egui::Color32::from_rgb(150, 210, 255)
+        );
+        assert_eq!(
+            warning_color(&warn("i", "Ice Storm Warning", 35.0, -97.0, true)),
+            egui::Color32::from_rgb(150, 210, 255)
+        );
+        assert_ne!(
+            warning_color(&warn("z", "Freeze Warning", 35.0, -97.0, true)),
+            egui::Color32::from_rgb(150, 210, 255)
         );
     }
 }

@@ -43,8 +43,9 @@ telemetry.
   slab (feet), mesh detail, and the analysis tools:
   - **Cross-section** — cut a vertical slice through the volume along any
     azimuth (data drawn, no-measurement areas transparent).
-  - **Echo shells** — 30 / 50 / 65 dBZ isosurfaces, so a hail core's shape
-    reads at a glance.
+  - **Echo shells** — isosurfaces at a *Convective* preset (30 / 50 / 65 dBZ)
+    or a *Winter* one (10 / 20 / 30, where snow lives), so a hail core or a
+    snowband's structure reads at a glance.
   - **Data probe** — hover the pane for the first and strongest echo under
     the cursor: value, height in k ft, distance in miles, bearing.
   - **Storm motion** sliders for the storm-relative velocity product.
@@ -68,8 +69,10 @@ telemetry.
   with the NWS definition of each risk level — legend in the sidebar, hover
   an outline for the brief explanation, and click it for the full SPC
   forecaster discussion.
-- NWS warnings (tornado / severe thunderstorm / flash flood) drawn as colored
-  polygons, plus an alerts browser: every active alert nationwide on one tab,
+- NWS warnings (tornado / severe thunderstorm / flash flood / winter storm,
+  ice storm, blizzard, snow squall) drawn as colored polygons — ice blue for
+  the winter storm families — plus an alerts browser: every active alert
+  nationwide on one tab,
   just the selected station's area on the other, with a search filter. Each
   list groups by event category and reads positions in miles/bearings from
   the station ("42.1 mi SSW of KTWX").
@@ -89,8 +92,8 @@ telemetry.
   clicking a historical polygon opens its archived NWS text with a
   "load radar at this time" button.
 - The top-of-map alerts pill flashes in the issued color (tornado / severe
-  thunderstorm / flash flood, watches dimmed) when one of those watches or
-  warnings is in force near the selected station — checked every 60 seconds
+  thunderstorm / flash flood / winter storm, watches dimmed) when one of those
+  watches or warnings is in force near the selected station — checked every 60 seconds
   with a tiny point query, so a new warning lights up within about a minute.
 - NWS preliminary **local storm reports** (spotter/public reports) plotted at
   the reported location, and **SPC mesoscale discussions** as areas with the

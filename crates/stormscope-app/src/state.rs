@@ -399,6 +399,10 @@ pub struct AppState {
     /// Isosurface shells to draw, in dBZ (30 / 50 / 65); only meaningful for
     /// reflectivity-like products.
     pub view3d_iso: [bool; 3],
+    /// What the three shell checkboxes mean: convective 30/50/65 dBZ, or the
+    /// winter set (snow tops out near 20-25 dBZ, so 30/50/65 draws almost
+    /// nothing).
+    pub view3d_shell_preset: ShellPreset,
     /// The hover data probe (first + strongest echo under the cursor).
     pub view3d_probe: bool,
     /// The 2D map's hover probe: the value of the displayed product at the
@@ -533,8 +537,11 @@ impl Default for AppState {
             tilt_deg: 0.5,
             opacity: 0.50,
             // Suppresses the clear-air clutter/haze that reads as a green
-            // blob: only meaningful echoes light up by default.
-            min_dbz: 30.0,
+            // Snow lives at 10-25 dBZ: a 30 dBZ floor (the convective
+            // setting) hid everything but the heaviest winter cores, so the
+            // default sits at 10. Raise it from the map's Controls window
+            // when summer clutter needs thinning.
+            min_dbz: 10.0,
             view: MapView {
                 center_lat: site.latitude,
                 center_lon: site.longitude,
@@ -617,6 +624,7 @@ impl Default for AppState {
             view3d_section: false,
             view3d_section_az: 90.0,
             view3d_iso: [false, false, false],
+            view3d_shell_preset: ShellPreset::Convective,
             view3d_probe: true,
             map_probe: true,
             view3d_alerts: true,
@@ -1083,4 +1091,31 @@ mod tests {
         // The newest frame is what Live mode shows.
         assert_eq!(s.playhead, s.ring.len() - 1);
     }
+}
+
+/// Isosurface threshold presets: the convective set, and a winter set for the
+/// 10-30 dBZ world snow lives in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ShellPreset {
+    #[default]
+    Convective,
+    Winter,
+}
+
+impl ShellPreset {
+    pub fn dbz(self) -> [f32; 3] {
+        match self {
+            ShellPreset::Convective => [30.0, 50.0, 65.0],
+            ShellPreset::Winter => [10.0, 20.0, 30.0],
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ShellPreset::Convective => "Convective",
+            ShellPreset::Winter => "Winter",
+        }
+    }
+
+    pub const ALL: [ShellPreset; 2] = [ShellPreset::Convective, ShellPreset::Winter];
 }

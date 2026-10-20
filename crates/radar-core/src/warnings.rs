@@ -59,4 +59,21 @@ impl Warning {
     pub fn is_flash_flood(&self) -> bool {
         self.event.contains("Flash Flood")
     }
+
+    /// The short-fused, storm-based winter products (the ones the radar can
+    /// actually see: snow squalls, blizzards, ice storms). Freeze/frost
+    /// products are excluded on purpose — they are not storms, and treating
+    /// them like warnings would make the alerts badge cry wolf all winter.
+    pub fn is_winter_storm(&self) -> bool {
+        [
+            "Winter Storm",
+            "Ice Storm",
+            "Blizzard",
+            "Snow Squall",
+            "Lake Effect Snow",
+            "Heavy Snow",
+        ]
+        .iter()
+        .any(|family| self.event.contains(family))
+    }
 }

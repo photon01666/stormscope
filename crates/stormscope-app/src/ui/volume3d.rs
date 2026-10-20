@@ -134,7 +134,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         app.state
             .view3d_iso
             .iter()
-            .zip([30.0f32, 50.0, 65.0])
+            .zip(app.state.view3d_shell_preset.dbz())
             .filter(|(on, _)| **on)
             .map(|(_, t)| t)
             .collect()

@@ -221,11 +221,15 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     }
     let screen = ctx.content_rect().size();
     let text_scale = (app.sidebar_scale * 0.75).clamp(1.0, 1.8);
+    // Leave real room below the window: opening it at ~62 % of the screen
+    // height put the bottom edge against the constrain rect on a laptop
+    // display, so the first downward drag snapped back. 42 % is a compact
+    // starting size that can still be dragged much taller.
     let size = egui::vec2(
-        (screen.x * 0.33).clamp(460.0, 720.0),
-        (screen.y * 0.62).clamp(380.0, 700.0),
+        (screen.x * 0.31).clamp(420.0, 640.0),
+        (screen.y * 0.42).clamp(300.0, 520.0),
     );
-    let max_h = (screen.y * 0.85).max(320.0);
+    let max_h = (screen.y * 0.82).max(280.0);
     let mut open = app.state.ai_open;
     let mut brief = false;
     let mut ask: Option<String> = None;

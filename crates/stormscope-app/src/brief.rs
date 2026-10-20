@@ -131,6 +131,10 @@ pub fn system_prompt() -> String {
      fully. One DATA round per question.\n\
      - `cuts` lists every elevation at each sampled column (reflectivity, velocity, ZDR, CC), so \
      a question about a specific tilt uses that tilt's actual gate.\n\
+     - SPC: `spc_outlook.features` lists every category with its label/name/risk level, and \
+     `spc_risk` at a marker/area is the authoritative inside-this-risk-area answer. If it is \
+     absent, `spc_nearest` gives the distance to the closest area's edge. Do not say the \
+     polygons or labels are missing — answer from these fields.\n\
      - You are at the screen with the spotter. When the answer refers to anything the map can \
      show — a cell, a velocity couplet, a hail core, the echo top, the melting layer, a warning, \
      an approaching line — you MUST use the MAP directive to focus it: centre/zoom the marker or \
@@ -362,6 +366,13 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
                 "type": outlook.ty.label(),
                 "valid_utc": outlook.valid.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
                 "expire_utc": outlook.expire.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                "features": outlook.features.iter().map(|f| json!({
+                    "label": f.label,
+                    "name": f.name,
+                    "dn": f.dn,
+                    "risk_level": f.risk_level(),
+                    "area_sq_mi": round1(outlook_area_sq_mi(f)),
+                })).collect::<Vec<_>>(),
             }),
         );
     }
@@ -646,6 +657,30 @@ fn look_snapshot(input: &BriefInputs<'_>, point: &LookPointSample) -> Value {
         "area".into(),
         area_summary(input, point.lat, point.lon, point.radius_mi),
     );
+    if let Some(outlook) = input.outlook {
+        let (inside, nearest) = spc_for_point(outlook, point.lat, point.lon);
+        if let Some(feature) = inside {
+            root.insert(
+                "spc_risk".into(),
+                json!({
+                    "day": outlook.day,
+                    "category": feature.label,
+                    "name": feature.name,
+                    "risk_level": feature.risk_level(),
+                }),
+            );
+        } else if let Some((feature, distance_mi)) = nearest {
+            root.insert(
+                "spc_nearest".into(),
+                json!({
+                    "day": outlook.day,
+                    "category": feature.label,
+                    "name": feature.name,
+                    "distance_mi": round1(distance_mi),
+                }),
+            );
+        }
+    }
     Value::Object(root)
 }
 
@@ -876,26 +911,30 @@ fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) ->
         ),
     );
 
-    // SPC risk at the marker: the highest category whose area contains it.
+    // SPC risk at the marker: the highest category containing it, or the
+    // distance to the nearest area if it is outside all of them.
     if let Some(outlook) = input.outlook {
-        let mut best: Option<&radar_core::outlooks::OutlookFeature> = None;
-        for feature in &outlook.features {
-            let inside = feature.polygons.iter().any(|poly| {
-                poly.first()
-                    .is_some_and(|ring| ring_contains(ring, lon, lat))
-            });
-            if inside && best.is_none_or(|b| feature.dn > b.dn) {
-                best = Some(feature);
-            }
-        }
-        if let Some(feature) = best {
+        let (inside, nearest) = spc_for_point(outlook, lat, lon);
+        if let Some(feature) = inside {
             root.insert(
                 "spc_risk".into(),
                 json!({
                     "day": outlook.day,
                     "category": feature.label,
                     "name": feature.name,
+                    "risk_level": feature.risk_level(),
                     "valid_utc": outlook.valid.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                }),
+            );
+        } else if let Some((feature, distance_mi)) = nearest {
+            root.insert(
+                "spc_nearest".into(),
+                json!({
+                    "day": outlook.day,
+                    "category": feature.label,
+                    "name": feature.name,
+                    "distance_mi": round1(distance_mi),
+                    "note": "the point is outside every SPC risk area; this is the closest edge",
                 }),
             );
         }
@@ -1339,6 +1378,99 @@ fn motion_from_text(text: &str) -> Value {
         });
     }
     Value::Null
+}
+
+/// Highest SPC category containing the point, plus the nearest area and its
+/// distance when the point is outside all of them.
+fn spc_for_point(
+    outlook: &radar_core::outlooks::Outlook,
+    lat: f64,
+    lon: f64,
+) -> (
+    Option<&radar_core::outlooks::OutlookFeature>,
+    Option<(&radar_core::outlooks::OutlookFeature, f64)>,
+) {
+    let mut inside: Option<&radar_core::outlooks::OutlookFeature> = None;
+    let mut nearest: Option<(&radar_core::outlooks::OutlookFeature, f64)> = None;
+    for feature in &outlook.features {
+        let mut contained = false;
+        let mut min_mi = f64::MAX;
+        for polygon in &feature.polygons {
+            for ring in polygon {
+                if ring.len() < 2 {
+                    continue;
+                }
+                if ring_contains(ring, lon, lat) {
+                    contained = true;
+                }
+                min_mi = min_mi.min(ring_distance_mi(ring, lon, lat));
+            }
+        }
+        if contained && inside.is_none_or(|best| feature.dn > best.dn) {
+            inside = Some(feature);
+        }
+        if min_mi.is_finite() && nearest.is_none_or(|(_, d)| min_mi < d) {
+            nearest = Some((feature, min_mi));
+        }
+    }
+    (inside, nearest)
+}
+
+/// Distance from a point to the nearest edge of a ring, miles (equirectangular
+/// approximation — these are summaries, not geodesy).
+fn ring_distance_mi(ring: &[(f64, f64)], lon: f64, lat: f64) -> f64 {
+    let cos = lat.to_radians().cos().max(0.2);
+    let project = |(rlon, rlat): (f64, f64)| ((rlon - lon) * 111.32 * cos, (rlat - lat) * 110.574);
+    let mut best = f64::MAX;
+    for pair in ring.windows(2) {
+        let (ax, ay) = project(pair[0]);
+        let (bx, by) = project(pair[1]);
+        let (dx, dy) = (bx - ax, by - ay);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 <= f64::EPSILON {
+            0.0
+        } else {
+            (-(ax * dx + ay * dy) / len2).clamp(0.0, 1.0)
+        };
+        let (px, py) = (ax + dx * t, ay + dy * t);
+        best = best.min(px.hypot(py));
+    }
+    if ring.len() > 2 {
+        let (ax, ay) = project(*ring.last().expect("ring"));
+        let (bx, by) = project(ring[0]);
+        let (dx, dy) = (bx - ax, by - ay);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 <= f64::EPSILON {
+            0.0
+        } else {
+            (-(ax * dx + ay * dy) / len2).clamp(0.0, 1.0)
+        };
+        best = best.min((ax + dx * t).hypot(ay + dy * t));
+    }
+    best / 1609.344
+}
+
+/// Rough polygon area (shoelace in the local tangent plane), square miles.
+fn outlook_area_sq_mi(feature: &radar_core::outlooks::OutlookFeature) -> f64 {
+    let mut total = 0.0;
+    for polygon in &feature.polygons {
+        let Some(ring) = polygon.first() else {
+            continue;
+        };
+        if ring.len() < 3 {
+            continue;
+        }
+        let lat0 = ring.iter().map(|p| p.1).sum::<f64>() / ring.len() as f64;
+        let cos = lat0.to_radians().cos().max(0.2);
+        let mut area = 0.0;
+        for pair in ring.windows(2) {
+            let (x0, y0) = (pair[0].0 * 111.32 * cos, pair[0].1 * 110.574);
+            let (x1, y1) = (pair[1].0 * 111.32 * cos, pair[1].1 * 110.574);
+            area += x0 * y1 - x1 * y0;
+        }
+        total += area.abs() * 0.5 * 0.386_102; // km² -> mi²
+    }
+    total
 }
 
 fn c_to_f(c: f32) -> f32 {

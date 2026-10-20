@@ -177,6 +177,9 @@ OpenStreetMap-derived basemap tiles. No accounts, no API keys, no telemetry.
   Every tracked cell on the scope is included (speed, heading, peak dBZ,
   position) with a vector mean, not only cells within 60 mi of a marker — so
   "which way is the line moving" uses the same storm-track layer you see.
+- SPC outlooks are sent with their **features** (label, name, risk level) and a
+  point answer per marker/area: inside a risk area, or the distance to the nearest
+  one. It no longer has to guess whether a pin is in the general-thunderstorm area.
 - It can **request missing data**: MRMS, GOES, the NWS forecast, station totals or a
   different SPC day/type. A `DATA:` request makes the app load them (sidebar layers
   included), then the model answers from a second snapshot. Every tilt's gates at each

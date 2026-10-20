@@ -44,6 +44,10 @@ log; entries start at the first public release.
   new snapshot. The sidebar layer switches on automatically while it fetches.
   The snapshot also carries every tilt's gates at each column.
 - The AI window is resizable and has a chat-height slider.
+- SPC outlooks now carry their **features** (label, name, risk level, approximate
+  area) and, for every marker/LOOK area, either `spc_risk` (inside that area) or
+  `spc_nearest` (distance to the closest edge). "General Thunderstorms Risk" and
+  the severe categories are answerable without the raw polygons.
 - The snapshot now includes **every tracked cell** on the scope, not just those
   within 60 mi of a marker: position, peak dBZ, speed, heading and the nearest
   marker, plus a vector mean (`mean_motion`) and each echo region's nearest-cell

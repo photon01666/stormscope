@@ -626,6 +626,11 @@ pub struct AppState {
     pub ai_question: String,
     /// The whole conversation shown in the window (kept for the session).
     pub ai_messages: Vec<AiChatMessage>,
+    /// The AI window is size-managed by the app (egui's own vertical resize
+    /// subtracts the title bar on the first drag frame, which made the bottom
+    /// jump). `ai_resize_drag` = (mask, start pointer, start size).
+    pub ai_window_size: egui::Vec2,
+    pub ai_resize_drag: Option<(u8, egui::Pos2, egui::Vec2)>,
 
     /// The question the current request chain is answering (survives the
     /// LOOK round-trip).
@@ -882,6 +887,8 @@ impl Default for AppState {
             ai_last_question: None,
             ai_question: String::new(),
             ai_messages: load_ai_chat(),
+            ai_window_size: egui::Vec2::ZERO,
+            ai_resize_drag: None,
             ai_question_ctx: None,
             ai_look_depth: 0,
             ai_looking_at: None,

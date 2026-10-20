@@ -229,7 +229,14 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
         (screen.x * 0.31).clamp(420.0, 640.0),
         (screen.y * 0.42).clamp(300.0, 520.0),
     );
-    let max_h = (screen.y * 0.82).max(280.0);
+    let mut window_size = if app.state.ai_window_size.x > 1.0 {
+        app.state.ai_window_size
+    } else {
+        size
+    };
+    window_size.x = window_size.x.clamp(380.0, screen.x * 0.92);
+    window_size.y = window_size.y.clamp(280.0, screen.y * 0.92);
+    app.state.ai_window_size = window_size;
     let mut open = app.state.ai_open;
     let mut brief = false;
     let mut ask: Option<String> = None;
@@ -241,13 +248,10 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     egui::Window::new("AI meteorologist")
         .id(egui::Id::new("stormscope.ai"))
         .open(&mut open)
-        .default_size(size)
-        .max_height(max_h)
-        .min_size(egui::vec2(400.0, 300.0))
-        .resizable(true)
-        // Start near the top: a window parked at the bottom hits the
-        // constrain rect as soon as the bottom edge is dragged down, which
-        // reads as a 10 px jump before it catches up.
+        .fixed_size(window_size)
+        // No inner frame margin: the custom resize grips then sit on the
+        // actual window edge instead of a few pixels inside it.
+        .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::ZERO))
         .default_pos(egui::pos2(18.0, 64.0))
         .show(ctx, |ui| {
             super::apply_text_scale(ui, text_scale);
@@ -310,6 +314,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             egui::Panel::top("stormscope.ai.toolbar")
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
+                    ui.set_max_width((ui.available_width() - 14.0).max(120.0));
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if ui
@@ -363,6 +368,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             egui::Panel::bottom("stormscope.ai.footer")
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
+                    ui.set_max_width((ui.available_width() - 14.0).max(120.0));
                     ui.separator();
                     if !app.state.ai_pending
                         && app.state.ai_messages.last().is_some_and(|m| {
@@ -438,13 +444,14 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                         .small()
                         .weak(),
                     );
-                    // Leave the bottom edge to the window resize handle:
-                    // without this, the privacy text sits inside its grab band
-                    // and the press can miss the handle.
-                    ui.add_space(10.0);
+                    // Leave the bottom edge to the resize grip: without this,
+                    // the privacy text sits inside its band.
+                    ui.add_space(16.0);
                 });
 
             egui::CentralPanel::no_frame().show(ui, |ui| {
+                    let lane = (ui.available_width() - 14.0).max(80.0);
+                    ui.allocate_ui(egui::vec2(lane, ui.available_height()), |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("stormscope.ai.chat")
                         .stick_to_bottom(true)
@@ -543,7 +550,10 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                                 });
                             }
                         });
+                    });
                 });
+
+            resize_grips(ui, app);
         });
     app.state.ai_open = open;
     if brief {
@@ -573,6 +583,91 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
         app.state.ai_view_before = None;
         app.state.ai_snapshot = None;
         app.state.persist_ai_chat();
+    }
+}
+
+/// Bottom / right / corner resize grips. The window is `fixed_size`, so this
+/// is entirely ours: a relative delta from the size that was on screen when
+/// the drag began. No title-bar subtraction, no first-frame jump.
+fn resize_grips(ui: &mut egui::Ui, app: &mut StormApp) {
+    let rect = ui.max_rect();
+    let edge = 14.0;
+    let bottom = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 8.0, rect.bottom() - edge),
+        egui::pos2(rect.right() - edge, rect.bottom()),
+    );
+    let right = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - edge, rect.top() + 8.0),
+        egui::pos2(rect.right(), rect.bottom() - edge),
+    );
+    let corner = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - edge, rect.bottom() - edge),
+        rect.max,
+    );
+
+    let b = ui.interact(
+        bottom,
+        egui::Id::new("ai.resize.bottom"),
+        egui::Sense::drag(),
+    );
+    let r = ui.interact(right, egui::Id::new("ai.resize.right"), egui::Sense::drag());
+    let c = ui.interact(
+        corner,
+        egui::Id::new("ai.resize.corner"),
+        egui::Sense::drag(),
+    );
+
+    let pointer = ui.ctx().pointer_interact_pos();
+    if c.drag_started() {
+        app.state.ai_resize_drag = Some((3, pointer.unwrap_or_default(), app.state.ai_window_size));
+    } else if b.drag_started() {
+        app.state.ai_resize_drag = Some((1, pointer.unwrap_or_default(), app.state.ai_window_size));
+    } else if r.drag_started() {
+        app.state.ai_resize_drag = Some((2, pointer.unwrap_or_default(), app.state.ai_window_size));
+    }
+
+    if b.hovered() || b.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    if r.hovered() || r.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    if c.hovered() || c.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+
+    if let Some((mask, start_pos, start_size)) = app.state.ai_resize_drag {
+        if ui.input(|i| i.pointer.any_down()) {
+            if let Some(pos) = pointer {
+                let delta = pos - start_pos;
+                let mut size = start_size;
+                if mask & 1 != 0 {
+                    size.y += delta.y;
+                }
+                if mask & 2 != 0 {
+                    size.x += delta.x;
+                }
+                let screen = ui.ctx().content_rect().size();
+                size.x = size.x.clamp(380.0, screen.x * 0.92);
+                size.y = size.y.clamp(280.0, screen.y * 0.92);
+                app.state.ai_window_size = size;
+            }
+        } else {
+            app.state.ai_resize_drag = None;
+        }
+    }
+
+    // A subtle grip so the corner is discoverable.
+    let color = egui::Color32::from_gray(110);
+    for i in 0..3 {
+        let off = 3.0 + i as f32 * 3.5;
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.right() - off - 3.0, rect.bottom() - 2.0),
+                egui::pos2(rect.right() - 2.0, rect.bottom() - off - 3.0),
+            ],
+            egui::Stroke::new(1.0, color),
+        );
     }
 }
 

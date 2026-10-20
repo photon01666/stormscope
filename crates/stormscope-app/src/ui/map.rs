@@ -799,6 +799,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 lat,
                 lon,
                 min_value,
+                app.state.show_melting_layer,
             ) {
                 let lines = read.lines(app.state.moment);
                 draw_probe_plate(
@@ -829,8 +830,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 /// storm top rather than a mixed-unit number — the strongest cut in the
 /// column.
 struct MapProbe {
-    /// The echo's value under the pointer (the probe only exists over one).
-    value: f32,
+    /// The displayed product's value under the pointer, when there is an
+    /// echo drawn there (the probe's original subject).
+    value: Option<f32>,
     /// Cut the value came from (degrees).
     elev_deg: f32,
     /// Beam height of that cut at the point (km).
@@ -840,6 +842,10 @@ struct MapProbe {
     bearing_deg: f64,
     /// `(value, height km)` of the strongest cut in the column.
     column_max: Option<(f32, f32)>,
+    /// The 0 °C level (melting-layer height, kft) at this column, when the
+    /// overlay is on and the product has a value there. Read independently
+    /// of the selected product: the overlay is on screen, so it answers.
+    melting_kft: Option<f32>,
 }
 
 impl MapProbe {
@@ -848,23 +854,36 @@ impl MapProbe {
     /// compass bearing, then the column maximum when there is one.
     fn lines(&self, moment: radar_core::Moment) -> Vec<String> {
         let unit = moment.unit();
-        let mut out = Vec::with_capacity(3);
-        let value_text = match moment.value_label(self.value) {
-            Some(label) => format!("{} {label}", moment.label()),
-            None => format!("{} {:.0} {}", moment.label(), self.value, unit),
-        };
-        out.push(format!("{value_text} · {:.1}°", self.elev_deg));
-        out.push(format!(
-            "{:.1}k ft · {} {}",
-            self.height_km * radar_render::FT_PER_KM / 1000.0,
-            format_miles(self.range_km * 0.621_371),
-            compass16(self.bearing_deg)
-        ));
-        if let Some((v, h)) = self.column_max {
+        let mut out = Vec::with_capacity(4);
+        if let Some(value) = self.value {
+            let value_text = match moment.value_label(value) {
+                Some(label) => format!("{} {label}", moment.label()),
+                None => format!("{} {:.0} {}", moment.label(), value, unit),
+            };
+            out.push(format!("{value_text} · {:.1}°", self.elev_deg));
             out.push(format!(
-                "column max {v:.0} {unit} @ {:.1}k ft",
-                h * radar_render::FT_PER_KM / 1000.0
+                "{:.1}k ft · {} {}",
+                self.height_km * radar_render::FT_PER_KM / 1000.0,
+                format_miles(self.range_km * 0.621_371),
+                compass16(self.bearing_deg)
             ));
+            if let Some((v, h)) = self.column_max {
+                out.push(format!(
+                    "column max {v:.0} {unit} @ {:.1}k ft",
+                    h * radar_render::FT_PER_KM / 1000.0
+                ));
+            }
+        } else if self.melting_kft.is_some() {
+            // No echo at the gate, but the overlay is on and it has a value:
+            // the level is the readout, and where it is completes the line.
+            out.push(format!(
+                "{} {}",
+                format_miles(self.range_km * 0.621_371),
+                compass16(self.bearing_deg)
+            ));
+        }
+        if let Some(kft) = self.melting_kft {
+            out.push(format!("0 °C level {kft:.1}k ft"));
         }
         out
     }
@@ -893,12 +912,10 @@ fn map_probe_at(
     lat: f64,
     lon: f64,
     min_value: f32,
+    want_melting: bool,
 ) -> Option<MapProbe> {
     let range_km = radar_render::surface_distance_m(site_lon, site_lat, lon, lat) / 1000.0;
     let bearing_deg = radar_render::initial_bearing_deg(site_lon, site_lat, lon, lat);
-    let si = volume.sweep_index_for_tilt_moment(tilt_deg, moment)?;
-    let sweep = &volume.sweeps[si];
-    let md = sweep.moment(moment)?;
     let elevation = |s: &radar_core::Sweep| {
         if s.elevation_measured_deg.is_finite() && s.elevation_measured_deg != 0.0 {
             s.elevation_measured_deg
@@ -906,6 +923,9 @@ fn map_probe_at(
             s.elevation_deg
         }
     };
+    let si = volume.sweep_index_for_tilt_moment(tilt_deg, moment)?;
+    let sweep = &volume.sweeps[si];
+    let md = sweep.moment(moment)?;
     // The displayed tilt's own gate.
     let elev_deg = elevation(sweep);
     let height_km = radar_core::sampling::beam_height_km(range_km as f32, elev_deg);
@@ -913,12 +933,35 @@ fn map_probe_at(
     let table = radar_render::ColorTable::for_moment(moment);
     let ray = radar_core::sampling::nearest_ray_index(&sweep.azimuths_deg, bearing_deg as f32)?;
     let gate = radar_core::sampling::gate_index_at_slant(md, slant_km)?;
-    let value = md.value(ray, gate)?;
     // The rasterizer's rule for "this pixel is drawn": the color table's own
     // floor, the Min dBZ filter, and the table's alpha at that value. Below
-    // any of them the map shows basemap, so the probe says nothing.
-    let thresh = table.range().0.max(min_value);
-    if !value.is_finite() || value < thresh || table.map(value)[3] == 0 {
+    // any of them the map shows basemap, so there is no echo value.
+    let value = md.value(ray, gate).filter(|v| {
+        let thresh = table.range().0.max(min_value);
+        v.is_finite() && *v >= thresh && table.map(*v)[3] != 0
+    });
+
+    // The 0 °C overlay answers on hover whatever product is selected: it is
+    // on screen, so it should be readable without switching to MELT.
+    let melting_kft = if want_melting {
+        volume
+            .sweeps
+            .iter()
+            .find(|s| s.moment(radar_core::Moment::MeltingLayer).is_some())
+            .and_then(|s| {
+                let md = s.moment(radar_core::Moment::MeltingLayer)?;
+                let elev = elevation(s);
+                let h = radar_core::sampling::beam_height_km(range_km as f32, elev);
+                let slant = (range_km as f32).hypot(h);
+                let ray =
+                    radar_core::sampling::nearest_ray_index(&s.azimuths_deg, bearing_deg as f32)?;
+                let gate = radar_core::sampling::gate_index_at_slant(md, slant)?;
+                md.value(ray, gate)
+            })
+    } else {
+        None
+    };
+    if value.is_none() && melting_kft.is_none() {
         return None;
     }
 
@@ -962,6 +1005,7 @@ fn map_probe_at(
         range_km,
         bearing_deg,
         column_max,
+        melting_kft,
     })
 }
 
@@ -2949,10 +2993,10 @@ mod tests {
                 volume_start: chrono::Utc::now(),
                 vcp: None,
                 sequence_number: None,
-                sweep_count: 2,
+                sweep_count: 3,
                 moments: vec![radar_core::Moment::Reflectivity],
             },
-            sweeps: vec![mk(0.5, 45.0), mk(1.5, 55.0)],
+            sweeps: vec![mk(0.5, 45.0), mk(1.5, 55.0), mk(2.5, 45.0)],
         };
         let (slat, slon) = (39.0f64, -96.2f64);
         let at = |km_north: f64| slat + km_north / 111.0;
@@ -2966,6 +3010,7 @@ mod tests {
             at(30.0),
             slon,
             0.0,
+            false,
         )
         .expect("a readout over the core");
         assert!(
@@ -2978,7 +3023,7 @@ mod tests {
             "bearing {}",
             read.bearing_deg
         );
-        assert_eq!(read.value, 45.0, "the pixel's own gate");
+        assert_eq!(read.value, Some(45.0), "the pixel's own gate");
         assert!(
             (read.height_km - radar_core::sampling::beam_height_km(30.0, 0.5)).abs() < 0.05,
             "beam height {}",
@@ -2998,9 +3043,10 @@ mod tests {
             at(45.0),
             slon,
             0.0,
+            false,
         )
         .unwrap();
-        assert_eq!(far.value, 10.0);
+        assert_eq!(far.value, Some(10.0));
 
         // No echo under the pointer, no readout: past the volume's range...
         assert!(
@@ -3013,6 +3059,7 @@ mod tests {
                 at(555.0),
                 slon,
                 0.0,
+                false,
             )
             .is_none(),
             "beyond the data"
@@ -3028,6 +3075,7 @@ mod tests {
                 at(45.0),
                 slon,
                 20.0,
+                false,
             )
             .is_none(),
             "below the map's own filter"
@@ -3042,6 +3090,70 @@ mod tests {
         );
         assert!(lines[2].starts_with("column max 55"), "{lines:?}");
 
+        // The 0 °C overlay answers on hover whatever product is selected:
+        // build a melting-layer sweep (a CC dip on the 2nd of 3 cuts) and add
+        // it to the volume, then probe where the *echo* gate is empty.
+        let mut melt_vol = vol.clone();
+        for (sweep, cc) in melt_vol.sweeps.iter_mut().zip([0.99f32, 0.90, 0.99]) {
+            let fine = radar_core::MomentCalibration {
+                scale: 100.0,
+                offset: 0.0,
+                threshold: 0.0,
+            };
+            sweep.moments.push(MomentData {
+                kind: radar_core::Moment::CorrelationCoefficient,
+                calibration: fine,
+                range_start_m: 0.0,
+                gate_size_m: 250.0,
+                gate_count: 200,
+                ray_count: 360,
+                data: vec![(cc * 100.0).round() as i16; 360 * 200],
+            });
+        }
+        let melt = radar_core::derived::melting_layer_sweep(&melt_vol).expect("melting layer");
+        assert!(melt.moments[0].value(0, 119).is_some(), "a dip was found");
+        melt_vol.sweeps.push(melt);
+
+        // Past the volume's range the echo value is gone, but the level
+        // exists at the probe's own gate; want_melting=true must still answer.
+        let with_level = map_probe_at(
+            &melt_vol,
+            radar_core::Moment::Reflectivity,
+            0.5,
+            slat,
+            slon,
+            at(30.0),
+            slon,
+            0.0,
+            true,
+        )
+        .expect("the level answers even without a product match");
+        let level = with_level.melting_kft.expect("a 0 °C level");
+        // The dip is on the 1.5° cut: at 30 km that beam is ~0.84 km up,
+        // i.e. about 2.7 kft.
+        assert!(level > 1.5 && level < 6.0, "level {level} kft");
+        let lines = with_level.lines(radar_core::Moment::Reflectivity);
+        assert!(
+            lines.iter().any(|l| l.starts_with("0 °C level")),
+            "{lines:?}"
+        );
+        // With the overlay off, the same probe is just the echo readout.
+        assert!(
+            map_probe_at(
+                &melt_vol,
+                radar_core::Moment::Reflectivity,
+                0.5,
+                slat,
+                slon,
+                at(555.0),
+                slon,
+                0.0,
+                false,
+            )
+            .is_none(),
+            "no overlay, no level"
+        );
+
         // A product this volume does not carry: no readout at all.
         assert!(
             map_probe_at(
@@ -3053,6 +3165,7 @@ mod tests {
                 at(30.0),
                 slon,
                 0.0,
+                false,
             )
             .is_none()
         );

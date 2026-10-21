@@ -59,6 +59,13 @@ pub enum DataMsg {
     Goes {
         images: Vec<Arc<radar_data::goes::GoesImage>>,
     },
+    /// GOES GLM flashes from one 20-second file.
+    Lightning {
+        strikes: Vec<radar_data::glm::GlmStrike>,
+        satellite: String,
+        key: String,
+    },
+    LightningError(String),
     /// A cached day was deleted (scans removed, bytes reclaimed).
     CachedDeleted {
         date: chrono::NaiveDate,
@@ -149,6 +156,10 @@ pub enum DataCmd {
     LoadGoes {
         layer: radar_data::goes::GoesLayer,
         west_satellite: bool,
+    },
+    /// Fetch the newest GOES GLM lightning file for the chosen satellite.
+    LoadGlm {
+        west: bool,
     },
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
@@ -806,6 +817,33 @@ impl StormApp {
                         ),
                         Err(error) => format!("Failed: {error}"),
                     });
+                }
+                DataMsg::Lightning {
+                    strikes,
+                    satellite,
+                    key,
+                } => {
+                    self.state.lightning_pending = false;
+                    if self.state.lightning_last_key.as_deref() != Some(key.as_str()) {
+                        self.state.lightning_last_key = Some(key);
+                        self.state.lightning.extend(strikes);
+                        let cutoff = chrono::Utc::now() - chrono::Duration::minutes(20);
+                        self.state.lightning.retain(|s| s.time >= cutoff);
+                        if self.state.lightning.len() > 12_000 {
+                            let cut = self.state.lightning.len() - 12_000;
+                            self.state.lightning.drain(..cut);
+                        }
+                        log::info!(
+                            "lightning ({satellite}): {} flashes in memory",
+                            self.state.lightning.len()
+                        );
+                    }
+                    self.state.lightning_satellite = Some(satellite);
+                }
+                DataMsg::LightningError(error) => {
+                    self.state.lightning_pending = false;
+                    log::warn!("lightning: {error}");
+                    self.state.status_text = format!("lightning: {error}");
                 }
                 DataMsg::CachedDeleted {
                     date,
@@ -1641,6 +1679,40 @@ impl StormApp {
 
     /// Keep the GOES satellite overlay fresh while it is on: fetch on first
     /// enable, on a layer/satellite change, and every ten minutes after.
+    /// Fetch one GLM file per minute while the Lightning layer is enabled.
+    fn pump_lightning(&mut self) {
+        use std::time::Duration;
+        if !self.state.show_lightning {
+            return;
+        }
+        if self.state.lightning_pending {
+            if self
+                .state
+                .lightning_requested_at
+                .is_some_and(|t| t.elapsed() > Duration::from_secs(30))
+            {
+                self.state.lightning_pending = false;
+            } else {
+                return;
+            }
+        }
+        if self
+            .state
+            .lightning_requested_at
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
+        {
+            return;
+        }
+        let Some(site) = radar_core::sites::site(&self.state.site_id) else {
+            return;
+        };
+        let west = site.longitude < -105.0;
+        if self.tx.send(DataCmd::LoadGlm { west }).is_ok() {
+            self.state.lightning_pending = true;
+            self.state.lightning_requested_at = Some(std::time::Instant::now());
+        }
+    }
+
     fn pump_goes(&mut self) {
         if !self.state.show_goes {
             return;
@@ -1735,6 +1807,7 @@ impl StormApp {
         self.pump_srm();
         self.pump_mrms();
         self.pump_goes();
+        self.pump_lightning();
         self.pump_ai_site();
         self.pump_ai_data();
         self.handle_input(ui.ctx());

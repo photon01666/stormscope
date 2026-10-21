@@ -1686,6 +1686,18 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.measure_bubble_rect = None;
         }
     });
+    ui.checkbox(&mut app.state.show_lightning, "Lightning (GLM)")
+        .on_hover_text(
+            match (&app.state.lightning_satellite, app.state.lightning.len()) {
+                (Some(satellite), flashes) if flashes > 0 => format!(
+                    "{satellite} · {flashes} flashes in the last 20 minutes. NOAA GOES GLM, \
+                 one 20-second file per minute (~0.4 GB/day while on)."
+                ),
+                _ => "NOAA GOES-East/West GLM flashes, last 20 minutes. One 20-second \
+                  file per minute (~0.4 GB/day). Official public-domain data; off by default."
+                    .to_string(),
+            },
+        );
     match (
         app.state.measure_mode,
         app.state.measure_a,

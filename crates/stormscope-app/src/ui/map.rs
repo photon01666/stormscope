@@ -745,6 +745,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         draw_tracks(&painter, origin, &view, app);
     }
 
+    // --- GOES GLM lightning (above radar/warnings/tracks) -------------------
+    if app.state.show_lightning {
+        draw_lightning(&painter, origin, &view, app);
+    }
+
     // --- Radar sites + city labels (above radar/warnings/tracks) ------------
     // Painted late so echoes never bury the dots or "ID City" names.
     draw_sites(&painter, origin, &view, app);
@@ -3016,6 +3021,53 @@ fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
             egui::FontId::proportional(14.0),
             amber,
         );
+    }
+}
+
+/// GOES GLM flashes: white for fresh strikes, amber for older ones, fading
+/// out over 20 minutes. Only the last 20 minutes are kept in memory.
+fn draw_lightning(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
+    if app.state.lightning.is_empty() {
+        return;
+    }
+    let now = chrono::Utc::now();
+    let clip = painter.clip_rect();
+    for strike in &app.state.lightning {
+        let age = (now - strike.time).num_seconds().max(0) as f32;
+        if age > 1200.0 {
+            continue;
+        }
+        let (x, y) = view.lonlat_to_view_px(strike.lon, strike.lat);
+        let at = egui::pos2(origin.x + x as f32, origin.y + y as f32);
+        if !clip.contains(at) {
+            continue;
+        }
+        let fade = (1.0 - age / 1200.0).clamp(0.15, 1.0);
+        let alpha = (fade * 240.0) as u8;
+        if age < 120.0 {
+            painter.circle_filled(
+                at,
+                5.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 220, alpha / 4),
+            );
+            painter.circle_filled(
+                at,
+                2.8,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 225, alpha),
+            );
+        } else if age < 600.0 {
+            painter.circle_filled(
+                at,
+                2.2,
+                egui::Color32::from_rgba_unmultiplied(255, 200, 90, alpha),
+            );
+        } else {
+            painter.circle_filled(
+                at,
+                1.7,
+                egui::Color32::from_rgba_unmultiplied(255, 150, 70, alpha),
+            );
+        }
     }
 }
 

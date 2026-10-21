@@ -656,6 +656,26 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                         tiles: cached_sizes.1,
                     });
                 }
+                DataCmd::LoadGlm { west } => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let result = radar_data::glm::GlmSource::new()
+                            .and_then(|source| source.latest(west));
+                        match result {
+                            Ok(frame) => {
+                                let _ = out.send(DataMsg::Lightning {
+                                    strikes: frame.strikes,
+                                    satellite: frame.satellite,
+                                    key: frame.key,
+                                });
+                            }
+                            Err(error) => {
+                                log::warn!("GLM: {error:#}");
+                                let _ = out.send(DataMsg::LightningError(format!("{error:#}")));
+                            }
+                        }
+                    });
+                }
                 DataCmd::AiBrief {
                     config,
                     system,

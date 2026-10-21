@@ -5,6 +5,14 @@ log; entries start at the first public release.
 
 ## Unreleased
 
+**Lightning (GOES GLM)**
+- Optional **Lightning (GLM)** overlay: official NOAA GOES-East (GOES-19) /
+  West (GOES-18) flashes, decoded locally from the 20-second NetCDF-4 files on
+  the public AWS buckets (pure-Rust HDF5 reader, no C libraries). The app
+  fetches one file per minute and keeps 20 minutes of flashes; fresh strikes
+  are white/yellow, older ones amber, fading with age. Off by default; about
+  0.4 GB/day while enabled. No accounts, keys or commercial restrictions.
+
 **Timeline and display defaults**
 - The bottom bar now shows **every cached scan for the selected station**, not
   only the 24-frame ring: a time-proportional strip with the date range, scan

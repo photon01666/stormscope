@@ -17,6 +17,7 @@ pub mod ai;
 pub mod alerts;
 pub mod cache;
 pub mod forecast;
+pub mod glm;
 pub mod goes;
 pub mod lsrs;
 pub mod mcds;

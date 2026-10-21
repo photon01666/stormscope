@@ -5,7 +5,8 @@ with [egui/eframe](https://github.com/emilk/egui) on Vulkan (wgpu), native
 Wayland and X11.
 
 Free public data only: NEXRAD Level II (Unidata and NOAA AWS Open Data),
-`api.weather.gov`, SPC, IEM, NOAA MRMS, NASA GIBS and OpenStreetMap tiles.
+`api.weather.gov`, SPC, IEM, NOAA MRMS, NASA GIBS, GOES GLM lightning and
+OpenStreetMap tiles.
 No accounts, API keys or telemetry.
 
 [![CI](https://github.com/photon01666/stormscope/actions/workflows/ci.yml/badge.svg)](https://github.com/photon01666/stormscope/actions/workflows/ci.yml)
@@ -41,6 +42,8 @@ No accounts, API keys or telemetry.
   range rings.
 - MRMS national composite (CONUS + native 1 km window) and GOES infrared or
   GeoColor (CONUS + sharp window), on demand.
+- **GOES GLM lightning**: official NOAA flashes for the last 20 minutes (one
+  20-second file per minute, ~0.4 GB/day while enabled; off by default).
 - 0 °C level as isohypses every 2 kft (default on).
 
 **AI meteorologist (optional)**
@@ -87,6 +90,7 @@ system packages.
 | [SPC](https://www.spc.noaa.gov/) | Outlooks and mesoscale discussions |
 | [NOAA MRMS](https://www.nssl.noaa.gov/projects/mrms/) | National multi-radar composite |
 | [NASA GIBS](https://www.earthdata.nasa.gov/engage/open-data-services-software/earthdata-developer-portal/gibs) | GOES-East/West imagery |
+| [NOAA GOES GLM](https://www.goes-r.gov/spacesegment/glm.html) (`noaa-goes18/19`) | Lightning flashes (last 20 min) |
 | [Wikimedia/OpenStreetMap](https://www.openstreetmap.org/) | Basemap tiles (© OSM contributors, ODbL) |
 
 Requests are anonymous, cached on disk and rate-limited. The optional AI brief

@@ -515,6 +515,13 @@ pub struct AppState {
     )>,
     /// When the in-flight MRMS fetch was requested (rate limit + retry).
     pub mrms_requested_at: Option<std::time::Instant>,
+    /// Draw GOES GLM lightning flashes (official NOAA), last 20 minutes.
+    pub show_lightning: bool,
+    pub lightning: Vec<radar_data::glm::GlmStrike>,
+    pub lightning_pending: bool,
+    pub lightning_requested_at: Option<std::time::Instant>,
+    pub lightning_last_key: Option<String>,
+    pub lightning_satellite: Option<String>,
     /// Draw the GOES satellite overlay (NASA GIBS) under the radar.
     pub show_goes: bool,
     /// Wash strength of the satellite layer.
@@ -857,6 +864,12 @@ impl Default for AppState {
             mrms_opacity: 0.55,
             mrms: None,
             mrms_requested_at: None,
+            show_lightning: layers.contains("lightning"),
+            lightning: Vec::new(),
+            lightning_pending: false,
+            lightning_requested_at: None,
+            lightning_last_key: None,
+            lightning_satellite: None,
             show_goes: layers.contains("goes"),
             goes_opacity: 0.55,
             goes_layer: radar_data::goes::GoesLayer::Infrared,

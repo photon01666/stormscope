@@ -265,13 +265,26 @@ pub(super) fn archive_display_set<'a>(
     } else {
         state.current().map(|f| f.volume_start)
     };
-    archive_polygons_at(
+    let mut set = archive_polygons_at(
         &state.archive_warning_view,
         &state.archive_warnings,
         at,
         site.latitude,
         site.longitude,
-    )
+    );
+    // A warning the user just clicked should be visible while the archive
+    // window loads and seeks, even if the playhead is momentarily outside its
+    // in-effect window.
+    if let Some((id, armed)) = &state.archive_focus {
+        if armed.elapsed() < std::time::Duration::from_secs(90) {
+            if let Some(w) = state.archive_warning_view.iter().find(|w| &w.id == id) {
+                if !set.iter().any(|existing| existing.id == w.id) {
+                    set.push(w);
+                }
+            }
+        }
+    }
+    set
 }
 
 /// Distance from the site to an alert's centroid, km.
@@ -1223,6 +1236,8 @@ pub(super) fn jump_to_warning(app: &mut StormApp, idx: usize) {
         }
     }
 
+    app.state.show_alerts = true;
+    app.state.archive_focus = Some((w.id.clone(), std::time::Instant::now()));
     app.state.mode = Mode::Archive;
     app.state.archive_date = date;
     app.state.archive_minute = minute;

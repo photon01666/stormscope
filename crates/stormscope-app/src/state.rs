@@ -324,6 +324,10 @@ pub struct AppState {
     /// (the overlay's tooltip dwell).
     pub archive_hover: Option<String>,
     pub archive_hover_at: f64,
+    /// Historical warning just selected in the browser: keep its polygon on
+    /// screen for a short while even if the loaded scan is slightly outside
+    /// its in-effect window (the playhead seek can lag the archive load).
+    pub archive_focus: Option<(String, std::time::Instant)>,
     /// The per-pane control windows (opened from each pane's bottom-right
     /// "Controls" chip). The sidebar keeps everything else.
     pub map_controls_open: bool,
@@ -760,6 +764,7 @@ impl Default for AppState {
             archive_text_requested: std::collections::HashSet::new(),
             archive_hover: None,
             archive_hover_at: 0.0,
+            archive_focus: None,
             map_controls_open: false,
             view3d_controls_open: false,
             archive_minute: {

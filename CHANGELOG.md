@@ -17,6 +17,12 @@ log; entries start at the first public release.
   from a broken one. Strikes are drawn as small lightning-bolt glyphs; fresh
   ones pulse with a soft glow, older ones settle to amber and fade.
 
+**Alert browser**
+- Clicking a historical warning now turns the warnings layer on, switches to
+  the nearest station, and keeps that warning's polygon visible for 90 s while
+  the archive window loads/seeks (it no longer depends on the playhead already
+  being inside the warning's in-effect window).
+
 **AI map, marks and probe polish**
 - SPC `spc_risk`/`spc_nearest` now carry a ready-made summary; the model must
   quote it verbatim and never invent or re-derive an SPC distance.

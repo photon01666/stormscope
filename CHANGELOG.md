@@ -12,9 +12,10 @@ log; entries start at the first public release.
   fetches one file per minute and keeps 20 minutes of flashes; fresh strikes
   are white/yellow, older ones amber, fading with age. Off by default; about
   0.4 GB/day while enabled. No accounts, keys or commercial restrictions.
-  The sidebar shows the satellite, total flashes and how many are within
-  186 mi, so an active layer with no nearby strikes is distinguishable from
-  a broken one.
+  The Map controls window shows the satellite, total flashes and how many are
+  within 186 mi, so an active layer with no nearby strikes is distinguishable
+  from a broken one. Strikes are drawn as small lightning-bolt glyphs; fresh
+  ones pulse with a soft glow, older ones settle to amber and fade.
 
 **Radar rendering**
 - Gate splats now overlap by 40 % and the high-zoom radius cap is 256 px

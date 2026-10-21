@@ -3024,14 +3024,17 @@ fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
     }
 }
 
-/// GOES GLM flashes: white for fresh strikes, amber for older ones, fading
-/// out over 20 minutes. Only the last 20 minutes are kept in memory.
+/// GOES GLM flashes: a small lightning-bolt glyph for every strike. Fresh
+/// strikes pulse (white/yellow with a glow), older ones settle to amber and
+/// fade over 20 minutes.
 fn draw_lightning(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
     if app.state.lightning.is_empty() {
         return;
     }
     let now = chrono::Utc::now();
+    let time = painter.ctx().input(|i| i.time) as f32;
     let clip = painter.clip_rect();
+    let mut animating = false;
     for strike in &app.state.lightning {
         let age = (now - strike.time).num_seconds().max(0) as f32;
         if age > 1200.0 {
@@ -3042,33 +3045,77 @@ fn draw_lightning(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, a
         if !clip.contains(at) {
             continue;
         }
-        let fade = (1.0 - age / 1200.0).clamp(0.15, 1.0);
-        let alpha = (fade * 240.0) as u8;
-        if age < 120.0 {
-            painter.circle_filled(
-                at,
-                5.0,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 220, alpha / 4),
-            );
-            painter.circle_filled(
-                at,
-                2.8,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 225, alpha),
-            );
-        } else if age < 600.0 {
-            painter.circle_filled(
-                at,
-                2.2,
-                egui::Color32::from_rgba_unmultiplied(255, 200, 90, alpha),
-            );
-        } else {
-            painter.circle_filled(
-                at,
-                1.7,
-                egui::Color32::from_rgba_unmultiplied(255, 150, 70, alpha),
-            );
+        let fade = (1.0 - age / 1200.0).clamp(0.2, 1.0);
+        let fresh = age < 120.0;
+        if fresh {
+            animating = true;
         }
+        let pulse = if fresh {
+            (0.55
+                + 0.45
+                    * (time * 5.0 + strike.time.timestamp_subsec_millis() as f32 / 1000.0)
+                        .sin()
+                        .abs())
+        } else {
+            1.0
+        };
+        let alpha = (fade * if fresh { 255.0 } else { 210.0 } * pulse.max(0.55)) as u8;
+        let scale = if fresh {
+            1.15 + 0.35 * pulse
+        } else if age < 600.0 {
+            0.95
+        } else {
+            0.8
+        };
+        let color = if fresh {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 225, alpha)
+        } else if age < 600.0 {
+            egui::Color32::from_rgba_unmultiplied(255, 200, 90, alpha)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(255, 150, 70, alpha)
+        };
+        if fresh {
+            // Soft concentric glow, not a hard badge: one filled disc read as
+            // a gray circle around the bolt.
+            for (radius, glow) in [(13.0, 8.0), (9.0, 13.0), (5.0, 20.0)] {
+                painter.circle_filled(
+                    at,
+                    radius * scale,
+                    egui::Color32::from_rgba_unmultiplied(
+                        255,
+                        255,
+                        210,
+                        (fade * glow * pulse) as u8,
+                    ),
+                );
+            }
+        }
+        draw_lightning_bolt(painter, at, scale, color);
     }
+    if animating {
+        painter
+            .ctx()
+            .request_repaint_after(std::time::Duration::from_millis(80));
+    }
+}
+
+/// A three-segment bolt, dark-outlined so it reads over bright radar.
+fn draw_lightning_bolt(painter: &egui::Painter, at: egui::Pos2, scale: f32, color: egui::Color32) {
+    let points: Vec<egui::Pos2> = [(0.0, -7.0), (-2.6, -0.6), (0.4, -0.6), (-2.0, 6.0)]
+        .iter()
+        .map(|(x, y)| at + egui::vec2(x * scale, y * scale))
+        .collect();
+    painter.add(egui::Shape::line(
+        points.clone(),
+        egui::Stroke::new(
+            4.0 * scale,
+            egui::Color32::from_rgba_unmultiplied(10, 12, 20, (color.a() as f32 * 0.75) as u8),
+        ),
+    ));
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(2.0 * scale, color),
+    ));
 }
 
 /// The model's marks: a labelled circle at the ground position, with the

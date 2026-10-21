@@ -346,11 +346,12 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                             .min(day.len().saturating_sub(len));
                         let window = &day[start..start + len];
                         let _ = out.send(DataMsg::ClearFrames);
-                        let label = format!("Loading cached {site}");
+                        let label = format!("{site} radar · {date}");
                         let _ = out.send(DataMsg::LoadProgress {
                             label: label.clone(),
                             done: 0,
                             total: window.len() as u32,
+                            cached: true,
                         });
                         for (i, volume) in window.iter().enumerate() {
                             let decoded = std::fs::read(&volume.path)
@@ -374,6 +375,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                                 label: label.clone(),
                                 done: (i + 1) as u32,
                                 total: window.len() as u32,
+                                cached: true,
                             });
                         }
                         let _ = out.send(DataMsg::ArchiveInfo {
@@ -739,17 +741,20 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     label: fill_label.clone(),
                     done: 0,
                     total: fill_total,
+                    cached: true,
                 });
             }
             const BACKFILL_SLICE: Duration = Duration::from_millis(150);
             let deadline = std::time::Instant::now() + BACKFILL_SLICE;
             while let Some(r) = backfill.pop_front() {
+                let cached = is_cached(&source, &r);
                 let _ = emit_volume(&source, &r, &out);
                 fill_done += 1;
                 let _ = out.send(DataMsg::LoadProgress {
                     label: fill_label.clone(),
                     done: fill_done,
                     total: fill_total,
+                    cached,
                 });
                 if std::time::Instant::now() >= deadline {
                     break;
@@ -760,6 +765,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     label: fill_label.clone(),
                     done: fill_total,
                     total: fill_total,
+                    cached: true,
                 });
                 fill_total = 0;
                 fill_done = 0;
@@ -973,10 +979,12 @@ fn stream_window(
     let label = format!("{site} archive · {}", date.format("%b %-d"));
     let total = slice.len() as u32;
     for (i, r) in slice.iter().rev().enumerate() {
+        let cached = is_cached(source, r);
         let _ = out.send(DataMsg::LoadProgress {
             label: label.clone(),
             done: i as u32,
             total,
+            cached,
         });
         match source.fetch_archive(r) {
             Ok(volume) => {
@@ -993,6 +1001,7 @@ fn stream_window(
         label,
         done: total,
         total,
+        cached: true,
     });
 }
 

@@ -121,6 +121,9 @@ pub struct LoadProgress {
     pub label: String,
     pub done: u32,
     pub total: u32,
+    /// True when the current file is coming from the on-disk cache; false
+    /// only when it is actually being downloaded from S3.
+    pub cached: bool,
     pub at: std::time::Instant,
 }
 

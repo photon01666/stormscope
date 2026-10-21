@@ -42,6 +42,7 @@ pub enum DataMsg {
         label: String,
         done: u32,
         total: u32,
+        cached: bool,
     },
     /// A storm-relative velocity volume for one motion setting, built off the
     /// UI thread (the data thread's derive task).
@@ -723,11 +724,17 @@ impl StormApp {
                 DataMsg::ArchiveCrawl(status) => {
                     self.state.archive_crawl = Some(status);
                 }
-                DataMsg::LoadProgress { label, done, total } => {
+                DataMsg::LoadProgress {
+                    label,
+                    done,
+                    total,
+                    cached,
+                } => {
                     self.state.load_progress = Some(crate::state::LoadProgress {
                         label,
                         done,
                         total,
+                        cached,
                         at: std::time::Instant::now(),
                     });
                 }

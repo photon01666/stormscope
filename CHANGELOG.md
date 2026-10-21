@@ -17,6 +17,11 @@ log; entries start at the first public release.
   from a broken one. Strikes are drawn as small lightning-bolt glyphs; fresh
   ones pulse with a soft glow, older ones settle to amber and fade.
 
+**Loading feedback**
+- The bulk-load pill now says **Fetching cache · …** when the current scan is
+  read from disk and **Downloading …** only when it is actually fetched from
+  S3. Live backfill is mostly cached, so it no longer claims to be downloading.
+
 **Radar rendering**
 - Gate splats now overlap by 40 % and the high-zoom radius cap is 256 px
   instead of 48 px. Extreme zoom no longer turns the radar into separate

@@ -126,6 +126,8 @@ fn load_progress_pill(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rec
                         ui.label(
                             egui::RichText::new(if finished {
                                 format!("{} — rendering", p.label)
+                            } else if p.cached {
+                                format!("Fetching cache · {}", p.label)
                             } else {
                                 format!("Downloading {}", p.label)
                             })

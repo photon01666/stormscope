@@ -779,7 +779,8 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 ui.label(egui::RichText::new(status).small().weak());
             }
             ui.add_space(4.0);
-            warning_fill_slider(ui, app);
+            let fill = warning_fill_slider(ui, app);
+            sliders.push((12, fill));
             control_window_wheel(ui, &sliders, |target, steps| match target {
                 0 => {
                     app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);
@@ -794,6 +795,10 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 11 => {
                     app.state.goes_opacity =
                         (app.state.goes_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                }
+                12 => {
+                    app.state.alerts_fill =
+                        (app.state.alerts_fill + 0.05 * steps).clamp(0.0, 1.0);
                 }
                 _ => {}
             });
@@ -2110,20 +2115,24 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp) {
 /// The 2D warning-polygon fill slider, in the map's Controls window (the 3D
 /// pane has its own in 3D controls). 0% leaves the outlines and hides the wash
 /// entirely.
-pub(super) fn warning_fill_slider(ui: &mut egui::Ui, app: &mut StormApp) {
+pub(super) fn warning_fill_slider(ui: &mut egui::Ui, app: &mut StormApp) -> egui::Rect {
+    let mut rect = egui::Rect::NOTHING;
     ui.horizontal(|ui| {
         ui.label("Warning polygon fill");
-        ui.add_sized(
+        let response = ui.add_sized(
             [120.0, 18.0],
             egui::Slider::new(&mut app.state.alerts_fill, 0.0..=1.0)
                 .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-        )
-        .on_hover_text(
+        );
+        rect = response.rect;
+        response.on_hover_text(
             "Warning polygons are filled at rest and clear to the outline while \
              the pointer is on them, so the radar is visible where you inspect \
-             it. This scales the resting fill (0% = outlines only, 100% = 95%).",
+             it. This scales the resting fill (0% = outlines only, 100% = 95%). \
+             Scroll over the slider to adjust it.",
         );
     });
+    rect
 }
 
 /// One cache section: label, live size, and its "Clear …" button.

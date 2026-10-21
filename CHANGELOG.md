@@ -16,7 +16,8 @@ log; entries start at the first public release.
   slider) and **clear to the outline while the pointer is on them**, so the
   radar is visible exactly where you are inspecting it. The fill slider moved
   from Settings to the 2D **Map controls** window, matching the 3D pane's own
-  controls.
+  controls. Both 2D and 3D default to **45 %**, and the 2D slider now responds
+  to the mouse wheel like every other control-window slider.
 - **GO LIVE / the L key now cancels an in-flight archive window stream** and
   returns to live immediately; previously it queued behind up to 24 sequential
   archive downloads and looked stuck. The archive popup's Live selector uses

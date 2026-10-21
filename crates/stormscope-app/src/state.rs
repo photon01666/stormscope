@@ -805,7 +805,7 @@ impl Default for AppState {
             alerts_filter: String::new(),
             alerts_hover: None,
             alerts_map_stack: Vec::new(),
-            alerts_fill: 1.0,
+            alerts_fill: 0.45,
             outlook_hover: None,
             outlook_hover_at: 0.0,
             alerts_map_hover_at: 0.0,
@@ -888,7 +888,7 @@ impl Default for AppState {
             goes_pending: None,
             goes_requested_at: None,
             view3d_alerts: true,
-            view3d_alerts_fill: 1.0,
+            view3d_alerts_fill: 0.45,
             view3d_alerts_top_kft: 30.0,
             // A typical central-US supercell motion: east/southeast at 30 kt.
             srm_dir_deg: 275.0,

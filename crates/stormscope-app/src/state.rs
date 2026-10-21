@@ -222,7 +222,7 @@ impl AiAnnotationKind {
             AiAnnotationKind::Wind => [255, 225, 90],
             AiAnnotationKind::Flood => [80, 220, 150],
             AiAnnotationKind::Updraft => [120, 200, 255],
-            AiAnnotationKind::Generic => [200, 200, 200],
+            AiAnnotationKind::Generic => [120, 200, 255],
         }
     }
 }

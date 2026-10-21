@@ -158,7 +158,13 @@ pub fn system_prompt() -> String {
      that 2D cannot show. At most 4 marks, only where the data supports them, and explain each \
      choice in the prose. Under a tornado warning, put the tornado mark on the velocity \
      couplet/tight rotation (or the warning polygon centroid if velocity is missing) with a \
-     1-3 mile radius. Never mention the directive itself.\n\
+     1-3 mile radius.\n\
+     - Annotations are for a **specific hazard or feature** the answer is about (a tornado \
+     couplet, hail core, updraft top, a warning polygon) or something the spotter explicitly \
+     asked you to show. Do **not** mark a broad weak-echo area, the nearest precipitation, or \
+     anything in a routine quiet-weather brief. Every mark needs a short label and one clause in \
+     the prose saying why it is there; keep hazard circles to 1-5 miles. Never mention the \
+     directive itself.\n\
      - If the user asks a question instead of requesting a brief, answer that question directly \
      from the snapshot: lead with the answer, give the supporting numbers, and keep it under 150 \
      words unless the data demands more. Keep the same units and the MAP option.\n\

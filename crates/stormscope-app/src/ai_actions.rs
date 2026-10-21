@@ -332,7 +332,17 @@ pub fn apply(action: &MapAction, state: &mut AppState) -> String {
             });
         }
         if !state.ai_annotations.is_empty() {
-            parts.push(format!("{} marking(s)", state.ai_annotations.len()));
+            let labels: Vec<&str> = state
+                .ai_annotations
+                .iter()
+                .map(|mark| mark.label.as_str())
+                .collect();
+            parts.push(format!(
+                "{} mark{}: {}",
+                labels.len(),
+                if labels.len() == 1 { "" } else { "s" },
+                labels.join(", ")
+            ));
         }
     }
     if let Some(az) = action.section_az {

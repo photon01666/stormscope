@@ -59,6 +59,12 @@ pub enum DataMsg {
     Goes {
         images: Vec<Arc<radar_data::goes::GoesImage>>,
     },
+    /// A cached day was deleted (scans removed, bytes reclaimed).
+    CachedDeleted {
+        date: chrono::NaiveDate,
+        removed: usize,
+        bytes: u64,
+    },
     /// The AI meteorologist's reply, or the error to show in its window.
     AiBrief(Result<String, String>),
     /// Result of the Settings popup's connectivity test.
@@ -97,6 +103,11 @@ pub enum DataCmd {
     /// (Central, minutes since midnight) — the loaded window covers it;
     /// `None` starts from the newest scan of that day.
     LoadArchiveDate(String, chrono::NaiveDate, Option<u32>),
+    /// Delete every cached scan for one Central day at a site.
+    DeleteCachedDay {
+        site: String,
+        date: chrono::NaiveDate,
+    },
     /// Load a Central day entirely from the on-disk cache (no network): the
     /// window of cached scans around `target`.
     LoadCachedDay {
@@ -795,6 +806,23 @@ impl StormApp {
                         ),
                         Err(error) => format!("Failed: {error}"),
                     });
+                }
+                DataMsg::CachedDeleted {
+                    date,
+                    removed,
+                    bytes,
+                } => {
+                    log::info!(
+                        "deleted {removed} cached scans for {date} ({:.1} MB)",
+                        bytes as f64 / 1e6
+                    );
+                    self.state.downloads_confirm = None;
+                    self.state.status_text = format!(
+                        "deleted {removed} cached scans for {date} · {:.1} GB freed",
+                        bytes as f64 / 1e9
+                    );
+                    self.refresh_cached_scans();
+                    self.refresh_cached_days();
                 }
                 DataMsg::Srm { key, volume } => {
                     if self.state.srm_pending == Some(key) {

@@ -593,6 +593,8 @@ pub struct AppState {
     pub cached_days_site: String,
     pub cached_days_at: Option<std::time::Instant>,
     pub downloads_open: bool,
+    /// Day awaiting a second click before its cached scans are deleted.
+    pub downloads_confirm: Option<chrono::NaiveDate>,
 
     // User-placed map markers.
     pub markers: Vec<MapMarker>,
@@ -895,6 +897,7 @@ impl Default for AppState {
             cached_days_site: String::new(),
             cached_days_at: None,
             downloads_open: false,
+            downloads_confirm: None,
             markers: load_markers(),
             pending_marker: None,
             pending_marker_label: String::new(),

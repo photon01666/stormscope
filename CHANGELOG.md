@@ -14,8 +14,11 @@ log; entries start at the first public release.
 - **Downloaded…** in the timeline opens the full on-disk history for the station:
   every cached day with scan count, size and time range, Start/Mid/End loads, and
   earlier/later 24-scan windows, all decoded from disk. Archive (S3) is unchanged.
-- Hovering either strip shows the exact Central date and time (and size on the
-  disk strip).
+- Hovering the timeline strip shows the exact Central date and time (and size
+  on the disk strip). The separate disk strip was removed — the **Downloaded…**
+  button in the same top bar opens the full browser instead.
+- Each cached day in the Downloaded window has a **Delete** button (with an
+  inline confirmation) that removes that whole day's scans from disk.
 - 2D radar opacity and 3D volume opacity now default to **100 %**.
 
 ## v1.4.7 — 2026-10-20

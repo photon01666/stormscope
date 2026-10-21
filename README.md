@@ -19,7 +19,8 @@ No accounts, API keys or telemetry.
 - The timeline exposes **every cached scan for the selected site** — hover for
   the exact date/time and size, click to load that day straight from the cached
   files (no downloads). **Downloaded…** opens the full day-by-day history with
-  Start/Mid/End and earlier/later 24-scan windows. Archive (S3) is unchanged.
+  Start/Mid/End and earlier/later 24-scan windows, plus a Delete action per day
+  (with confirmation). Archive (S3) is unchanged.
 - REF, VEL, SW, ZDR, PHI, KDP, CC; derived VIL, Echo Tops, MEHS, SRM and the
   winter products HCA, snow rate and melting level.
 - Hover probe: gate value, beam height (k ft), distance/bearing, column max.

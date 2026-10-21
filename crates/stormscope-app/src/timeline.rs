@@ -5,17 +5,6 @@ use crate::app::{DataCmd, StormApp};
 use crate::state::{AppState, LoopState, Mode};
 
 pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
-    // Expose every downloaded scan for the selected site, not just the 24 in
-    // the ring. This is a directory scan, so refresh it lazily.
-    if app.state.cached_scans_site != app.state.site_id
-        || app
-            .state
-            .cached_scans_at
-            .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(20))
-    {
-        app.refresh_cached_scans();
-    }
-
     ui.horizontal(|ui| {
         // Play/pause.
         let playing = app.state.loop_state == LoopState::Playing;
@@ -58,12 +47,19 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         } else {
             ui.label("no frames");
         }
+        ui.separator();
+        if ui
+            .button("Downloaded…")
+            .on_hover_text("Browse every cached day for this station")
+            .clicked()
+        {
+            app.state.downloads_open = true;
+        }
     });
 
     // Scrub strip: one tick per retained frame.
     let n = app.state.ring.len();
     if n == 0 {
-        disk_history(ui, app);
         return;
     }
     let height = 18.0;
@@ -116,124 +112,7 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
             ));
         }
     }
-
-    disk_history(ui, app);
 }
-
-/// A time-proportional strip of every cached scan for the selected site.
-/// Clicking near a tick loads that day around that scan (cache-first, so
-/// nothing already on disk is downloaded again).
-fn disk_history(ui: &mut egui::Ui, app: &mut StormApp) {
-    let scans = app.state.cached_scans.clone();
-    if scans.is_empty() {
-        ui.label(
-            egui::RichText::new(format!(
-                "On disk: no cached {} scans yet",
-                app.state.site_id
-            ))
-            .small()
-            .weak(),
-        );
-        return;
-    }
-    let total: u64 = scans.iter().map(|s| s.bytes).sum();
-    let first = scans.first().map(|s| s.start).unwrap_or_default();
-    let last = scans.last().map(|s| s.start).unwrap_or_default();
-    let central = crate::timefmt::central();
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!(
-                "On disk {}: {} scans · {:.1} GB · {} – {} · click a tick to load",
-                app.state.site_id,
-                scans.len(),
-                total as f64 / 1e9,
-                first.with_timezone(central).format("%b %d"),
-                last.with_timezone(central).format("%b %d"),
-            ))
-            .small()
-            .weak(),
-        );
-        if ui
-            .small_button("Downloaded…")
-            .on_hover_text("Browse every cached day for this station")
-            .clicked()
-        {
-            app.state.downloads_open = true;
-        }
-    });
-
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::click());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(24, 26, 32));
-    let span = (last - first).num_seconds().max(1) as f64;
-    for scan in &scans {
-        let t = (scan.start - first).num_seconds() as f64 / span;
-        let x = rect.left() + t as f32 * rect.width();
-        let in_ring = app
-            .state
-            .ring
-            .iter()
-            .any(|f| (f.volume_start - scan.start).num_seconds().abs() <= 90);
-        let (color, h) = if in_ring {
-            (egui::Color32::from_rgb(90, 180, 255), 14.0)
-        } else {
-            (egui::Color32::from_rgb(72, 78, 92), 9.0)
-        };
-        painter.rect_filled(
-            egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(1.5, h)),
-            0.0,
-            color,
-        );
-    }
-
-    let pointer = response.interact_pointer_pos();
-    let hovered = response.hover_pos().and_then(|pos| {
-        let frac = ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0) as f64;
-        let target = first + chrono::Duration::seconds((frac * span) as i64);
-        scans
-            .iter()
-            .min_by_key(|s| (s.start - target).num_seconds().abs())
-            .copied()
-    });
-    let clicked = response.clicked();
-    let response = if let Some(scan) = hovered {
-        response.on_hover_text(format!(
-            "{} · {:.1} MB — click to load this day/time",
-            stamp_full(&scan.start),
-            scan.bytes as f64 / 1e6
-        ))
-    } else {
-        response
-    };
-
-    if clicked {
-        if let Some(pos) = pointer {
-            let frac = ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0) as f64;
-            let target = first + chrono::Duration::seconds((frac * span) as i64);
-            if let Some(scan) = scans
-                .iter()
-                .min_by_key(|s| (s.start - target).num_seconds().abs())
-            {
-                use chrono::Timelike;
-                let local = scan.start.with_timezone(central);
-                let date = local.date_naive();
-                let minute = local.hour() * 60 + local.minute();
-                app.state.mode = Mode::Archive;
-                app.state.loop_state = LoopState::Paused;
-                app.state.archive_date = date;
-                app.state.archive_minute = minute;
-                app.state.archive_jump = Some((scan.start, std::time::Instant::now()));
-                let _ = app.tx.send(DataCmd::LoadCachedDay {
-                    site: app.state.site_id.clone(),
-                    date,
-                    target: scan.start,
-                });
-            }
-        }
-    }
-}
-
 /// The full downloaded-history browser: every cached Central day for the
 /// selected site, with counts/sizes and Start/Mid/End loads. Archive still
 /// uses S3; this window is the on-disk history.
@@ -248,6 +127,7 @@ pub fn downloads_window(ctx: &egui::Context, app: &mut StormApp) {
             .is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(30))
     {
         app.refresh_cached_days();
+        app.refresh_cached_scans();
     }
 
     let mut open = app.state.downloads_open;
@@ -260,6 +140,7 @@ pub fn downloads_window(ctx: &egui::Context, app: &mut StormApp) {
     let ring_last = app.state.ring.back().map(|f| f.volume_start);
     let scans = app.state.cached_scans.clone();
     let mut load: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut delete: Option<chrono::NaiveDate> = None;
 
     egui::Window::new(format!("Downloaded radar — {site}"))
         .id(egui::Id::new("stormscope.downloads"))
@@ -316,6 +197,26 @@ pub fn downloads_window(ctx: &egui::Context, app: &mut StormApp) {
                             if ui.small_button("End").clicked() {
                                 load = Some(day.last);
                             }
+                            if app.state.downloads_confirm == Some(day.date) {
+                                ui.label(
+                                    egui::RichText::new(format!("Delete {} scans?", day.scans))
+                                        .small()
+                                        .strong(),
+                                );
+                                if ui.small_button("Yes").clicked() {
+                                    delete = Some(day.date);
+                                    app.state.downloads_confirm = None;
+                                }
+                                if ui.small_button("No").clicked() {
+                                    app.state.downloads_confirm = None;
+                                }
+                            } else if ui
+                                .small_button("Delete")
+                                .on_hover_text("Remove every cached scan for this day from disk")
+                                .clicked()
+                            {
+                                app.state.downloads_confirm = Some(day.date);
+                            }
                         });
                     }
                     if days.is_empty() {
@@ -356,6 +257,12 @@ pub fn downloads_window(ctx: &egui::Context, app: &mut StormApp) {
         });
     app.state.downloads_open = open;
 
+    if let Some(date) = delete {
+        let _ = app.tx.send(DataCmd::DeleteCachedDay {
+            site: app.state.site_id.clone(),
+            date,
+        });
+    }
     if let Some(target) = load {
         use chrono::Timelike;
         let local = target.with_timezone(central);

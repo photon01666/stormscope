@@ -296,6 +296,30 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                         })
                         .ok();
                 }
+                DataCmd::DeleteCachedDay { site, date } => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let central = crate::timefmt::central();
+                        let scans: Vec<radar_data::cache::CachedVolume> =
+                            radar_data::cache::list_cached_volumes(&site)
+                                .into_iter()
+                                .filter(|v| v.start.with_timezone(central).date_naive() == date)
+                                .collect();
+                        let mut removed = 0;
+                        let mut bytes = 0;
+                        for scan in scans {
+                            if std::fs::remove_file(&scan.path).is_ok() {
+                                removed += 1;
+                                bytes += scan.bytes;
+                            }
+                        }
+                        let _ = out.send(DataMsg::CachedDeleted {
+                            date,
+                            removed,
+                            bytes,
+                        });
+                    });
+                }
                 DataCmd::LoadCachedDay { site, date, target } => {
                     // Replay cached `.gz` volumes for one Central day directly
                     // from disk. No S3 listing, no downloads, no failed-object

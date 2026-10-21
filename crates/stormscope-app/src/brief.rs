@@ -1466,7 +1466,8 @@ fn ring_distance_mi(ring: &[(f64, f64)], lon: f64, lat: f64) -> f64 {
         };
         best = best.min((ax + dx * t).hypot(ay + dy * t));
     }
-    best / 1609.344
+    // `best` is kilometres (project uses km/degree); one mile is 1.609 km.
+    best / 1.609_344
 }
 
 /// Rough polygon area (shoelace in the local tangent plane), square miles.
@@ -1805,6 +1806,15 @@ mod tests {
         assert_eq!(kt["direction"], "northeast");
         assert!((kt["speed_mph"].as_f64().unwrap() - 46.0).abs() < 0.1);
         assert!(motion_from_text("no motion mentioned here").is_null());
+    }
+
+    #[test]
+    fn ring_distance_is_in_miles_not_km_over_1609() {
+        // A one-degree-long ring edge at Home's latitude is ~53 mi away.
+        // The old code divided kilometres by 1609.344 and returned 0.5 mi.
+        let ring = [(0.0, 38.0), (1.0, 38.0), (1.0, 39.0), (0.0, 39.0)];
+        let d = ring_distance_mi(&ring, 2.0, 39.0);
+        assert!((d - 53.4).abs() < 2.0, "expected ~53 mi, got {d}");
     }
 
     #[test]

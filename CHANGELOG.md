@@ -17,6 +17,12 @@ log; entries start at the first public release.
   from a broken one. Strikes are drawn as small lightning-bolt glyphs; fresh
   ones pulse with a soft glow, older ones settle to amber and fade.
 
+**Bug fixes**
+- SPC nearest-area distances were **1000× too small**: the code divided
+  kilometres by 1609.344 instead of 1.609344. A marker hundreds of miles from
+  the nearest outlook area reported "0.5 miles". Fixed, with a unit test.
+  The AI now quotes the real distance.
+
 **3D pane**
 - The 3D Controls window now has its own **Product** selector, independent of
   the 2D map: the map can show REF while the volume shows VEL, SRM, HCA, etc.

@@ -64,7 +64,7 @@ pub fn fit_view(state: &mut AppState) {
 
 /// Draw the 3D volume pane into `rect`.
 pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
-    if rect.width() < 24.0 || rect.height() < 24.0 {
+    if !app.state.view3d_open || rect.width() < 24.0 || rect.height() < 24.0 {
         return;
     }
     let painter = ui.painter_at(rect);
@@ -84,12 +84,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         center_text("3D view needs the wgpu renderer");
         return;
     };
-    let moment = app.state.moment;
+    let moment = app.state.view3d_moment;
     // Derived products are read through the display volume: the column
     // products (VIL/TOPS/MEHS) ride in the frame's volume, SRM comes from
     // the motion-keyed cache and may still be building.
-    let Some(volume) = app.state.display_volume() else {
-        if app.state.moment == radar_core::Moment::StormRelativeVelocity {
+    let Some(volume) = app.state.display_volume_for(moment) else {
+        if moment == radar_core::Moment::StormRelativeVelocity {
             center_text(&format!("deriving {}…", moment.label()));
         } else {
             center_text("waiting for the first volume scan…");

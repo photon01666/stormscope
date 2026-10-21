@@ -807,7 +807,7 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         return;
     }
     let scale = app.sidebar_scale.max(1.0);
-    let size = egui::vec2(330.0 * scale, 430.0 * scale);
+    let size = egui::vec2(330.0 * scale, 470.0 * scale);
     let mut open = true;
     egui::Window::new("3D controls")
         .id(egui::Id::new("stormscope.view3d_controls"))
@@ -818,7 +818,29 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         .show(ctx, |ui| {
             apply_text_scale(ui, scale);
             let mut sliders: Vec<(u8, egui::Rect)> = Vec::new();
-            let (lo, hi) = radar_render::ColorTable::for_moment(app.state.moment).range();
+            ui.horizontal(|ui| {
+                ui.label("Product");
+                let before = app.state.view3d_moment;
+                egui::ComboBox::from_id_salt("view3d-product")
+                    .selected_text(app.state.view3d_moment.label())
+                    .show_ui(ui, |ui| {
+                        for moment in crate::state::available_moments(&app.state) {
+                            let label = if moment.unit().is_empty() {
+                                moment.label().to_string()
+                            } else {
+                                format!("{} ({})", moment.label(), moment.unit())
+                            };
+                            ui.selectable_value(&mut app.state.view3d_moment, moment, label);
+                        }
+                    });
+                if app.state.view3d_moment != before {
+                    let (lo, hi) =
+                        radar_render::ColorTable::for_moment(app.state.view3d_moment).range();
+                    app.state.view3d_threshold = app.state.view3d_threshold.clamp(lo, hi);
+                    app.view3d_section_key = None;
+                }
+            });
+            let (lo, hi) = radar_render::ColorTable::for_moment(app.state.view3d_moment).range();
             ui.horizontal(|ui| {
                 ui.label("Echo ≥");
                 let r = ui
@@ -842,7 +864,7 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                     f.volume
                         .sweeps
                         .iter()
-                        .filter(|sw| sw.moment(app.state.moment).is_some())
+                        .filter(|sw| sw.moment(app.state.view3d_moment).is_some())
                         .map(|sw| sw.elevation_deg)
                         .collect()
                 })

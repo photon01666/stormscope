@@ -1769,7 +1769,11 @@ impl StormApp {
     /// builds (and on playback, where every frame wants its own), the panes
     /// keep showing the last derived volume instead of blanking.
     fn pump_srm(&mut self) {
-        if self.state.moment != radar_core::Moment::StormRelativeVelocity {
+        let needs_srm = self.state.moment == radar_core::Moment::StormRelativeVelocity
+            || (self.state.view3d_open
+                && self.state.pane_max != crate::state::PaneMax::Map
+                && self.state.view3d_moment == radar_core::Moment::StormRelativeVelocity);
+        if !needs_srm {
             return;
         }
         let Some(key) = self.state.srm_key() else {
@@ -1810,6 +1814,12 @@ impl StormApp {
     }
 
     fn ui_frame(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if !self.state.view3d_open && self.view3d.is_some() {
+            // Closing the pane must not leave a renderer/mesh worker alive.
+            self.view3d = None;
+            self.view3d_section_key = None;
+            log::debug!("3D pane off: released its GPU resources and mesh worker");
+        }
         self.pump();
         self.pump_srm();
         self.pump_mrms();

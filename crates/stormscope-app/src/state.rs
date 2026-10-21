@@ -476,6 +476,8 @@ pub struct AppState {
     pub view3d_alpha: f32,
     /// Echo display threshold, in the current moment's units.
     pub view3d_threshold: f32,
+    /// Product shown in the 3D pane, independent of the 2D map's selection.
+    pub view3d_moment: Moment,
     /// Mesh density of the 3D pane.
     pub view3d_detail: radar_render::MeshDetail,
     /// Elevation cuts to include, degrees; `None` = unbounded. The 3D
@@ -851,6 +853,7 @@ impl Default for AppState {
             view3d_ve: 6.0,
             view3d_alpha: 1.0,
             view3d_threshold: 5.0,
+            view3d_moment: Moment::Reflectivity,
             view3d_detail: radar_render::MeshDetail::Fine,
             view3d_tilt_lo: None,
             view3d_tilt_hi: None,
@@ -1147,8 +1150,15 @@ impl AppState {
     /// derivation is still building the last one stays on screen (one
     /// derivation behind is far better than a blank pane).
     pub fn display_volume(&self) -> Option<Arc<Volume>> {
+        self.display_volume_for(self.moment)
+    }
+
+    /// The volume for a specific display product: the frame volume, or the
+    /// motion-keyed SRM cache when that product is requested. This lets the
+    /// 3D pane show a different moment from the 2D map.
+    pub fn display_volume_for(&self, moment: Moment) -> Option<Arc<Volume>> {
         let frame = self.current()?;
-        if self.moment == Moment::StormRelativeVelocity {
+        if moment == Moment::StormRelativeVelocity {
             return self.srm_cache.as_ref().map(|(_, v)| Arc::clone(v));
         }
         Some(Arc::clone(&frame.volume))

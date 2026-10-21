@@ -32,6 +32,8 @@ No accounts, API keys or telemetry.
   orbit, free pan, wheel zoom.
 - Cross-sections, echo-shell isosurfaces (convective or winter), warning
   prisms, markers and a data probe.
+- The 3D Controls window has its **own product selector**, independent of the
+  2D map (REF on the map, VEL/HCA/SRM in the volume, for example).
 - Ground scale matched to the 2D map; altitude slab and height scaling.
 
 **Overlays**

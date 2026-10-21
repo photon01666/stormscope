@@ -17,6 +17,13 @@ log; entries start at the first public release.
   from a broken one. Strikes are drawn as small lightning-bolt glyphs; fresh
   ones pulse with a soft glow, older ones settle to amber and fade.
 
+**3D pane**
+- The 3D Controls window now has its own **Product** selector, independent of
+  the 2D map: the map can show REF while the volume shows VEL, SRM, HCA, etc.
+  SRM is derived when either pane asks for it.
+- Closing the 3D pane now releases its GPU renderer and mesh worker (the worker
+  gets no further jobs and exits) instead of leaving resources allocated.
+
 **Loading feedback**
 - The bulk-load pill now says **Fetching cache · …** when the current scan is
   read from disk and **Downloading …** only when it is actually fetched from

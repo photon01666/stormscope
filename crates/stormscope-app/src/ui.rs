@@ -2120,9 +2120,9 @@ pub(super) fn warning_fill_slider(ui: &mut egui::Ui, app: &mut StormApp) {
                 .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
         )
         .on_hover_text(
-            "Warning polygons are transparent at rest and only fill while the \
-             pointer is on them; the outline is always drawn. This scales that \
-             hover wash (0% = never fill, 100% = 95% under the pointer).",
+            "Warning polygons are filled at rest and clear to the outline while \
+             the pointer is on them, so the radar is visible where you inspect \
+             it. This scales the resting fill (0% = outlines only, 100% = 95%).",
         );
     });
 }

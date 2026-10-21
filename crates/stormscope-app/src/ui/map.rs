@@ -783,23 +783,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // Brief "what is this" tooltips after resting for a second: warnings
     // anywhere inside, SPC risk areas only when the pointer is on the outline
     // (clicking it opens the full discussion).
-    warning_hover_tooltip(ui, &response, app);
-    super::reports::lsr_hover_tooltip(ui, &response, app);
-    super::reports::mcd_hover_tooltip(ui, &response, app);
-    super::totals::totals_hover_tooltip(ui, &response, app);
-    outlook_hover_tooltip(ui, &response, app);
-
     // --- Hover probe: the value under the pointer --------------------------
-    // The same readout the 3D pane has, for the 2D map: the displayed
-    // product's value in the gate the pixel falls in, its beam height, and
-    // the distance and bearing from the radar. Suppressed while dragging (the
-    // value under a moving map is noise) and in the measuring modes.
-    if app.state.map_probe && !response.dragged() && !app.state.measure_mode {
-        if let (Some(p), Some(site), Some(volume)) = (
-            response.hover_pos(),
-            radar_core::sites::site(&app.state.site_id),
-            app.state.display_volume(),
-        ) {
+    // Compute it before the tooltips: over an actual echo the data readout
+    // wins, or a warning tooltip covers the dBZ the user is trying to read.
+    let probe = if app.state.map_probe && !response.dragged() && !app.state.measure_mode {
+        response.hover_pos().and_then(|p| {
+            let site = radar_core::sites::site(&app.state.site_id)?;
+            let volume = app.state.display_volume()?;
             let (cx, cy) = viewport_pos(rect, p);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
             let min_value = match app.state.moment {
@@ -808,7 +798,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 }
                 _ => f32::NEG_INFINITY,
             };
-            if let Some(read) = map_probe_at(
+            map_probe_at(
                 &volume,
                 app.state.moment,
                 app.state.tilt_deg,
@@ -818,17 +808,33 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 lon,
                 min_value,
                 app.state.show_melting_layer,
-            ) {
-                let lines = read.lines(app.state.moment);
-                draw_probe_plate(
-                    &painter,
-                    p,
-                    &lines,
-                    tile_resp.rect,
-                    app.sidebar_scale.max(1.0),
-                );
-            }
-        }
+            )
+            .map(|read| (p, read))
+        })
+    } else {
+        None
+    };
+    let over_echo = probe.as_ref().is_some_and(|(_, read)| read.value.is_some());
+
+    // Polygon/report tooltips only when the pointer is not on an echo: the
+    // probe is what the user is reading there. Moving off the echo (or
+    // turning the probe off) restores the warning box.
+    if !over_echo {
+        warning_hover_tooltip(ui, &response, app);
+        super::reports::lsr_hover_tooltip(ui, &response, app);
+        super::reports::mcd_hover_tooltip(ui, &response, app);
+        super::totals::totals_hover_tooltip(ui, &response, app);
+        outlook_hover_tooltip(ui, &response, app);
+    }
+    if let Some((p, read)) = probe {
+        let lines = read.lines(app.state.moment);
+        draw_probe_plate(
+            &painter,
+            p,
+            &lines,
+            tile_resp.rect,
+            app.sidebar_scale.max(1.0),
+        );
     }
 
     // Label editor popup for the selected/new marker (drawn in its own

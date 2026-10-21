@@ -205,6 +205,9 @@ pub struct StormApp {
     pub state: AppState,
     pub tx: Sender<DataCmd>,
     pub rx: Receiver<DataMsg>,
+    /// Set by GO LIVE / snap-to-live: a running archive stream checks it and
+    /// stops, so the EnterLive command is not stuck behind 24 downloads.
+    pub archive_cancel: Arc<std::sync::atomic::AtomicBool>,
     pub data: Arc<Mutex<SharedData>>,
     /// eframe's wgpu (Vulkan) render state: any custom GPU work (pipelines
     /// drawing the radar overlay, etc.) shares this single device/queue.
@@ -354,9 +357,11 @@ impl StormApp {
 
         // Background data thread: fetches, decodes and polls; results are
         // delivered to the UI over the message channel below.
+        let archive_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::clone(&archive_cancel);
         std::thread::Builder::new()
             .name("data".into())
-            .spawn(move || crate::background::run(rx_ui, tx_ui))
+            .spawn(move || crate::background::run(rx_ui, tx_ui, cancel))
             .expect("spawn data thread");
 
         let data = Arc::new(Mutex::new(SharedData {
@@ -387,6 +392,7 @@ impl StormApp {
             state,
             tx: tx_data,
             rx: rx_data,
+            archive_cancel,
             data,
             render_state: cc.wgpu_render_state.clone(),
             tiles,
@@ -434,9 +440,14 @@ impl StormApp {
     /// the newest scans. Shared by the timeline's "GO LIVE" pill and the L
     /// key.
     pub fn snap_to_live(&mut self) {
+        // A window stream can be 24 sequential downloads (seconds to
+        // minutes); flag it to stop before queueing the live switch.
+        self.archive_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.state.mode = crate::state::Mode::Live;
         self.state.loop_state = crate::state::LoopState::Paused;
         self.state.archive_jump = None;
+        self.state.alerts_popup_open = false;
         let _ = self
             .tx
             .send(crate::app::DataCmd::EnterLive(self.state.site_id.clone()));

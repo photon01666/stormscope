@@ -110,7 +110,11 @@ struct ArchiveDay {
 }
 
 /// Entry point for the background "data" thread.
-pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
+pub fn run(
+    cmds: Receiver<DataCmd>,
+    out: Sender<DataMsg>,
+    archive_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     let cache = DiskCache::with_default_max(DiskCache::default_root());
     // Warning-archive backfill (opt-in, newest-first, rate-limited). It
     // lives beside the data cache, not inside it: day-files are immutable.
@@ -213,7 +217,15 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
             )));
             watchdog_enabled = false; // browsing a day, not live
             backfill.clear(); // the archive day replaces the queued refill
-            archive = open_archive_day(&source, &site, date, None, &mut current_site, &out);
+            archive = open_archive_day(
+                &source,
+                &site,
+                date,
+                None,
+                &mut current_site,
+                &out,
+                &archive_cancel,
+            );
         }
     }
 
@@ -257,8 +269,16 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     }));
                     watchdog_enabled = false; // browsing a day, not live
                     backfill.clear(); // the day replaces whatever was queued
-                    archive =
-                        open_archive_day(&source, &site, date, minute, &mut current_site, &out);
+                    archive_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+                    archive = open_archive_day(
+                        &source,
+                        &site,
+                        date,
+                        minute,
+                        &mut current_site,
+                        &out,
+                        &archive_cancel,
+                    );
                 }
                 DataCmd::LoadLastHour(site) => {
                     current_site = site.clone();
@@ -325,6 +345,8 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     // from disk. No S3 listing, no downloads, no failed-object
                     // errors from scans that were never cached.
                     let out = out.clone();
+                    let cancel = std::sync::Arc::clone(&archive_cancel);
+                    cancel.store(false, std::sync::atomic::Ordering::Relaxed);
                     std::thread::spawn(move || {
                         let central = crate::timefmt::central();
                         let day: Vec<radar_data::cache::CachedVolume> =
@@ -354,6 +376,12 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                             cached: true,
                         });
                         for (i, volume) in window.iter().enumerate() {
+                            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                                let _ = out.send(DataMsg::Status(
+                                    "cached load cancelled — back to live".into(),
+                                ));
+                                return;
+                            }
                             let decoded = std::fs::read(&volume.path)
                                 .map_err(|e| anyhow::anyhow!("{}: {e}", volume.path.display()))
                                 .and_then(|bytes| {
@@ -433,8 +461,9 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                 }
                 DataCmd::ArchiveWindowShift(delta) => {
                     backfill.clear();
+                    archive_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
                     if let Some(day) = archive.as_mut() {
-                        shift_archive_window(&source, day, delta, &out);
+                        shift_archive_window(&source, day, delta, &out, &archive_cancel);
                     }
                 }
                 DataCmd::DeriveSrm {
@@ -464,6 +493,7 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                     }
                 }
                 DataCmd::EnterLive(site) => {
+                    archive_cancel.store(false, std::sync::atomic::Ordering::Relaxed);
                     // Back to live: drop the archive listing, clear the ring,
                     // and show the newest scan immediately. The live poller
                     // keeps future scans coming. The UI's site travels with
@@ -846,6 +876,7 @@ fn cache_sizes(source: &S3Source) -> (u64, u64) {
 
 /// List a Central day, remember it for window paging, and stream the newest
 /// window into the UI ring.
+#[allow(clippy::too_many_arguments)]
 fn open_archive_day(
     source: &S3Source,
     site: &str,
@@ -853,6 +884,7 @@ fn open_archive_day(
     target_minute: Option<u32>,
     current_site: &mut String,
     out: &Sender<DataMsg>,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Option<ArchiveDay> {
     *current_site = site.to_string();
     let vols = match list_central_day(source, site, date) {
@@ -874,7 +906,16 @@ fn open_archive_day(
         .map(|m| window_start_for_minute(&vols, m, window_len))
         .unwrap_or(0);
     let mut day = ArchiveDay { vols, window_start };
-    open_archive_window(source, site, date, &mut day, window_start, window_len, out);
+    open_archive_window(
+        source,
+        site,
+        date,
+        &mut day,
+        window_start,
+        window_len,
+        out,
+        cancel,
+    );
     Some(day)
 }
 
@@ -911,6 +952,7 @@ fn window_start_for_minute(
 
 /// Clear the ring, stream one window and report its position — the single
 /// path both the day-load and the paging buttons use.
+#[allow(clippy::too_many_arguments)]
 fn open_archive_window(
     source: &S3Source,
     site: &str,
@@ -919,13 +961,14 @@ fn open_archive_window(
     new_start: usize,
     window_len: usize,
     out: &Sender<DataMsg>,
+    cancel: &std::sync::atomic::AtomicBool,
 ) {
     day.window_start = new_start;
     // The window *replaces* whatever was on the ring — without this the live
     // frame still sitting there made every older archive scan look
     // out-of-order and get dropped.
     let _ = out.send(DataMsg::ClearFrames);
-    stream_window(source, site, date, day, window_len, out);
+    stream_window(source, site, date, day, window_len, out, cancel);
     let _ = out.send(DataMsg::ArchiveInfo {
         total: day.vols.len(),
         start: new_start,
@@ -940,6 +983,7 @@ fn shift_archive_window(
     day: &mut ArchiveDay,
     delta: i32,
     out: &Sender<DataMsg>,
+    cancel: &std::sync::atomic::AtomicBool,
 ) {
     let total = day.vols.len();
     if total == 0 {
@@ -955,7 +999,7 @@ fn shift_archive_window(
     }
     let site = day.vols[0].site.clone();
     let date = day.vols[0].date;
-    open_archive_window(source, &site, date, day, new_start, window_len, out);
+    open_archive_window(source, &site, date, day, new_start, window_len, out, cancel);
 }
 
 /// Fetch+emit one window's volumes oldest→newest into the UI ring.
@@ -966,6 +1010,7 @@ fn stream_window(
     day: &ArchiveDay,
     window_len: usize,
     out: &Sender<DataMsg>,
+    cancel: &std::sync::atomic::AtomicBool,
 ) {
     // vols newest-first: the window slice [start..start+len] played in
     // reverse gives oldest→newest forward playback.
@@ -979,6 +1024,12 @@ fn stream_window(
     let label = format!("{site} archive · {}", date.format("%b %-d"));
     let total = slice.len() as u32;
     for (i, r) in slice.iter().rev().enumerate() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = out.send(DataMsg::Status(
+                "archive load cancelled — back to live".into(),
+            ));
+            return;
+        }
         let cached = is_cached(source, r);
         let _ = out.send(DataMsg::LoadProgress {
             label: label.clone(),

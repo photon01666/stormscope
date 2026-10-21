@@ -12,6 +12,12 @@ log; entries start at the first public release.
 - Clicking a historical warning turns the warnings layer on, switches to the
   nearest station, and keeps that warning's polygon visible for 90 s while the
   archive window loads/seeks.
+- **Warning polygon fill at 100 % is a real wash** (55 % at rest, 95 % under
+  the pointer) instead of the old 5–22 % that was invisible on the dark map.
+- **GO LIVE / the L key now cancels an in-flight archive window stream** and
+  returns to live immediately; previously it queued behind up to 24 sequential
+  archive downloads and looked stuck. The archive popup's Live selector uses
+  the same path.
 
 ## v1.4.8 — 2026-10-21
 

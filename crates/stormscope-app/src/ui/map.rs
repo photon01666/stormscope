@@ -2765,7 +2765,9 @@ pub(super) fn point_segment_distance(px: f64, py: f64, ax: f64, ay: f64, bx: f64
 /// outline alone on the map. The 3D pane's ground polygons share it, so a
 /// warning washes out the same in both views.
 pub(super) fn warning_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
-    (0.05 + 0.17 * intensity) * user_fill.clamp(0.0, 1.0)
+    // 100 % on the slider is a real wash now: 55 % at rest, 95 % under the
+    // pointer. The old 5–22 % range was invisible on a dark basemap.
+    (0.55 + 0.40 * intensity) * user_fill.clamp(0.0, 1.0)
 }
 
 /// How close (viewport px) the pointer must be to a warning polygon's outline
@@ -3598,17 +3600,17 @@ mod tests {
     #[test]
     fn warning_fill_alpha_follows_the_slider() {
         assert!(
-            (warning_fill_alpha(0.0, 1.0) - 0.05).abs() < 1e-6,
+            (warning_fill_alpha(0.0, 1.0) - 0.55).abs() < 1e-6,
             "at rest"
         );
         assert!(
-            (warning_fill_alpha(1.0, 1.0) - 0.22).abs() < 1e-6,
+            (warning_fill_alpha(1.0, 1.0) - 0.95).abs() < 1e-6,
             "under the pointer"
         );
-        assert!((warning_fill_alpha(0.0, 0.5) - 0.025).abs() < 1e-6);
+        assert!((warning_fill_alpha(0.0, 0.5) - 0.275).abs() < 1e-6);
         assert_eq!(warning_fill_alpha(1.0, 0.0), 0.0, "outlines only");
         // Out-of-range values clamp instead of misbehaving.
-        assert!((warning_fill_alpha(0.0, 3.0) - 0.05).abs() < 1e-6);
+        assert!((warning_fill_alpha(0.0, 3.0) - 0.55).abs() < 1e-6);
         assert_eq!(warning_fill_alpha(0.0, -1.0), 0.0);
     }
 

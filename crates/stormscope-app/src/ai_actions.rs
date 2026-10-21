@@ -481,7 +481,7 @@ mod tests {
         assert_eq!(state.ai_annotations.len(), 1);
         assert_eq!(state.ai_annotations[0].kind, AiAnnotationKind::Tornado);
         assert_eq!(state.ai_annotations[0].label, "possible tornado");
-        assert!(summary.contains("marking"), "{summary}");
+        assert!(summary.contains("mark: possible tornado"), "{summary}");
         assert!(state.ai_view_before.is_some());
         assert!(restore(&mut state));
         assert_eq!(state.moment, Moment::Reflectivity);

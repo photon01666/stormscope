@@ -2120,9 +2120,9 @@ pub(super) fn warning_fill_slider(ui: &mut egui::Ui, app: &mut StormApp) {
                 .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
         )
         .on_hover_text(
-            "How strongly warning polygons are tinted. Overlapping warnings \
-             multiply their fills, so turning this down keeps the radar visible \
-             underneath while the outlines stay put (0% = outlines only).",
+            "Warning polygons are transparent at rest and only fill while the \
+             pointer is on them; the outline is always drawn. This scales that \
+             hover wash (0% = never fill, 100% = 95% under the pointer).",
         );
     });
 }

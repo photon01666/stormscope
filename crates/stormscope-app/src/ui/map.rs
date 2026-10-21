@@ -2023,14 +2023,17 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
                 pts.clone(),
                 egui::Stroke::new(2.0 + 1.5 * intensity, color),
             ));
-            // The fill stays well under the outline's weight: overlapping
-            // warnings multiply their washes, and a heavy tint over the radar
-            // hides the thing the map is for. The border carries the color.
-            painter.add(egui::Shape::convex_polygon(
-                pts,
-                color.gamma_multiply(warning_fill_alpha(intensity, app.state.alerts_fill)),
-                egui::Stroke::NONE,
-            ));
+            // No wash at rest: the border carries the warning until the
+            // pointer is on it (or a click/stack highlights it). The tint
+            // then scales with the fill slider.
+            let fill = warning_fill_alpha(intensity, app.state.alerts_fill);
+            if fill > 0.0 {
+                painter.add(egui::Shape::convex_polygon(
+                    pts,
+                    color.gamma_multiply(fill),
+                    egui::Stroke::NONE,
+                ));
+            }
         }
 
         // Name the warning on the map only while the pointer is on it (the
@@ -2765,9 +2768,10 @@ pub(super) fn point_segment_distance(px: f64, py: f64, ax: f64, ay: f64, bx: f64
 /// outline alone on the map. The 3D pane's ground polygons share it, so a
 /// warning washes out the same in both views.
 pub(super) fn warning_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
-    // 100 % on the slider is a real wash now: 55 % at rest, 95 % under the
-    // pointer. The old 5–22 % range was invisible on a dark basemap.
-    (0.55 + 0.40 * intensity) * user_fill.clamp(0.0, 1.0)
+    // Polygons are transparent at rest — just their outlines — and fill only
+    // when the pointer is on them. The slider scales that hover wash (100 %
+    // = 95 % fill under the pointer).
+    0.95 * intensity.clamp(0.0, 1.0) * user_fill.clamp(0.0, 1.0)
 }
 
 /// How close (viewport px) the pointer must be to a warning polygon's outline
@@ -3599,19 +3603,16 @@ mod tests {
     /// all — overlapping warnings then show only their outlines.
     #[test]
     fn warning_fill_alpha_follows_the_slider() {
-        assert!(
-            (warning_fill_alpha(0.0, 1.0) - 0.55).abs() < 1e-6,
-            "at rest"
-        );
+        assert_eq!(warning_fill_alpha(0.0, 1.0), 0.0, "transparent at rest");
         assert!(
             (warning_fill_alpha(1.0, 1.0) - 0.95).abs() < 1e-6,
             "under the pointer"
         );
-        assert!((warning_fill_alpha(0.0, 0.5) - 0.275).abs() < 1e-6);
+        assert_eq!(warning_fill_alpha(1.0, 0.5), 0.475);
         assert_eq!(warning_fill_alpha(1.0, 0.0), 0.0, "outlines only");
         // Out-of-range values clamp instead of misbehaving.
-        assert!((warning_fill_alpha(0.0, 3.0) - 0.55).abs() < 1e-6);
-        assert_eq!(warning_fill_alpha(0.0, -1.0), 0.0);
+        assert_eq!(warning_fill_alpha(0.0, 3.0), 0.0);
+        assert_eq!(warning_fill_alpha(1.0, -1.0), 0.0);
     }
 
     /// Clicking a stack of overlapping warnings: the first click takes the

@@ -97,6 +97,13 @@ pub enum DataCmd {
     /// (Central, minutes since midnight) — the loaded window covers it;
     /// `None` starts from the newest scan of that day.
     LoadArchiveDate(String, chrono::NaiveDate, Option<u32>),
+    /// Load a Central day entirely from the on-disk cache (no network): the
+    /// window of cached scans around `target`.
+    LoadCachedDay {
+        site: String,
+        date: chrono::NaiveDate,
+        target: chrono::DateTime<chrono::Utc>,
+    },
     /// Turn the (rate-limited, newest-first) warning-archive backfill on or
     /// off. Persisted; only the user asks for it.
     SetArchiveCrawl(bool),
@@ -412,6 +419,53 @@ impl StormApp {
             .send(crate::app::DataCmd::EnterLive(self.state.site_id.clone()));
     }
 
+    /// Rescan the on-disk cache for the selected station. Cheap (one
+    /// directory), refreshed periodically and after a site switch; the bottom
+    /// timeline uses it to expose every downloaded scan, not just the ring.
+    pub fn refresh_cached_scans(&mut self) {
+        let site = self.state.site_id.clone();
+        let scans: Vec<crate::state::CachedScan> = radar_data::cache::list_cached_volumes(&site)
+            .into_iter()
+            .map(|v| crate::state::CachedScan {
+                start: v.start,
+                bytes: v.bytes,
+            })
+            .collect();
+        self.state.cached_scans = scans;
+        self.state.cached_scans_site = site;
+        self.state.cached_scans_at = Some(std::time::Instant::now());
+    }
+
+    /// Cached scans grouped into Central days for the Downloaded browser.
+    pub fn refresh_cached_days(&mut self) {
+        let site = self.state.site_id.clone();
+        let central = crate::timefmt::central();
+        let mut days: std::collections::BTreeMap<chrono::NaiveDate, crate::state::CachedDay> =
+            std::collections::BTreeMap::new();
+        for volume in radar_data::cache::list_cached_volumes(&site) {
+            let date = volume.start.with_timezone(central).date_naive();
+            days.entry(date)
+                .and_modify(|day| {
+                    day.scans += 1;
+                    day.bytes += volume.bytes;
+                    day.first = day.first.min(volume.start);
+                    day.last = day.last.max(volume.start);
+                })
+                .or_insert(crate::state::CachedDay {
+                    date,
+                    scans: 1,
+                    bytes: volume.bytes,
+                    first: volume.start,
+                    last: volume.start,
+                });
+        }
+        let mut days: Vec<crate::state::CachedDay> = days.into_values().collect();
+        days.sort_by(|a, b| b.date.cmp(&a.date));
+        self.state.cached_days = days;
+        self.state.cached_days_site = site;
+        self.state.cached_days_at = Some(std::time::Instant::now());
+    }
+
     /// Select a radar site from the map (or controls) and tell the data
     /// thread to load it. Mirrors what the controls panel does on change.
     pub fn select_site(&mut self, id: &str) {
@@ -423,6 +477,8 @@ impl StormApp {
         self.prev_tracks.clear();
         self.tracks_cache = None;
         self.marker_etas.clear();
+        self.refresh_cached_scans();
+        self.refresh_cached_days();
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
     }
 

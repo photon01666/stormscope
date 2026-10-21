@@ -8,6 +8,58 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Default size cap: 10 GiB (radar volumes plus the shared tile cache).
 pub const DEFAULT_MAX_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
+/// One radar volume present in the on-disk cache.
+#[derive(Debug, Clone)]
+pub struct CachedVolume {
+    pub start: chrono::DateTime<chrono::Utc>,
+    pub path: std::path::PathBuf,
+    pub bytes: u64,
+}
+
+/// Every cached Level II volume for one site, oldest first.
+pub fn list_cached_volumes(site: &str) -> Vec<CachedVolume> {
+    list_cached_volumes_in(&DiskCache::default_root(), site)
+}
+
+pub fn list_cached_volumes_in(root: &std::path::Path, site: &str) -> Vec<CachedVolume> {
+    let dir = root.join("l2").join(site);
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(start) = parse_cached_name(site, &name) else {
+                continue;
+            };
+            let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            out.push(CachedVolume {
+                start,
+                path: entry.path(),
+                bytes,
+            });
+        }
+    }
+    out.sort_by_key(|v| v.start);
+    out
+}
+
+/// `KTWX20261016_074236_V06.gz` -> UTC timestamp. Only ordinary Level II
+/// volume names are accepted.
+fn parse_cached_name(site: &str, name: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let rest = name.strip_prefix(site)?;
+    if rest.len() < 16 || !name.ends_with(".gz") {
+        return None;
+    }
+    if rest.as_bytes().get(8) != Some(&b'_') {
+        return None;
+    }
+    let stamp = format!("{}{}", &rest[0..8], &rest[9..15]);
+    let naive = chrono::NaiveDateTime::parse_from_str(&stamp, "%Y%m%d%H%M%S").ok()?;
+    Some(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+        naive,
+        chrono::Utc,
+    ))
+}
+
 #[derive(Clone)]
 pub struct DiskCache {
     root: PathBuf,
@@ -252,6 +304,17 @@ impl DiskCache {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_names_parse_only_real_volumes() {
+        let t = parse_cached_name("KTWX", "KTWX20261016_074236_V06.gz").expect("a volume");
+        assert_eq!(t.to_string(), "2026-10-16 07:42:36 UTC");
+        assert!(parse_cached_name("KTWX", "KTLX20261016_074236_V06.gz").is_none());
+        assert!(parse_cached_name("KTWX", "KTWX20261016_074236_V06").is_none());
+        assert!(parse_cached_name("KTWX", "KTWX_nonsense.gz").is_none());
+    }
+
     use super::*;
 
     fn scratch(rel: &str) -> PathBuf {

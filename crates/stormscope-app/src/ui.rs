@@ -52,6 +52,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Bulk radar download/stream progress (top-center, above the map).
     load_progress_pill(ui.ctx(), app, middle);
 
+    // Downloaded radar history (from the timeline's "Downloaded…" button).
+    crate::timeline::downloads_window(ui.ctx(), app);
+
     // Alerts browser (its own floating window).
     alerts::alerts_popup(ui.ctx(), app);
 

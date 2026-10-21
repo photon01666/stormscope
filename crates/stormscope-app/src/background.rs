@@ -296,6 +296,73 @@ pub fn run(cmds: Receiver<DataCmd>, out: Sender<DataMsg>) {
                         })
                         .ok();
                 }
+                DataCmd::LoadCachedDay { site, date, target } => {
+                    // Replay cached `.gz` volumes for one Central day directly
+                    // from disk. No S3 listing, no downloads, no failed-object
+                    // errors from scans that were never cached.
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let central = crate::timefmt::central();
+                        let day: Vec<radar_data::cache::CachedVolume> =
+                            radar_data::cache::list_cached_volumes(&site)
+                                .into_iter()
+                                .filter(|v| v.start.with_timezone(central).date_naive() == date)
+                                .collect();
+                        if day.is_empty() {
+                            let _ = out
+                                .send(DataMsg::Error(format!("no cached {site} scans for {date}")));
+                            return;
+                        }
+                        let len = crate::state::RING_CAPACITY.min(day.len());
+                        let center = day
+                            .partition_point(|v| v.start < target)
+                            .min(day.len().saturating_sub(1));
+                        let start = center
+                            .saturating_sub(len / 2)
+                            .min(day.len().saturating_sub(len));
+                        let window = &day[start..start + len];
+                        let _ = out.send(DataMsg::ClearFrames);
+                        let label = format!("Loading cached {site}");
+                        let _ = out.send(DataMsg::LoadProgress {
+                            label: label.clone(),
+                            done: 0,
+                            total: window.len() as u32,
+                        });
+                        for (i, volume) in window.iter().enumerate() {
+                            let decoded = std::fs::read(&volume.path)
+                                .map_err(|e| anyhow::anyhow!("{}: {e}", volume.path.display()))
+                                .and_then(|bytes| {
+                                    radar_decode::decode_volume_file(&bytes).map_err(|e| {
+                                        anyhow::anyhow!("{}: {e}", volume.path.display())
+                                    })
+                                });
+                            match decoded {
+                                Ok(mut decoded) => {
+                                    radar_core::derived::attach_derived(&mut decoded);
+                                    let _ = out.send(DataMsg::Volume(std::sync::Arc::new(decoded)));
+                                }
+                                Err(e) => {
+                                    log::warn!("cached scan: {e:#}");
+                                    let _ = out.send(DataMsg::Error(format!("{e:#}")));
+                                }
+                            }
+                            let _ = out.send(DataMsg::LoadProgress {
+                                label: label.clone(),
+                                done: (i + 1) as u32,
+                                total: window.len() as u32,
+                            });
+                        }
+                        let _ = out.send(DataMsg::ArchiveInfo {
+                            total: day.len(),
+                            start,
+                            len: window.len(),
+                        });
+                        let _ = out.send(DataMsg::Status(format!(
+                            "cached {site} · {} scans for {date}",
+                            day.len()
+                        )));
+                    });
+                }
                 DataCmd::LoadArchiveWarnings(date) => {
                     // Off-thread: a cold day is one (sometimes two) small
                     // archive requests plus parsing — never on the loop.

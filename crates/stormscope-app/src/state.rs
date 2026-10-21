@@ -258,6 +258,23 @@ pub struct AiViewSaved {
     pub show_melting_layer: bool,
 }
 
+/// One Central day of cached scans for the selected site.
+#[derive(Debug, Clone)]
+pub struct CachedDay {
+    pub date: chrono::NaiveDate,
+    pub scans: usize,
+    pub bytes: u64,
+    pub first: chrono::DateTime<chrono::Utc>,
+    pub last: chrono::DateTime<chrono::Utc>,
+}
+
+/// One radar volume present in the on-disk cache for the selected site.
+#[derive(Debug, Clone, Copy)]
+pub struct CachedScan {
+    pub start: chrono::DateTime<chrono::Utc>,
+    pub bytes: u64,
+}
+
 /// One frame in the animation ring.
 pub struct Frame {
     pub volume_start: DateTime<Utc>,
@@ -567,6 +584,16 @@ pub struct AppState {
     pub cache_radar_bytes: Option<u64>,
     pub cache_tile_bytes: Option<u64>,
 
+    // Cached radar volumes for the selected site (the timeline's disk strip).
+    pub cached_scans: Vec<CachedScan>,
+    pub cached_scans_site: String,
+    pub cached_scans_at: Option<std::time::Instant>,
+    /// Cached days for the selected site, shown by the Downloaded browser.
+    pub cached_days: Vec<CachedDay>,
+    pub cached_days_site: String,
+    pub cached_days_at: Option<std::time::Instant>,
+    pub downloads_open: bool,
+
     // User-placed map markers.
     pub markers: Vec<MapMarker>,
     /// Index of a marker whose label popup is open, if any.
@@ -731,7 +758,7 @@ impl Default for AppState {
             site_id: site.id.to_string(),
             moment: Moment::Reflectivity,
             tilt_deg: 0.5,
-            opacity: 0.50,
+            opacity: 1.0,
             // Suppresses the clear-air clutter/haze that reads as a green
             // Snow lives at 10-25 dBZ: a 30 dBZ floor (the convective
             // setting) hid everything but the heaviest winter cores, so the
@@ -810,7 +837,7 @@ impl Default for AppState {
             // while still lifting the structure; the slider goes to ×20 for
             // when the vertical is the story.
             view3d_ve: 6.0,
-            view3d_alpha: 0.45,
+            view3d_alpha: 1.0,
             view3d_threshold: 5.0,
             view3d_detail: radar_render::MeshDetail::Fine,
             view3d_tilt_lo: None,
@@ -861,6 +888,13 @@ impl Default for AppState {
             archive_len: 0,
             cache_radar_bytes: None,
             cache_tile_bytes: None,
+            cached_scans: Vec::new(),
+            cached_scans_site: String::new(),
+            cached_scans_at: None,
+            cached_days: Vec::new(),
+            cached_days_site: String::new(),
+            cached_days_at: None,
+            downloads_open: false,
             markers: load_markers(),
             pending_marker: None,
             pending_marker_label: String::new(),

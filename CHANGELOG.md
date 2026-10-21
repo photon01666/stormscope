@@ -3,6 +3,21 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## Unreleased
+
+**Timeline and display defaults**
+- The bottom bar now shows **every cached scan for the selected station**, not
+  only the 24-frame ring: a time-proportional strip with the date range, scan
+  count and size. Hover a tick for its time/size; click to load that day around
+  the scan **directly from the cached `.gz` files** — no S3 listing and no
+  downloads for scans that are not on disk. Ring frames are highlighted in blue.
+- **Downloaded…** in the timeline opens the full on-disk history for the station:
+  every cached day with scan count, size and time range, Start/Mid/End loads, and
+  earlier/later 24-scan windows, all decoded from disk. Archive (S3) is unchanged.
+- Hovering either strip shows the exact Central date and time (and size on the
+  disk strip).
+- 2D radar opacity and 3D volume opacity now default to **100 %**.
+
 ## v1.4.7 — 2026-10-20
 
 **AI meteorologist (optional)**

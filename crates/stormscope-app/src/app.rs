@@ -1090,7 +1090,10 @@ impl StormApp {
             self.state.forecast_requested = Some((point.lat, point.lon));
             let _ = self.tx.send(DataCmd::LoadForecast(point.lat, point.lon));
             waiting.push("forecast".into());
-            notes.push("NWS forecast".into());
+            notes.push(match point.label.as_deref().map(str::trim) {
+                Some(label) if !label.is_empty() => format!("NWS forecast for {label}"),
+                _ => "NWS forecast".into(),
+            });
         }
         if let Some(point) = &request.totals {
             self.state.totals.clear();
@@ -1098,7 +1101,10 @@ impl StormApp {
             self.state.totals_requested = Some((point.lat, point.lon, std::time::Instant::now()));
             let _ = self.tx.send(DataCmd::LoadTotals(point.lat, point.lon));
             waiting.push("totals".into());
-            notes.push("station totals".into());
+            notes.push(match point.label.as_deref().map(str::trim) {
+                Some(label) if !label.is_empty() => format!("station totals for {label}"),
+                _ => "station totals".into(),
+            });
         }
         if let Some(spc) = &request.spc {
             let day = spc.day.unwrap_or(1).clamp(1, 3);

@@ -50,6 +50,20 @@ Runtime requirements: Linux, Vulkan drivers, Wayland or X11. Rust stable
 - PRs: one logical change per PR when possible, and say how you tested it.
   Screenshots for UI changes are very welcome.
 
+## Releases & repository hygiene
+
+- Release artifacts (binaries, archives, screenshots, `dist/` output) are
+  **never committed**. Build them from the tagged commit and attach them to the
+  GitHub Release only; the git repository stays source-only.
+- **Always purge old release artifacts from the git repository.** Remove stale
+  binaries/archives from the working tree, and if one was ever committed,
+  remove it from history before tagging rather than leaving it in the pack.
+- When a release is superseded, delete its stale assets and draft releases on
+  GitHub; keep the source tags for history.
+- Before a release: `cargo fmt --all --check`, `cargo test --workspace`,
+  `cargo build --release`, then bump the workspace version and CHANGELOG and
+  tag the release commit.
+
 ## Reporting bugs
 
 Please include:

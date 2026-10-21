@@ -3,7 +3,7 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
-## Unreleased
+## v1.4.7 — 2026-10-20
 
 **AI meteorologist (optional)**
 - A **Meteorologist** window: one short now / next-90-minutes brief for every
@@ -77,6 +77,13 @@ log; entries start at the first public release.
   *Ask*, and contain the JSON snapshot only (no images or history). The key is
   stored only if you tick "remember", in `ai.json` (0600), and never leaves the
   machine except to the endpoint you set.
+
+**Docs & repository**
+- README condensed to the essentials (features, install, data sources,
+  architecture, performance) instead of a long narrative.
+- Release policy added to CONTRIBUTING: binaries live on GitHub Releases and
+  are never committed; old release artifacts are purged from the git repo.
+
 
 ## v1.4.6 — 2026-10-20
 

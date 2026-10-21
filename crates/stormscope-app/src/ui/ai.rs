@@ -294,18 +294,10 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                 }
                 return;
             }
-            if app.state.markers.is_empty() {
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Place markers on the map (Shift+click) — the meteorologist writes about \
-                         those locations, using the radar, warnings, storm cells and forecast \
-                         around them.",
-                    )
-                    .weak(),
-                );
-                return;
-            }
+            // No markers is not an error state: keep the full chat layout and
+            // show the hint in the transcript. Returning here used to collapse
+            // the window to just the header and clip the hint.
+            let no_markers = app.state.markers.is_empty();
 
             // Toolbar pinned to the top; transcript in the middle; input at the
             // bottom. Panels (not a hand-computed transcript height) make a
@@ -317,11 +309,13 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                     ui.set_max_width((ui.available_width() - 14.0).max(120.0));
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if ui
-                            .button("Write brief")
+                        let write = ui.add_enabled(
+                            !no_markers && !app.state.ai_pending,
+                            egui::Button::new("Write brief"),
+                        );
+                        if write
                             .on_hover_text("A short now / next-90-minutes report for every marker")
                             .clicked()
-                            && !app.state.ai_pending
                         {
                             brief = true;
                         }
@@ -386,10 +380,11 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                                 .desired_width((ui.available_width() - 72.0).max(100.0))
                                 .hint_text(hint),
                         );
+                        let can_ask = !no_markers && !app.state.ai_pending;
                         let submit = response.lost_focus()
                             && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            && !app.state.ai_pending;
-                        if (ui.button("Ask").clicked() || submit) && !app.state.ai_pending {
+                            && can_ask;
+                        if (ui.add_enabled(can_ask, egui::Button::new("Ask")).clicked() || submit) {
                             let question = app.state.ai_question.trim().to_string();
                             if !question.is_empty() {
                                 ask = Some(question);
@@ -402,6 +397,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .small_button("the worst hazard")
                             .on_hover_text("Point the map at the most dangerous feature and explain it")
                             .clicked()
+                            && !no_markers
                             && !app.state.ai_pending
                         {
                             ask = Some(
@@ -414,6 +410,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .small_button("the 3D structure")
                             .on_hover_text("Open the 3D pane on the most dangerous cell")
                             .clicked()
+                            && !no_markers
                             && !app.state.ai_pending
                         {
                             ask = Some(
@@ -426,6 +423,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .small_button("what happens next")
                             .on_hover_text("Focus the storm that arrives next and show its motion")
                             .clicked()
+                            && !no_markers
                             && !app.state.ai_pending
                         {
                             ask = Some(
@@ -465,13 +463,20 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                         )
                         .show(ui, |ui| {
                             if app.state.ai_messages.is_empty() {
-                                ui.label(
-                                    egui::RichText::new(
-                                        "Ask about your markers — or write a brief. Every exchange \
-                                         stays here; the model can move the 2D/3D maps and mark \
-                                         what it means.",
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(if no_markers {
+                                            "Place markers on the map (Shift+click). The \
+                                             meteorologist writes about those locations using the \
+                                             radar, warnings, storm cells and forecast around them."
+                                        } else {
+                                            "Ask about your markers — or write a brief. Every \
+                                             exchange stays here; the model can move the 2D/3D maps \
+                                             and mark what it means."
+                                        })
+                                        .weak(),
                                     )
-                                    .weak(),
+                                    .wrap(),
                                 );
                             }
                             let hidden = app.state.ai_messages.len().saturating_sub(20);

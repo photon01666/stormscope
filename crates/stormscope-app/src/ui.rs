@@ -666,7 +666,7 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         return;
     }
     let scale = app.sidebar_scale.max(1.0);
-    let size = egui::vec2(300.0 * scale, 300.0 * scale);
+    let size = egui::vec2(300.0 * scale, 340.0 * scale);
     let mut open = true;
     egui::Window::new("Map controls")
         .id(egui::Id::new("stormscope.map_controls"))
@@ -778,6 +778,8 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 };
                 ui.label(egui::RichText::new(status).small().weak());
             }
+            ui.add_space(4.0);
+            warning_fill_slider(ui, app);
             control_window_wheel(ui, &sliders, |target, steps| match target {
                 0 => {
                     app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);
@@ -1904,10 +1906,6 @@ fn settings_menu(ui: &mut egui::Ui, app: &mut StormApp) {
                 .small(),
         );
         ui.separator();
-        ui.label(egui::RichText::new("Map appearance").strong());
-        ui.add_space(4.0);
-        warning_fill_slider(ui, app);
-        ui.separator();
         ui.label(egui::RichText::new("Data").strong());
         ui.add_space(4.0);
         if ui
@@ -2109,8 +2107,9 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp) {
     app.state.archive_popup_open = open;
 }
 
-/// The warning-polygon fill slider, shared by the Settings menu and the
-/// alerts browser. 0% leaves the outlines and hides the wash entirely.
+/// The 2D warning-polygon fill slider, in the map's Controls window (the 3D
+/// pane has its own in 3D controls). 0% leaves the outlines and hides the wash
+/// entirely.
 pub(super) fn warning_fill_slider(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.horizontal(|ui| {
         ui.label("Warning polygon fill");

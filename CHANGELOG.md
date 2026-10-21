@@ -14,7 +14,9 @@ log; entries start at the first public release.
   archive window loads/seeks.
 - Warning polygons are **filled at rest** (up to 95 % at 100 % on the fill
   slider) and **clear to the outline while the pointer is on them**, so the
-  radar is visible exactly where you are inspecting it.
+  radar is visible exactly where you are inspecting it. The fill slider moved
+  from Settings to the 2D **Map controls** window, matching the 3D pane's own
+  controls.
 - **GO LIVE / the L key now cancels an in-flight archive window stream** and
   returns to live immediately; previously it queued behind up to 24 sequential
   archive downloads and looked stuck. The archive popup's Live selector uses

@@ -6,6 +6,10 @@
 !/crates/radar-decode/tests/fixtures/.gitignore
 !/crates/radar-decode/tests/fixtures/download.sh
 
+# Sample GOES GLM NetCDF pulled from the public AWS bucket while testing the
+# lightning decoder. It is a downloaded data file, not source.
+glm.nc
+
 # Local screenshot scratch (ad-hoc captures used to verify a change must not
 # be committed — the README's deliberate images live under docs/)
 /overlay*.png

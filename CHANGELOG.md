@@ -5,6 +5,8 @@ log; entries start at the first public release.
 
 ## Unreleased
 
+## v1.4.9.1 — 2026-10-21
+
 **Alerts**
 - Tornado warnings are **red** (they were pink/magenta) and severe
   thunderstorm warnings are **purple** (they were yellow) across the map

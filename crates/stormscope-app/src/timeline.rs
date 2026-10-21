@@ -142,11 +142,17 @@ pub fn downloads_window(ctx: &egui::Context, app: &mut StormApp) {
     let mut load: Option<chrono::DateTime<chrono::Utc>> = None;
     let mut delete: Option<chrono::NaiveDate> = None;
 
+    // Fixed size: this is a history list, and egui's own vertical resize
+    // subtracts the title bar on the first drag frame. No handle, no jump.
+    let screen = ctx.content_rect().size();
+    let size = egui::vec2(
+        (screen.x * 0.42).clamp(440.0, 620.0),
+        (screen.y * 0.42).clamp(300.0, 500.0),
+    );
     egui::Window::new(format!("Downloaded radar — {site}"))
         .id(egui::Id::new("stormscope.downloads"))
         .open(&mut open)
-        .default_size(egui::vec2(560.0, 440.0))
-        .resizable(true)
+        .fixed_size(size)
         .default_pos(egui::pos2(24.0, 110.0))
         .show(ctx, |ui| {
             ui.label(

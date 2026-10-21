@@ -3,7 +3,7 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
-## Unreleased
+## v1.4.8 — 2026-10-21
 
 **Lightning (GOES GLM)**
 - Optional **Lightning (GLM)** overlay: official NOAA GOES-East (GOES-19) /
@@ -16,6 +16,18 @@ log; entries start at the first public release.
   within 186 mi, so an active layer with no nearby strikes is distinguishable
   from a broken one. Strikes are drawn as small lightning-bolt glyphs; fresh
   ones pulse with a soft glow, older ones settle to amber and fade.
+
+**AI map, marks and probe polish**
+- SPC `spc_risk`/`spc_nearest` now carry a ready-made summary; the model must
+  quote it verbatim and never invent or re-derive an SPC distance.
+- AI map marks now list their labels in the action line, use cyan instead of
+  white for generic marks, and are restricted to specific hazards/features
+  the answer is about (with an explanation); routine weak-echo marks are
+  forbidden.
+- The 2D probe takes precedence over warning/report tooltips while the pointer
+  is on an echo, so the dBZ readout is never covered by a warning box.
+- The AI window keeps its full chat layout with no markers (disabled
+  Write brief/Ask buttons) instead of collapsing to a clipped hint.
 
 **Bug fixes**
 - SPC nearest-area distances were **1000× too small**: the code divided

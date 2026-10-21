@@ -384,7 +384,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                         let submit = response.lost_focus()
                             && ui.input(|i| i.key_pressed(egui::Key::Enter))
                             && can_ask;
-                        if (ui.add_enabled(can_ask, egui::Button::new("Ask")).clicked() || submit) {
+                        if ui.add_enabled(can_ask, egui::Button::new("Ask")).clicked() || submit {
                             let question = app.state.ai_question.trim().to_string();
                             if !question.is_empty() {
                                 ask = Some(question);

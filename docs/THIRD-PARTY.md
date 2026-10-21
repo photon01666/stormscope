@@ -6,7 +6,7 @@ license expression it declares in its own manifest. Dual-licensed crates
 are used under a permissive option (for example `self_cell` under
 Apache-2.0, `r-efi` under MIT).
 
-Generated from `cargo metadata`: 486 crates, 35 distinct
+Generated from `cargo metadata`: 502 crates, 35 distinct
 license expressions. Regenerate with:
 
 ```sh
@@ -15,11 +15,11 @@ python3 scripts/gen-third-party.py    # writes docs/THIRD-PARTY.md
 
 | License expression | Crates | Examples |
 | --- | ---: | --- |
-| `MIT OR Apache-2.0` | 233 | `anyhow 1.0.104`, `chrono 0.4.45`, `chrono-tz 0.10.4`, `eframe 0.36.2` … |
-| `MIT` | 102 | `lru 0.12.5`, `nexrad-data 1.0.0-rc.7`, `nexrad-decode 1.0.0-rc.3`, `tokio 1.53.2` |
+| `MIT OR Apache-2.0` | 244 | `anyhow 1.0.104`, `chrono 0.4.45`, `chrono-tz 0.10.4`, `eframe 0.36.2` … |
+| `MIT` | 105 | `lru 0.12.5`, `lru 0.16.4`, `nexrad-data 1.0.0-rc.7`, `nexrad-decode 1.0.0-rc.3` … |
 | `Apache-2.0 OR MIT` | 30 | `atomic-waker 1.1.2`, `autocfg 1.5.1`, `bit-set 0.10.0` |
 | `Unicode-3.0` | 18 | `icu_collections 2.3.0`, `icu_locale_core 2.3.0`, `icu_normalizer 2.3.0` |
-| `MIT/Apache-2.0` | 13 | `bitflags 1.3.2`, `downcast-rs 1.2.1`, `foreign-types 0.5.0` |
+| `MIT/Apache-2.0` | 15 | `bitflags 1.3.2`, `downcast-rs 1.2.1`, `foreign-types 0.5.0` |
 | `Apache-2.0` | 12 | `winit 0.30.13` |
 | `Zlib OR Apache-2.0 OR MIT` | 11 | `bytemuck 1.25.2`, `bytemuck_derive 1.12.1`, `dispatch2 0.3.1` |
 | `Unlicense OR MIT` | 10 | `aho-corasick 1.1.5`, `byteorder-lite 0.1.0`, `jiff 0.2.38` |

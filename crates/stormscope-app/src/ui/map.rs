@@ -3057,11 +3057,10 @@ fn draw_lightning(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, a
             animating = true;
         }
         let pulse = if fresh {
-            (0.55
-                + 0.45
-                    * (time * 5.0 + strike.time.timestamp_subsec_millis() as f32 / 1000.0)
-                        .sin()
-                        .abs())
+            0.55 + 0.45
+                * (time * 5.0 + strike.time.timestamp_subsec_millis() as f32 / 1000.0)
+                    .sin()
+                    .abs()
         } else {
             1.0
         };

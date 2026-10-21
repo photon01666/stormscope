@@ -664,7 +664,7 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         return;
     }
     let scale = app.sidebar_scale.max(1.0);
-    let size = egui::vec2(300.0 * scale, 210.0 * scale);
+    let size = egui::vec2(300.0 * scale, 300.0 * scale);
     let mut open = true;
     egui::Window::new("Map controls")
         .id(egui::Id::new("stormscope.map_controls"))
@@ -737,6 +737,45 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                     "Isohypses of the melting-layer product (the radar's 0 °C level, \
                      from the CC bright band) every 2 kft — rain below, snow above",
                 );
+            ui.checkbox(&mut app.state.show_lightning, "Lightning (GLM)")
+                .on_hover_text(
+                    match (&app.state.lightning_satellite, app.state.lightning.len()) {
+                        (Some(satellite), flashes) if flashes > 0 => format!(
+                            "{satellite} · {flashes} flashes in the last 20 minutes. NOAA GOES GLM, \
+                             one 20-second file per minute (~0.4 GB/day while on)."
+                        ),
+                        _ => "NOAA GOES-East/West GLM flashes, last 20 minutes. One 20-second \
+                              file per minute (~0.4 GB/day). Official public-domain data; off by default."
+                            .to_string(),
+                    },
+                );
+            if app.state.show_lightning {
+                let near = radar_core::sites::site(&app.state.site_id).map_or(0, |site| {
+                    app.state
+                        .lightning
+                        .iter()
+                        .filter(|strike| {
+                            radar_render::surface_distance_m(
+                                site.longitude,
+                                site.latitude,
+                                strike.lon,
+                                strike.lat,
+                            ) < 300_000.0
+                        })
+                        .count()
+                });
+                let status = if app.state.lightning_pending {
+                    "fetching the next GLM file…".to_string()
+                } else {
+                    format!(
+                        "{} · {} total · {} within 186 mi",
+                        app.state.lightning_satellite.as_deref().unwrap_or("GOES"),
+                        app.state.lightning.len(),
+                        near
+                    )
+                };
+                ui.label(egui::RichText::new(status).small().weak());
+            }
             control_window_wheel(ui, &sliders, |target, steps| match target {
                 0 => {
                     app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);
@@ -1686,18 +1725,6 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.measure_bubble_rect = None;
         }
     });
-    ui.checkbox(&mut app.state.show_lightning, "Lightning (GLM)")
-        .on_hover_text(
-            match (&app.state.lightning_satellite, app.state.lightning.len()) {
-                (Some(satellite), flashes) if flashes > 0 => format!(
-                    "{satellite} · {flashes} flashes in the last 20 minutes. NOAA GOES GLM, \
-                 one 20-second file per minute (~0.4 GB/day while on)."
-                ),
-                _ => "NOAA GOES-East/West GLM flashes, last 20 minutes. One 20-second \
-                  file per minute (~0.4 GB/day). Official public-domain data; off by default."
-                    .to_string(),
-            },
-        );
     match (
         app.state.measure_mode,
         app.state.measure_a,
@@ -1751,33 +1778,6 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.persist_markers();
         }
     });
-    if app.state.show_lightning {
-        let near = radar_core::sites::site(&app.state.site_id).map_or(0, |site| {
-            app.state
-                .lightning
-                .iter()
-                .filter(|strike| {
-                    radar_render::surface_distance_m(
-                        site.longitude,
-                        site.latitude,
-                        strike.lon,
-                        strike.lat,
-                    ) < 300_000.0
-                })
-                .count()
-        });
-        let status = if app.state.lightning_pending {
-            "fetching the next GLM file…".to_string()
-        } else {
-            format!(
-                "{} · {} total · {} within 186 mi",
-                app.state.lightning_satellite.as_deref().unwrap_or("GOES"),
-                app.state.lightning.len(),
-                near
-            )
-        };
-        ui.label(egui::RichText::new(status).small().weak());
-    }
 
     // Rows: click = pan to it, ✎ = rename, ✕ = delete.
     let mut pan_to: Option<(f64, f64)> = None;

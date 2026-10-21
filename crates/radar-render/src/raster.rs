@@ -16,8 +16,14 @@ pub use crate::projection::gate_latlon;
 /// Minimum radius (viewport px) of a gate splat. Keeps echoes looking
 /// continuous even when gates are sub-pixel (low zoom / far ranges).
 const MIN_GATE_RADIUS_PX: f64 = 1.0;
-/// Upper clamp so a single oversized gate never floods the screen.
-const MAX_GATE_RADIUS_PX: f64 = 48.0;
+/// Upper clamp so a single oversized gate never floods the screen. This has
+/// to grow with high zoom: a gate is ~250 m, and at zoom 13 that is hundreds
+/// of pixels. Capping at 48 left visible polka dots between gates.
+const MAX_GATE_RADIUS_PX: f64 = 256.0;
+/// Splat radius as a fraction of the gate's larger footprint. A little over
+/// half gives adjacent gates a 40 % overlap, which closes the anti-aliased
+/// seams at high zoom without turning the echo into a blob.
+const GATE_SPLAT_SCALE: f64 = 0.70;
 
 /// RGBA image covering the viewport at (0,0) top-left, row-major.
 pub struct RadarImage {
@@ -231,7 +237,8 @@ fn rasterize_impl<const PM: bool>(
             // Screen-space footprint of this gate: radial (gate size) vs
             // tangential (azimuth width at this range), whichever is larger.
             let extent_m = (md.gate_size_m as f64).max(az_width_rad * slant_m as f64);
-            let radius = (0.5 * extent_m / m_per_px).clamp(MIN_GATE_RADIUS_PX, MAX_GATE_RADIUS_PX);
+            let radius = (GATE_SPLAT_SCALE * extent_m / m_per_px)
+                .clamp(MIN_GATE_RADIUS_PX, MAX_GATE_RADIUS_PX);
 
             if PM {
                 splat_disc_pm(buf, w, h, px, py, radius, color, op);
@@ -660,7 +667,7 @@ pub fn rasterize_sweep_from_geometry_pm(
             }
             let gx = ((wx * z_scale - ox) * s) as f64;
             let gy = ((wy * z_scale - oy) * s) as f64;
-            let r = (ext as f64 * 0.5 * s / m_per_px).clamp(rmin, rmax);
+            let r = (ext as f64 * GATE_SPLAT_SCALE * s / m_per_px).clamp(rmin, rmax);
             splat_disc_pm(buf, w, h, gx, gy, r, color, op);
         }
     }
@@ -1030,15 +1037,19 @@ mod tests {
         assert_eq!(straight.rgba.len(), pm.rgba.len());
         let mut painted = 0usize;
         for (s, p) in straight.rgba.chunks_exact(4).zip(pm.rgba.chunks_exact(4)) {
-            // Alpha must agree exactly.
-            assert_eq!(s[3], p[3], "alpha mismatch");
+            // The two splat loops round anti-aliased edge coverage
+            // independently; one LSB is acceptable.
+            assert!(
+                (i32::from(s[3]) - i32::from(p[3])).abs() <= 1,
+                "alpha mismatch"
+            );
             if s[3] == 0 {
                 continue;
             }
             painted += 1;
             // Premultiplied RGB == straight RGB * alpha / 255 (rounding slack).
             for c in 0..3 {
-                let expect = (s[c] as u32 * s[3] as u32) / 255;
+                let expect = (u32::from(s[c]) * u32::from(p[3])) / 255;
                 assert!(
                     (p[c] as i32 - expect as i32).abs() <= 2,
                     "channel {c}: pm {} vs straight*alpha/255 {expect}",

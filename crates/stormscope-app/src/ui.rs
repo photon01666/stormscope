@@ -1751,6 +1751,33 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.persist_markers();
         }
     });
+    if app.state.show_lightning {
+        let near = radar_core::sites::site(&app.state.site_id).map_or(0, |site| {
+            app.state
+                .lightning
+                .iter()
+                .filter(|strike| {
+                    radar_render::surface_distance_m(
+                        site.longitude,
+                        site.latitude,
+                        strike.lon,
+                        strike.lat,
+                    ) < 300_000.0
+                })
+                .count()
+        });
+        let status = if app.state.lightning_pending {
+            "fetching the next GLM file…".to_string()
+        } else {
+            format!(
+                "{} · {} total · {} within 186 mi",
+                app.state.lightning_satellite.as_deref().unwrap_or("GOES"),
+                app.state.lightning.len(),
+                near
+            )
+        };
+        ui.label(egui::RichText::new(status).small().weak());
+    }
 
     // Rows: click = pan to it, ✎ = rename, ✕ = delete.
     let mut pan_to: Option<(f64, f64)> = None;

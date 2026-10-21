@@ -3,6 +3,16 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## Unreleased
+
+**Alerts**
+- Tornado warnings are **red** (they were pink/magenta) and severe
+  thunderstorm warnings are **purple** (they were yellow) across the map
+  polygons, the alerts lists, the badge flash and the archive rows.
+- Clicking a historical warning turns the warnings layer on, switches to the
+  nearest station, and keeps that warning's polygon visible for 90 s while the
+  archive window loads/seeks.
+
 ## v1.4.8 — 2026-10-21
 
 **Lightning (GOES GLM)**
@@ -16,12 +26,6 @@ log; entries start at the first public release.
   within 186 mi, so an active layer with no nearby strikes is distinguishable
   from a broken one. Strikes are drawn as small lightning-bolt glyphs; fresh
   ones pulse with a soft glow, older ones settle to amber and fade.
-
-**Alert browser**
-- Clicking a historical warning now turns the warnings layer on, switches to
-  the nearest station, and keeps that warning's polygon visible for 90 s while
-  the archive window loads/seeks (it no longer depends on the playhead already
-  being inside the warning's in-effect window).
 
 **AI map, marks and probe polish**
 - SPC `spc_risk`/`spc_nearest` now carry a ready-made summary; the model must

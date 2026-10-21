@@ -26,7 +26,7 @@ fn mcd_color() -> egui::Color32 {
 /// (tornado pink, severe yellow are the app's existing hues).
 pub(super) fn report_color(kind: ReportKind) -> egui::Color32 {
     match kind {
-        ReportKind::Tornado => egui::Color32::from_rgb(255, 60, 120),
+        ReportKind::Tornado => egui::Color32::from_rgb(255, 45, 45),
         ReportKind::Wind => egui::Color32::from_rgb(255, 220, 60),
         ReportKind::Hail => egui::Color32::from_rgb(150, 255, 90),
         ReportKind::Flood => egui::Color32::from_rgb(80, 170, 255),

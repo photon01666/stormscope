@@ -150,9 +150,9 @@ fn alert_group_header(ui: &mut egui::Ui, event: &str, count: usize, scale: f32) 
 /// Map/popup color for an alert by event type (matches the polygon colors).
 pub(super) fn warning_color(w: &Warning) -> egui::Color32 {
     if w.is_tornado() {
-        egui::Color32::from_rgb(255, 60, 120)
+        egui::Color32::from_rgb(255, 45, 45)
     } else if w.is_severe_thunderstorm() {
-        egui::Color32::from_rgb(255, 220, 60)
+        egui::Color32::from_rgb(205, 80, 255)
     } else if w.is_flash_flood() {
         egui::Color32::from_rgb(80, 255, 120)
     } else if w.is_winter_storm() {
@@ -348,9 +348,9 @@ pub(super) fn significant_priority(w: &Warning) -> Option<u8> {
 /// the helper stays total.
 pub(super) fn pulse_color(w: &Warning) -> egui::Color32 {
     let base = if w.is_tornado() {
-        egui::Color32::from_rgb(255, 60, 120)
+        egui::Color32::from_rgb(255, 45, 45)
     } else if w.is_severe_thunderstorm() {
-        egui::Color32::from_rgb(255, 220, 60)
+        egui::Color32::from_rgb(205, 80, 255)
     } else if w.is_flash_flood() {
         egui::Color32::from_rgb(80, 255, 120)
     } else if w.is_winter_storm() {
@@ -855,9 +855,9 @@ enum ArchiveAction {
 /// Row color for a historical warning (the archive has no severity field).
 fn archive_color(w: &HistoricWarning) -> egui::Color32 {
     if w.event.contains("Tornado") {
-        egui::Color32::from_rgb(255, 60, 120)
+        egui::Color32::from_rgb(255, 45, 45)
     } else if w.event.contains("Severe Thunderstorm") {
-        egui::Color32::from_rgb(255, 220, 60)
+        egui::Color32::from_rgb(205, 80, 255)
     } else if w.event.contains("Flash Flood") {
         egui::Color32::from_rgb(90, 220, 120)
     } else {
@@ -1927,7 +1927,7 @@ mod tests {
     fn watch_pulse_is_dimmed_family_color() {
         let w = warn("w", "Severe Thunderstorm Warning", 35.4, -97.3, true);
         let watch = warn("v", "Severe Thunderstorm Watch", 35.4, -97.3, true);
-        assert_eq!(pulse_color(&w), egui::Color32::from_rgb(255, 220, 60));
+        assert_eq!(pulse_color(&w), egui::Color32::from_rgb(205, 80, 255));
         assert_ne!(pulse_color(&watch), pulse_color(&w));
         assert!(pulse_color(&watch).r() < pulse_color(&w).r());
     }
@@ -1937,11 +1937,11 @@ mod tests {
     fn alert_colors_follow_event_family() {
         assert_eq!(
             warning_color(&warn("t", "Tornado Warning", 35.0, -97.0, true)),
-            egui::Color32::from_rgb(255, 60, 120)
+            egui::Color32::from_rgb(255, 45, 45)
         );
         assert_eq!(
             warning_color(&warn("s", "Severe Thunderstorm Warning", 35.0, -97.0, true)),
-            egui::Color32::from_rgb(255, 220, 60)
+            egui::Color32::from_rgb(205, 80, 255)
         );
         assert_eq!(
             warning_color(&warn("f", "Flash Flood Warning", 35.0, -97.0, true)),

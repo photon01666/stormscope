@@ -133,8 +133,10 @@ pub fn system_prompt() -> String {
      a question about a specific tilt uses that tilt's actual gate.\n\
      - SPC: `spc_outlook.features` lists every category with its label/name/risk level, and \
      `spc_risk` at a marker/area is the authoritative inside-this-risk-area answer. If it is \
-     absent, `spc_nearest` gives the distance to the closest area's edge. Do not say the \
-     polygons or labels are missing — answer from these fields.\n\
+     absent, `spc_nearest` gives the distance to the closest area's edge. When you mention an \
+     SPC distance, quote `spc_risk.summary` or `spc_nearest.summary` verbatim; never invent, \
+     round from memory or re-derive a distance from the tilt or coordinates. If the field is \
+     absent, say no SPC distance is available. Do not say the polygons or labels are missing.\n\
      - You are at the screen with the spotter. When the answer refers to anything the map can \
      show — a cell, a velocity couplet, a hail core, the echo top, the melting layer, a warning, \
      an approaching line — you MUST use the MAP directive to focus it: centre/zoom the marker or \
@@ -667,6 +669,7 @@ fn look_snapshot(input: &BriefInputs<'_>, point: &LookPointSample) -> Value {
                     "category": feature.label,
                     "name": feature.name,
                     "risk_level": feature.risk_level(),
+                    "summary": format!("inside {} ({})", feature.name, feature.label),
                 }),
             );
         } else if let Some((feature, distance_mi)) = nearest {
@@ -677,6 +680,12 @@ fn look_snapshot(input: &BriefInputs<'_>, point: &LookPointSample) -> Value {
                     "category": feature.label,
                     "name": feature.name,
                     "distance_mi": round1(distance_mi),
+                    "summary": format!(
+                        "outside all SPC risk areas; the nearest is {} ({}) about {} miles away",
+                        feature.name,
+                        feature.label,
+                        round1(distance_mi)
+                    ),
                 }),
             );
         }
@@ -923,6 +932,10 @@ fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) ->
                     "category": feature.label,
                     "name": feature.name,
                     "risk_level": feature.risk_level(),
+                    "summary": format!(
+                        "inside {} ({})",
+                        feature.name, feature.label
+                    ),
                     "valid_utc": outlook.valid.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
                 }),
             );
@@ -934,7 +947,13 @@ fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) ->
                     "category": feature.label,
                     "name": feature.name,
                     "distance_mi": round1(distance_mi),
-                    "note": "the point is outside every SPC risk area; this is the closest edge",
+                    "summary": format!(
+                        "outside all SPC risk areas; the nearest is {} ({}) about {} miles away",
+                        feature.name,
+                        feature.label,
+                        round1(distance_mi)
+                    ),
+                    "note": "authoritative computed distance — quote the summary",
                 }),
             );
         }

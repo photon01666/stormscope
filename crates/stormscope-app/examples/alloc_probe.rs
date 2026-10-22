@@ -78,6 +78,7 @@ fn main() {
     }
     // Drop everything: how much comes back?
     ring.clear();
+    #[cfg(target_env = "gnu")]
     unsafe {
         libc::malloc_trim(0);
     }

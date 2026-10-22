@@ -12,16 +12,28 @@ use std::sync::Arc;
 /// of wall-clock radar time — but the *memory budget* below is the binding
 /// limit in practice (a decoded volume runs 150-200 MB), so the ring doesn't
 /// pin ~5 GB of RAM on a machine that has other work to do.
+///
+/// Android gets a much smaller ring: phone memory is shared with the OS and
+/// the per-app native budget is nowhere near a desktop's.
+#[cfg(not(target_os = "android"))]
 pub const RING_CAPACITY: usize = 24;
+#[cfg(target_os = "android")]
+pub const RING_CAPACITY: usize = 8;
 
 /// Resident-memory budget for the animation ring. Evicting oldest-first down
 /// to this keeps the app's footprint predictable: leaving it open all night
 /// must not push the system into swap (and, on a shared-memory GPU, into
 /// driver buffer-eviction stalls that stutter the whole desktop).
+#[cfg(not(target_os = "android"))]
 pub const RING_BUDGET_BYTES: usize = 3 * 1024 * 1024 * 1024;
+#[cfg(target_os = "android")]
+pub const RING_BUDGET_BYTES: usize = 512 * 1024 * 1024;
 
 /// Never trim below this many frames — a loop needs a few scans to be a loop.
+#[cfg(not(target_os = "android"))]
 pub const MIN_RING_FRAMES: usize = 8;
+#[cfg(target_os = "android")]
+pub const MIN_RING_FRAMES: usize = 3;
 
 /// Approximate resident size of one decoded volume: gate data is the bulk
 /// (i16 per gate per moment), plus azimuth tables and struct overhead.

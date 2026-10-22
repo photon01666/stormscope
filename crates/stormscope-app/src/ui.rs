@@ -14,7 +14,11 @@ mod volume3d;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the
 /// hover hysteresis below — keep the two in sync.
-const SIDEBAR_WIDTH: f32 = 250.0;
+const SIDEBAR_WIDTH: f32 = if cfg!(target_os = "android") {
+    200.0
+} else {
+    250.0
+};
 /// Pointer distance from the left edge that peeks the sidebar open.
 const SIDEBAR_EDGE_PX: f32 = 16.0;
 /// Extra x-range past the sidebar that still counts as "inside" so popups,
@@ -24,6 +28,14 @@ const SIDEBAR_CLOSE_SLOP: f32 = 32.0;
 const SIDEBAR_ANIM_SECS: f32 = 0.18;
 
 pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
+    // Android: the app window is full-screen and the system status / gesture
+    // bars are drawn on top of it. Reserve their space so the status bar and
+    // timeline are not hidden behind them.
+    #[cfg(target_os = "android")]
+    egui::Panel::top("android_top_inset").show(ui, |ui| {
+        ui.add_space(56.0);
+    });
+
     // Top status bar.
     egui::Panel::top("status").show(ui, |ui| {
         status_bar(ui, app);
@@ -32,6 +44,12 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Bottom timeline scrubber.
     egui::Panel::bottom("timeline").show(ui, |ui| {
         crate::timeline::timeline(ui, app);
+    });
+
+    // Android: keep the timeline above the system gesture bar.
+    #[cfg(target_os = "android")]
+    egui::Panel::bottom("android_bottom_inset").show(ui, |ui| {
+        ui.add_space(48.0);
     });
 
     // Middle rect (between top/bottom bars) before CentralPanel consumes it —
@@ -1262,7 +1280,7 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     );
 
     if frac <= 0.001 {
-        edge_hint(ctx, middle, scale);
+        edge_hint(ctx, app, middle, scale);
         return;
     }
     if frac < 1.0 {
@@ -1306,13 +1324,13 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
 /// Slim "›" tab at the left edge while the sidebar is hidden — a visual cue
 /// that controls live there. Non-interactive (clicks pass through to the
 /// map); hovering it already peeks the sidebar via the edge zone.
-fn edge_hint(ctx: &egui::Context, middle: egui::Rect, scale: f32) {
+fn edge_hint(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect, scale: f32) {
     let cy = middle.center().y;
     let pos = egui::pos2(middle.min.x + 3.0, cy - 26.0);
-    egui::Area::new(egui::Id::new("stormscope.sidebar.hint"))
+    let resp = egui::Area::new(egui::Id::new("stormscope.sidebar.hint"))
         .fixed_pos(pos)
         .movable(false)
-        .interactable(false)
+        .interactable(true)
         .constrain(false)
         .fade_in(false)
         .order(egui::Order::Foreground)
@@ -1328,11 +1346,18 @@ fn edge_hint(ctx: &egui::Context, middle: egui::Rect, scale: f32) {
                             .size(14.0 * scale),
                     );
                 });
-        });
+        })
+        .response;
+    if resp.clicked() {
+        app.state.sidebar_pinned = true;
+    }
+    if resp.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 }
 
 fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.strong("stormscope");
         ui.separator();
         ui.label(format!("site {}", app.state.site_id));
@@ -1361,9 +1386,13 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     });
     if !app.state.sidebar_pinned {
         ui.label(
-            egui::RichText::new("hover the left edge to peek · Pin to keep open")
-                .weak()
-                .small(),
+            egui::RichText::new(if cfg!(target_os = "android") {
+                "tap the edge tab to open · Pin to keep open"
+            } else {
+                "hover the left edge to peek · Pin to keep open"
+            })
+            .weak()
+            .small(),
         );
     }
     if app.sidebar_scale > 1.01 {

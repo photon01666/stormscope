@@ -32,6 +32,10 @@ log; entries start at the first public release.
   window), the UI is pinned to the dark theme (a light Windows app theme no
   longer turns the AI/Controls windows white), and DWM is asked for a dark
   titlebar and border.
+- **Android (early port)**: a GameActivity shell (`crates/stormscope-android`)
+  and an `android/` Gradle project build a `com.stormscope.app` APK for
+  arm64; cache/config live in the app's private storage and the animation
+  ring is capped at 8 frames / 512 MB. Touch UI polish is still in progress.
 
 ## v1.4.9.1 — 2026-10-21
 

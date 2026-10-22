@@ -227,6 +227,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 .ctx()
                 .input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
             let mut z = app.state.view.zoom;
+            let mut pinch = pinch;
+            // Touch pinch on Android arrives as much larger deltas than a
+            // trackpad; dampen it so a two-finger zoom doesn't overshoot.
+            #[cfg(target_os = "android")]
+            {
+                pinch = 1.0 + (pinch - 1.0) * 0.4;
+            }
             let zd = pinch as f64;
             if zd != 1.0 {
                 z *= zd;

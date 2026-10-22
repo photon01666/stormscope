@@ -37,8 +37,7 @@ const WIKIMEDIA_URL: &str = "https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}.png
 /// cache keeps request volume low).
 const OSM_URL: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 /// Descriptive User-Agent (OSM tile usage policy asks for one).
-const USER_AGENT: &str =
-    "stormscope/0.1 (Linux NEXRAD radar viewer; github.com/stormscope/stormscope)";
+const USER_AGENT: &str = "stormscope/0.1 (+https://github.com/photon01666/stormscope)";
 /// Concurrent tile downloads. Deliberately small: be polite to the servers.
 /// Concurrent tile *worker threads*. Disk-cache hits finish in ~2ms, so
 /// this mainly bounds thread count while a warm viewport loads — it must NOT

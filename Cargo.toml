@@ -6,6 +6,7 @@ members = [
     "crates/radar-data",
     "crates/radar-render",
     "crates/stormscope-app",
+    "crates/stormscope-android",
 ]
 
 [workspace.package]

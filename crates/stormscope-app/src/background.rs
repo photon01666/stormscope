@@ -15,7 +15,7 @@ use std::time::Duration;
 
 /// User-Agent sent to every NOAA/SPC host (they require a descriptive UA:
 /// app name + a way to reach an operator).
-const USER_AGENT: &str = "stormscope/0.1 (Linux NEXRAD radar viewer)";
+const USER_AGENT: &str = "stormscope/0.1 (+https://github.com/photon01666/stormscope)";
 
 /// How far back an archive request reaches when listing a day's volumes.
 const ARCHIVE_MAX_VOLUMES: usize = 24;

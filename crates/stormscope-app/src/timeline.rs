@@ -5,7 +5,7 @@ use crate::app::{DataCmd, StormApp};
 use crate::state::{AppState, LoopState, Mode};
 
 pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         // Play/pause.
         let playing = app.state.loop_state == LoopState::Playing;
         let label = if playing { "Pause" } else { "Play" };

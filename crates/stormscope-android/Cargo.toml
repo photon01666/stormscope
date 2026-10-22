@@ -1,0 +1,29 @@
+[package]
+name = "stormscope-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Android (GameActivity) entry point for stormscope"
+
+[lib]
+# The Java GameActivity loads this as libstormscope_android.so.
+name = "stormscope_android"
+crate-type = ["cdylib"]
+
+# Everything is target-gated so the crate is an inert empty cdylib on desktop
+# builds (the workspace still checks it, but it pulls no Android crates).
+[target.'cfg(target_os = "android")'.dependencies]
+stormscope-app = { path = "../stormscope-app" }
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "android-game-activity",
+] }
+winit = { version = "0.30", default-features = false, features = [
+    "android-game-activity",
+] }
+log = "0.4"
+android_logger = "0.15"
+jni = "0.22"
+rustls-platform-verifier = "0.7"

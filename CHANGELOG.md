@@ -5,9 +5,16 @@ log; entries start at the first public release.
 
 ## Unreleased
 
+## v1.5.0 — 2026-10-22
+
 **Presentation**
 - Stormscope now has an icon (window/taskbar, and the `.exe` itself on
   Windows), and the README opens with a full screenshot of the KFSX view.
+- The AI meteorologist window keeps its full chat layout before a key is
+  configured — composer and actions disabled with the setup hint in the
+  transcript — instead of collapsing to just a paste-key message.
+- Prose falls back to the bundled Hack font for arrows and triangles, so
+  strings like "Settings → AI meteorologist" no longer render as boxes.
 
 **Platform**
 - **Windows support**: cache files go to `%LOCALAPPDATA%\stormscope`, config

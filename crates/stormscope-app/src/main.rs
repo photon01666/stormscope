@@ -76,12 +76,29 @@ fn main() -> eframe::Result {
 /// rate — dragging, zooming, everything — and the audio hiccups. That is
 /// exactly what a night with the monitors off ended in until the app was
 /// restarted, so the mode is no longer left to negotiation.
+/// The app icon, embedded at build time so an installed or copied binary
+/// still shows it in the taskbar and window switcher.
+fn window_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(include_bytes!("../../../assets/icon.png"))
+        .ok()?
+        .to_rgba8();
+    Some(egui::IconData {
+        rgba: img.as_raw().clone(),
+        width: img.width(),
+        height: img.height(),
+    })
+}
+
 fn native_options() -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([800.0, 500.0])
+        .with_title("stormscope");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let mut options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([800.0, 500.0])
-            .with_title("stormscope"),
+        viewport,
         ..Default::default()
     };
     options.wgpu_options.surface.present_mode = egui_wgpu::wgpu::PresentMode::Fifo;
@@ -101,5 +118,14 @@ mod tests {
             native_options().wgpu_options.surface.present_mode,
             egui_wgpu::wgpu::PresentMode::Fifo
         );
+    }
+
+    /// The embedded icon must decode at build time; a broken asset should be
+    /// caught here and not show up as a blank taskbar icon.
+    #[test]
+    fn the_window_icon_decodes() {
+        let icon = window_icon().expect("embedded icon decodes");
+        assert_eq!((icon.width, icon.height), (512, 512));
+        assert_eq!(icon.rgba.len(), 512 * 512 * 4);
     }
 }

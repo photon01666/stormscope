@@ -39,12 +39,18 @@ jiff.workspace = true
 # egui_wgpu::RenderState can name the device handed to the renderer.
 egui-wgpu = "0.36"
 wgpu = { workspace = true }
+# Decode the embedded window icon (512x512 PNG) at startup.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Allocator tuning (see main.rs) is glibc-only: return freed decode buffers to
 # the OS so a stormscope left open for a day doesn't grow into a memory-pressure
 # problem. Windows and macOS use their own allocators.
 [target.'cfg(target_env = "gnu")'.dependencies]
 libc = "0.2"
+
+# Embeds the .ico into stormscope.exe (Explorer/taskbar icon) on Windows.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 # Headless render smoke test (`tests/render3d_smoke.rs`, ignored by default):

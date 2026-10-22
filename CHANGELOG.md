@@ -5,6 +5,10 @@ log; entries start at the first public release.
 
 ## Unreleased
 
+**Presentation**
+- Stormscope now has an icon (window/taskbar, and the `.exe` itself on
+  Windows), and the README opens with a full screenshot of the KFSX view.
+
 **Platform**
 - **Windows support**: cache files go to `%LOCALAPPDATA%\stormscope`, config
   (AI settings, markers) to `%APPDATA%\stormscope`, the private AI file uses

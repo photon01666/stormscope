@@ -49,7 +49,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Android: keep the timeline above the system gesture bar.
     #[cfg(target_os = "android")]
     egui::Panel::bottom("android_bottom_inset").show(ui, |ui| {
-        ui.add_space(48.0);
+        ui.add_space(24.0);
     });
 
     // Middle rect (between top/bottom bars) before CentralPanel consumes it —
@@ -1362,16 +1362,20 @@ fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.separator();
         ui.label(format!("site {}", app.state.site_id));
         ui.label(format!("{}", app.state.moment.label()));
-        ui.label(format!("{:.1}°", app.state.tilt_deg));
+        if !cfg!(target_os = "android") {
+            ui.label(format!("{:.1}°", app.state.tilt_deg));
+        }
         if let Some(n) = app.state.newest_start() {
             ui.label(format!("scan {}", crate::timefmt::fmt_central(&n)));
         }
-        if let Some(lat) = app.state.latency() {
-            ui.label(format!("+{}m", lat.num_minutes()));
+        if !cfg!(target_os = "android") {
+            if let Some(lat) = app.state.latency() {
+                ui.label(format!("+{}m", lat.num_minutes()));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(app.state.status_text.clone());
+            });
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(app.state.status_text.clone());
-        });
     });
 }
 

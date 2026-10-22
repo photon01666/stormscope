@@ -29,31 +29,34 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         }
 
         ui.separator();
-        ui.label("Loop speed");
-        ui.add(
-            egui::Slider::new(&mut app.state.fps, 0.25..=30.0)
-                .logarithmic(true)
-                .fixed_decimals(2),
-        );
-        ui.label(
-            egui::RichText::new(crate::timeline::frame_time_label(app.state.fps))
-                .weak()
-                .small(),
-        );
-
-        ui.separator();
+        if !cfg!(target_os = "android") {
+            ui.label("Loop speed");
+            ui.add(
+                egui::Slider::new(&mut app.state.fps, 0.25..=30.0)
+                    .logarithmic(true)
+                    .fixed_decimals(2),
+            );
+            ui.label(
+                egui::RichText::new(crate::timeline::frame_time_label(app.state.fps))
+                    .weak()
+                    .small(),
+            );
+            ui.separator();
+        }
         if let Some(f) = app.state.current() {
             ui.label(crate::timefmt::fmt_central(&f.volume_start));
         } else {
             ui.label("no frames");
         }
-        ui.separator();
-        if ui
-            .button("Downloaded…")
-            .on_hover_text("Browse every cached day for this station")
-            .clicked()
-        {
-            app.state.downloads_open = true;
+        if !cfg!(target_os = "android") {
+            ui.separator();
+            if ui
+                .button("Downloaded…")
+                .on_hover_text("Browse every cached day for this station")
+                .clicked()
+            {
+                app.state.downloads_open = true;
+            }
         }
     });
 

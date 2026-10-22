@@ -280,23 +280,11 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                 }
             });
             let configured = app.state.ai_config().is_configured();
-            if !configured {
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Paste your OpenCode Go API key in Settings → AI meteorologist. \
-                         The fields are already set to OpenCode Go (deepseek-v4.1-flash).",
-                    )
-                    .strong(),
-                );
-                if ui.button("Open AI settings").clicked() {
-                    app.state.ai_settings_open = true;
-                }
-                return;
-            }
             // No markers is not an error state: keep the full chat layout and
-            // show the hint in the transcript. Returning here used to collapse
-            // the window to just the header and clip the hint.
+            // show the hint in the transcript. The unconfigured state keeps
+            // the same layout too — composer disabled — instead of collapsing
+            // the window to just the setup text (which looked like a broken
+            // window on Windows, where no key was saved yet).
             let no_markers = app.state.markers.is_empty();
 
             // Toolbar pinned to the top; transcript in the middle; input at the
@@ -310,7 +298,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         let write = ui.add_enabled(
-                            !no_markers && !app.state.ai_pending,
+                            configured && !no_markers && !app.state.ai_pending,
                             egui::Button::new("Write brief"),
                         );
                         if write
@@ -373,14 +361,19 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                         retry = true;
                     }
                     ui.horizontal(|ui| {
-                        let hint = "Ask the meteorologist — e.g. \"is the hail core going to hit the \
-                                    north pin?\"";
-                        let response = ui.add(
+                        let hint = if configured {
+                            "Ask the meteorologist — e.g. \"is the hail core going to hit the \
+                             north pin?\""
+                        } else {
+                            "Paste your API key in Settings to chat"
+                        };
+                        let response = ui.add_enabled(
+                            configured,
                             egui::TextEdit::singleline(&mut app.state.ai_question)
                                 .desired_width((ui.available_width() - 72.0).max(100.0))
                                 .hint_text(hint),
                         );
-                        let can_ask = !no_markers && !app.state.ai_pending;
+                        let can_ask = configured && !no_markers && !app.state.ai_pending;
                         let submit = response.lost_focus()
                             && ui.input(|i| i.key_pressed(egui::Key::Enter))
                             && can_ask;
@@ -397,6 +390,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .small_button("the worst hazard")
                             .on_hover_text("Point the map at the most dangerous feature and explain it")
                             .clicked()
+                            && configured
                             && !no_markers
                             && !app.state.ai_pending
                         {
@@ -410,6 +404,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .small_button("the 3D structure")
                             .on_hover_text("Open the 3D pane on the most dangerous cell")
                             .clicked()
+                            && configured
                             && !no_markers
                             && !app.state.ai_pending
                         {
@@ -423,6 +418,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             .small_button("what happens next")
                             .on_hover_text("Focus the storm that arrives next and show its motion")
                             .clicked()
+                            && configured
                             && !no_markers
                             && !app.state.ai_pending
                         {
@@ -462,7 +458,24 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                             egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
                         )
                         .show(ui, |ui| {
-                            if app.state.ai_messages.is_empty() {
+                            if !configured {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(
+                                            "Paste your OpenCode Go API key in Settings → AI \
+                                             meteorologist. The fields are already set to \
+                                             OpenCode Go (deepseek-v4.1-flash), and the chat is \
+                                             ready as soon as the key is in.",
+                                        )
+                                        .weak(),
+                                    )
+                                    .wrap(),
+                                );
+                                ui.add_space(6.0);
+                                if ui.button("Open AI settings").clicked() {
+                                    app.state.ai_settings_open = true;
+                                }
+                            } else if app.state.ai_messages.is_empty() {
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(if no_markers {

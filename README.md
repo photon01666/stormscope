@@ -1,6 +1,6 @@
 # stormscope
 
-A fast native NEXRAD Level II weather-radar viewer for Linux and Windows, built
+A fast native NEXRAD Level II weather-radar for Linux and Windows, built
 in Rust with [egui/eframe](https://github.com/emilk/egui) on wgpu (Vulkan,
 Wayland/X11 on Linux; DX12 on Windows).
 

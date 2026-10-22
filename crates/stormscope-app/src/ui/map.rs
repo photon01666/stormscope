@@ -105,6 +105,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     });
                     app.state.pending_marker = Some(app.state.markers.len() - 1);
                     app.state.pending_marker_label.clear();
+                    app.state.marker_focus_pending = true;
                     app.state.add_marker_mode = false;
                     app.state.persist_markers();
                 } else {
@@ -3197,6 +3198,11 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
     // in app state, or every keystroke is erased on the next repaint (it
     // showed as "one flashing letter"). Edit the draft directly.
     let draft = &mut app.state.pending_marker_label;
+    // The popup auto-focuses the field for a new pin so typing works
+    // immediately. That request must fire exactly once per popup: doing it
+    // every frame re-opens the Android IME, whose keyboard then opens and
+    // closes in a loop.
+    let mut focus = app.state.marker_focus_pending;
     let mut to_save = false;
     let mut to_delete = false;
     let mut to_cancel = false;
@@ -3216,8 +3222,9 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
             .on_hover_text("Type a name, then press Enter or Save");
         // Grab focus automatically while naming a new pin so typing works
         // immediately (no need to click the field first).
-        if is_new {
+        if is_new && focus {
             resp.request_focus();
+            focus = false;
         }
         let typed_ok = !draft.trim().is_empty();
         if typed_ok && resp.lost_focus() {
@@ -3241,6 +3248,7 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
             to_cancel = true;
         }
     });
+    app.state.marker_focus_pending = focus;
 
     if to_save {
         let name = app.state.pending_marker_label.trim().to_string();

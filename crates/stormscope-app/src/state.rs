@@ -636,6 +636,9 @@ pub struct AppState {
     /// egui's TextEdit is immediate-mode: cloning the stored label each frame
     /// would erase every keystroke on the next repaint.
     pub pending_marker_label: String,
+    /// A new pin was just dropped, so the name popup should take text focus
+    /// (once). Requesting it every frame makes the Android IME flicker.
+    pub marker_focus_pending: bool,
     /// When true the next map click drops a new marker (the "＋ Place"
     /// toggle; Shift+click works regardless).
     pub add_marker_mode: bool,
@@ -941,6 +944,7 @@ impl Default for AppState {
             markers: load_markers(),
             pending_marker: None,
             pending_marker_label: String::new(),
+            marker_focus_pending: false,
             add_marker_mode: false,
             sidebar_pinned: false,
             measure_mode: false,

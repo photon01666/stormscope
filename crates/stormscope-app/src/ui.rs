@@ -1266,12 +1266,21 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     let down = ctx.input(|i| i.pointer.any_down());
     if down {
         if let Some(p) = pointer {
-            if app.sidebar_swipe_start.is_none() && p.x - middle.min.x < SIDEBAR_EDGE_PX * 4.0 {
+            if app.sidebar_swipe_start.is_none()
+                && (p.x - middle.min.x < SIDEBAR_EDGE_PX * 4.0
+                    || p.x < middle.min.x + panel_w + SIDEBAR_CLOSE_SLOP)
+            {
                 app.sidebar_swipe_start = Some(p.x);
             }
             if let Some(start) = app.sidebar_swipe_start {
-                if p.x - start > 48.0 {
+                let dx = p.x - start;
+                if dx > 48.0 {
                     app.state.sidebar_pinned = true;
+                    app.sidebar_swipe_start = None;
+                } else if dx < -48.0 {
+                    // Swipe left across the sidebar to close it.
+                    app.state.sidebar_pinned = false;
+                    app.sidebar_open = false;
                     app.sidebar_swipe_start = None;
                 }
             }
@@ -1406,6 +1415,13 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.horizontal(|ui| {
         ui.heading("Controls");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button("✕")
+                .on_hover_text("Hide the controls")
+                .clicked()
+            {
+                app.state.sidebar_pinned = false;
+            }
             settings_menu(ui, app);
             ui.checkbox(&mut app.state.sidebar_pinned, "Pin")
                 .on_hover_text("Keep the sidebar open instead of auto-hiding");

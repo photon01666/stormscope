@@ -639,7 +639,7 @@ impl StormApp {
         }
     }
 
-    fn configure_fonts(ctx: &egui::Context) -> Option<egui::FontDefinitions> {
+    fn configure_fonts(_ctx: &egui::Context) -> Option<egui::FontDefinitions> {
         let mut fonts = egui::FontDefinitions::default();
         // Prefer a mono font for readouts if present on the system.
         for candidate in [
@@ -655,10 +655,18 @@ impl StormApp {
                     .entry(egui::FontFamily::Monospace)
                     .or_default()
                     .insert(0, font);
-                let _ = ctx;
-                return Some(fonts);
+                break;
             }
         }
+        // Ubuntu-Light (egui's prose font) has no arrows or triangles, so
+        // strings like "Settings → AI meteorologist" render as tofu boxes.
+        // Hack ships with egui for monospace and covers them; add it as a
+        // last-resort fallback for prose too.
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .push("Hack".to_owned());
         Some(fonts)
     }
 

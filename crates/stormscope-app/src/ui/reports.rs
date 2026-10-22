@@ -298,7 +298,7 @@ pub fn lsr_detail_window(ctx: &egui::Context, app: &mut StormApp) {
             ui.label(egui::RichText::new(meta.join(" · ")).weak());
             ui.horizontal_wrapped(|ui| {
                 let source = if r.is_spotter() {
-                    format!("✓ trained spotter — {}", r.source)
+                    format!("• trained spotter — {}", r.source)
                 } else {
                     format!("source: {}", r.source)
                 };

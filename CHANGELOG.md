@@ -15,7 +15,10 @@ log; entries start at the first public release.
   the platform's default ACLs, and the mono-font lookup and RSS debug readout
   fall back cleanly where those Linux paths do not exist. wgpu uses DX12, and
   CI now checks, tests and builds a `stormscope.exe` artifact on
-  `windows-latest`.
+  `windows-latest`. The release binary uses the GUI subsystem (no console
+  window), the UI is pinned to the dark theme (a light Windows app theme no
+  longer turns the AI/Controls windows white), and DWM is asked for a dark
+  titlebar and border.
 
 ## v1.4.9.1 — 2026-10-21
 

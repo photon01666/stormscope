@@ -2448,7 +2448,7 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     let total_w: f32 =
         galleys.iter().map(|g| g.size().x + pad.x).sum::<f32>() + gap * (galleys.len() - 1) as f32;
     let top = rect.min.y + 8.0;
-    let mut x = rect.center().x - total_w / 2.0;
+    let mut x = (rect.center().x - total_w / 2.0).max(rect.min.x + 4.0);
     let mut rects: Vec<(BadgeKind, egui::Rect)> = Vec::new();
     for (badge, galley) in badges.iter().zip(galleys.iter()) {
         let size = galley.size();

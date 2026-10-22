@@ -1,3 +1,8 @@
+// Windows release builds must be a GUI-subsystem executable: without this the
+// app opens a console window alongside the radar, and closing that console
+// kills it. Debug builds keep the console for logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 //! stormscope binary entry point.
 
 use stormscope_app::StormApp;

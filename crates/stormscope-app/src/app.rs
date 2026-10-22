@@ -583,7 +583,13 @@ impl StormApp {
     fn configure_fonts(ctx: &egui::Context) -> Option<egui::FontDefinitions> {
         let mut fonts = egui::FontDefinitions::default();
         // Prefer a mono font for readouts if present on the system.
-        for candidate in ["DejaVuSansMono", "LiberationMono", "monospace"] {
+        for candidate in [
+            "DejaVuSansMono",
+            "LiberationMono",
+            "consola",
+            "CascadiaMono",
+            "monospace",
+        ] {
             if let Some(font) = find_system_font(candidate) {
                 fonts
                     .families
@@ -1876,10 +1882,7 @@ impl StormApp {
                 self.state.ring.len(),
                 self.state.ring_bytes as f64 / 1e9,
                 self.state.ring_budget_bytes as f64 / 1e9,
-                std::fs::read_to_string("/proc/self/statm")
-                    .ok()
-                    .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
-                    .map(|pages| pages * 4096 / 1_000_000)
+                rss_mb()
                     .map(|mb| mb.to_string())
                     .unwrap_or_else(|| "?".into()),
             );
@@ -1907,9 +1910,29 @@ impl StormApp {
     }
 }
 
-/// Minimal system font lookup (Linux fontconfig paths).
+/// Resident set size in MB, on platforms that expose it cheaply (Linux).
+/// Windows/macOS report `None`, which the debug log prints as "?".
+fn rss_mb() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        return std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .map(|pages| pages * 4096 / 1_000_000);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Minimal system font lookup (Linux fontconfig paths, Windows font folder).
 fn find_system_font(name: &str) -> Option<String> {
-    let dirs = ["/usr/share/fonts", "/usr/local/share/fonts"];
+    let dirs: &[&str] = if cfg!(windows) {
+        &[r"C:\Windows\Fonts"]
+    } else {
+        &["/usr/share/fonts", "/usr/local/share/fonts"]
+    };
     let want = name.to_lowercase();
     for dir in dirs {
         if let Ok(walker) = std::fs::read_dir(dir) {

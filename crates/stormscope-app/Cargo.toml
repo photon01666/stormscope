@@ -23,9 +23,6 @@ chrono-tz.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 earcutr.workspace = true
-# Allocator tuning (see main.rs): return freed decode buffers to the OS so a
-# stormscope left open for a day doesn't grow into a memory-pressure problem.
-libc = "0.2"
 # Force the wgpu renderer (Vulkan on Linux) and native Wayland windows.
 # eframe's `default` includes both glow and wgpu; glow is dropped so the app is
 # Vulkan-only, with wayland+x11 for native Wayland (X11 as fallback).
@@ -42,6 +39,12 @@ jiff.workspace = true
 # egui_wgpu::RenderState can name the device handed to the renderer.
 egui-wgpu = "0.36"
 wgpu = { workspace = true }
+
+# Allocator tuning (see main.rs) is glibc-only: return freed decode buffers to
+# the OS so a stormscope left open for a day doesn't grow into a memory-pressure
+# problem. Windows and macOS use their own allocators.
+[target.'cfg(target_env = "gnu")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # Headless render smoke test (`tests/render3d_smoke.rs`, ignored by default):

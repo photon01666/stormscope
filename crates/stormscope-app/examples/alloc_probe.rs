@@ -12,11 +12,19 @@
 use std::collections::VecDeque;
 
 fn rss_mb() -> u64 {
-    std::fs::read_to_string("/proc/self/statm")
-        .ok()
-        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
-        .map(|pages| pages * 4096 / 1_000_000)
-        .unwrap_or(0)
+    #[cfg(target_os = "linux")]
+    {
+        return std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .map(|pages| pages * 4096 / 1_000_000)
+            .unwrap_or(0);
+    }
+    // The probe's RSS readout is Linux-only; other platforms report 0.
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
 }
 
 /// One "decoded volume": 78 MB, every page written (gate data), plus a bunch
@@ -43,11 +51,15 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(120);
     if mode == "tuned" {
+        // glibc-only: other platforms (and Windows) run the plain probe.
+        #[cfg(target_env = "gnu")]
         unsafe {
             libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
             libc::mallopt(libc::M_TRIM_THRESHOLD, 1 << 20);
             libc::mallopt(libc::M_ARENA_MAX, 4);
         }
+        #[cfg(not(target_env = "gnu"))]
+        eprintln!("`tuned` is a glibc-only mode; this platform runs the plain probe");
     }
     const RING: usize = 24;
     let mut ring: VecDeque<Vec<u8>> = VecDeque::new();

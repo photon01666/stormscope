@@ -5,6 +5,14 @@ log; entries start at the first public release.
 
 ## Unreleased
 
+**Platform**
+- **Windows support**: cache files go to `%LOCALAPPDATA%\stormscope`, config
+  (AI settings, markers) to `%APPDATA%\stormscope`, the private AI file uses
+  the platform's default ACLs, and the mono-font lookup and RSS debug readout
+  fall back cleanly where those Linux paths do not exist. wgpu uses DX12, and
+  CI now checks, tests and builds a `stormscope.exe` artifact on
+  `windows-latest`.
+
 ## v1.4.9.1 — 2026-10-21
 
 **Alerts**

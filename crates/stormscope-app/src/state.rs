@@ -973,8 +973,15 @@ impl Default for AppState {
     }
 }
 
-/// `~/.config/stormscope`, where the app's own small JSON files live.
+/// `~/.config/stormscope` on Unix, `%APPDATA%\stormscope` on Windows, where
+/// the app's own small JSON files live.
 fn config_dir() -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(base) = std::env::var_os("APPDATA") {
+            return std::path::PathBuf::from(base).join("stormscope");
+        }
+    }
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -982,6 +989,19 @@ fn config_dir() -> std::path::PathBuf {
                 .join(".config")
         });
     base.join("stormscope")
+}
+
+/// Open a file for private writing: 0600 on Unix (the AI config can hold an
+/// API key), the default per-user ACL on Windows.
+fn private_writer(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
 }
 
 /// `~/.config/stormscope/markers.json`, where user pins are persisted.
@@ -1076,14 +1096,7 @@ impl AppState {
             }
         }
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-        {
+        match private_writer(&path) {
             Ok(mut file) => {
                 if let Err(e) = file.write_all(json.as_bytes()) {
                     log::warn!("AI chat write: {e}");
@@ -1113,14 +1126,7 @@ impl AppState {
             }
         }
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-        {
+        match private_writer(&path) {
             Ok(mut file) => {
                 if let Err(e) = file.write_all(json.as_bytes()) {
                     log::warn!("AI settings write: {e}");

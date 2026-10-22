@@ -1,8 +1,8 @@
 # stormscope
 
-A fast native NEXRAD Level II weather-radar viewer for Linux, built in Rust
-with [egui/eframe](https://github.com/emilk/egui) on Vulkan (wgpu), native
-Wayland and X11.
+A fast native NEXRAD Level II weather-radar viewer for Linux and Windows, built
+in Rust with [egui/eframe](https://github.com/emilk/egui) on wgpu (Vulkan,
+Wayland/X11 on Linux; DX12 on Windows).
 
 Free public data only: NEXRAD Level II (Unidata and NOAA AWS Open Data),
 `api.weather.gov`, SPC, IEM, NOAA MRMS, NASA GIBS, GOES GLM lightning and
@@ -66,7 +66,11 @@ No accounts, API keys or telemetry.
 ## Install
 
 Prebuilt Linux x86_64 binary from the
-[latest release](https://github.com/photon01666/stormscope/releases):
+[latest release](https://github.com/photon01666/stormscope/releases). Windows
+builds are produced by CI: download the `stormscope-windows-x86_64` artifact
+from the latest green run of the CI workflow (Windows 10/11, x86_64).
+
+Linux:
 
 ```sh
 chmod +x stormscope-*-linux-x86_64
@@ -79,8 +83,11 @@ From source (Rust stable ≥ 1.85, edition 2024):
 cargo install --path crates/stormscope-app
 ```
 
-Needs Linux with working Vulkan drivers and a Wayland or X11 session; no other
-system packages.
+Linux needs working Vulkan drivers and a Wayland or X11 session; no other
+system packages. On Windows the renderer uses DX12: install the MSVC build
+tools (Desktop development with C++) plus CMake and NASM (the TLS crates need
+them), then `cargo build --release -p stormscope-app` writes
+`target\release\stormscope.exe`.
 
 ## Data sources
 

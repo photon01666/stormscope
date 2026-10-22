@@ -68,6 +68,14 @@ pub struct DiskCache {
 
 impl DiskCache {
     pub fn default_root() -> PathBuf {
+        // Windows keeps per-user app data in %LOCALAPPDATA%, not $HOME/.cache
+        // (an unset HOME would otherwise drop the cache next to the exe).
+        #[cfg(windows)]
+        {
+            if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+                return PathBuf::from(base).join("stormscope");
+            }
+        }
         std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| {

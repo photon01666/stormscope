@@ -2435,7 +2435,11 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
             .request_repaint_after(std::time::Duration::from_millis(120));
     }
 
-    let font = egui::FontId::proportional(15.0);
+    let font = if cfg!(target_os = "android") {
+        egui::FontId::proportional(11.0)
+    } else {
+        egui::FontId::proportional(15.0)
+    };
     let galleys: Vec<_> = badges
         .iter()
         .map(|b| {

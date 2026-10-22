@@ -15,7 +15,7 @@ mod volume3d;
 /// Fixed sidebar width (screen px) used by both the slide offset and the
 /// hover hysteresis below — keep the two in sync.
 const SIDEBAR_WIDTH: f32 = if cfg!(target_os = "android") {
-    200.0
+    160.0
 } else {
     250.0
 };
@@ -33,7 +33,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // timeline are not hidden behind them.
     #[cfg(target_os = "android")]
     egui::Panel::top("android_top_inset").show(ui, |ui| {
-        ui.add_space(56.0);
+        ui.add_space(64.0);
     });
 
     // Top status bar.
@@ -49,7 +49,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Android: keep the timeline above the system gesture bar.
     #[cfg(target_os = "android")]
     egui::Panel::bottom("android_bottom_inset").show(ui, |ui| {
-        ui.add_space(24.0);
+        ui.add_space(16.0);
     });
 
     // Middle rect (between top/bottom bars) before CentralPanel consumes it —

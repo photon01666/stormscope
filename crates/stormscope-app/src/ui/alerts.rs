@@ -541,6 +541,16 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     let site_id = &state.site_id;
     let all = &state.all_alerts;
     let station: Vec<&Warning> = station_alerts(all, site_lat, site_lon, STATION_ALERT_RADIUS_KM);
+    // The browser lists polygon alerts only: a zone/county alert has no
+    // geometry, so its row cannot center the map (the click looked broken)
+    // and nothing is drawn for it. Counts and rows both use these views.
+    let all_poly: Vec<&Warning> = all.iter().filter(|w| w.polygon.is_some()).collect();
+    let station_poly: Vec<&Warning> = station
+        .iter()
+        .copied()
+        .filter(|w| w.polygon.is_some())
+        .collect();
+    let all_zones: Vec<&Warning> = all.iter().filter(|w| w.polygon.is_none()).collect();
 
     // Archive tab (historical warnings). Rendered from split borrows, so the
     // data and the UI actions travel separately: the window collects one
@@ -601,11 +611,20 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                 .map(|s| s.name.split(',').next().unwrap_or("").trim().to_string())
                 .unwrap_or_default();
             ui.horizontal(|ui| {
-                ui.selectable_value(tab, AlertsTab::All, format!("All US ({})", all.len()));
+                ui.selectable_value(tab, AlertsTab::All, format!("All US ({})", all_poly.len()));
                 ui.selectable_value(
                     tab,
                     AlertsTab::Station,
-                    format!("{site_id} {site_city} ({})", station.len()),
+                    format!("{site_id} {site_city} ({})", station_poly.len()),
+                );
+                ui.selectable_value(
+                    tab,
+                    AlertsTab::Zones,
+                    format!("Zones ({})", all_zones.len()),
+                )
+                .on_hover_text(
+                    "Zone/county-based alerts with no polygon: text and timing only. \
+                     They cannot be drawn or centered on the map.",
                 );
                 ui.selectable_value(
                     tab,
@@ -632,9 +651,9 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                     .unwrap_or(site_id);
                 ui.label(
                     egui::RichText::new(format!(
-                        "Alerts near {site_id} — {name} · within ~{:.0} mi ({})",
+                        "Polygon alerts near {site_id} — {name} · within ~{:.0} mi ({})",
                         STATION_ALERT_RADIUS_KM * 0.621_371,
-                        station.len()
+                        station_poly.len()
                     ))
                     .strong()
                     .size(12.5 * scale),
@@ -666,6 +685,16 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                 .weak()
                 .small(),
             );
+            if *tab == AlertsTab::Zones {
+                ui.label(
+                    egui::RichText::new(
+                        "Zone/county alerts have no polygon: text and timing only, \
+                         nothing to draw or center on the map. Click a row for the full text.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            }
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Filter");
@@ -692,8 +721,9 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
             ui.separator();
 
             let source: Vec<&Warning> = match *tab {
-                AlertsTab::All => all.iter().collect(),
-                AlertsTab::Station => station.clone(),
+                AlertsTab::All => all_poly.clone(),
+                AlertsTab::Station => station_poly.clone(),
+                AlertsTab::Zones => all_zones.clone(),
                 // Handled above (the archive tab renders its own body).
                 AlertsTab::Archive | AlertsTab::ArchiveStation => Vec::new(),
             };
@@ -704,8 +734,10 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
 
             if rows.is_empty() {
                 ui.label(
-                    egui::RichText::new(if station.is_empty() && *tab == AlertsTab::Station {
-                        "No alerts near this site."
+                    egui::RichText::new(if station_poly.is_empty() && *tab == AlertsTab::Station {
+                        "No polygon alerts near this site."
+                    } else if all_zones.is_empty() && *tab == AlertsTab::Zones {
+                        "No zone-only alerts right now."
                     } else {
                         "Nothing matches."
                     })
@@ -759,18 +791,24 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                             hover = Some(w.id.clone());
                         }
                         if is_clicked {
-                            clicked = Some(w.id.clone());
-                            center_on = w.centroid();
-                            // Far from the current station: "take me there"
-                            // only works if the station that covers it is
-                            // loaded (radar frames and the near-site alert
-                            // set are per station).
-                            if let Some(site) = station_for_alert(
-                                w,
-                                site_id,
-                                STATION_ALERT_RADIUS_KM,
-                            ) {
-                                switch_to = Some(site.id.to_string());
+                            if w.polygon.is_some() {
+                                clicked = Some(w.id.clone());
+                                center_on = w.centroid();
+                                // Far from the current station: "take me there"
+                                // only works if the station that covers it is
+                                // loaded (radar frames and the near-site alert
+                                // set are per station).
+                                if let Some(site) = station_for_alert(
+                                    w,
+                                    site_id,
+                                    STATION_ALERT_RADIUS_KM,
+                                ) {
+                                    switch_to = Some(site.id.to_string());
+                                }
+                            } else {
+                                // Zone alert: no geometry to center on, so the
+                                // useful action is the full NOAA text.
+                                detail = Some(w.id.clone());
                             }
                         }
                         if wants_details {
@@ -1536,18 +1574,20 @@ fn alert_row(
         let r = ui.interact(region, id, egui::Sense::click());
         hovered |= r.hovered();
         raw_clicked |= r.clicked();
-        if has_polygon {
-            r.on_hover_ui(|ui| {
-                // Tooltip layers do not inherit per-panel scaling.
-                super::apply_text_scale(ui, scale);
-                brief_alert_ui(ui, w, site_latitude, site_longitude, site_id);
-                ui.label(
-                    egui::RichText::new("click to center the map on this alert")
-                        .weak()
-                        .small(),
-                );
-            });
-        }
+        r.on_hover_ui(|ui| {
+            // Tooltip layers do not inherit per-panel scaling.
+            super::apply_text_scale(ui, scale);
+            brief_alert_ui(ui, w, site_latitude, site_longitude, site_id);
+            ui.label(
+                egui::RichText::new(if has_polygon {
+                    "click to center the map on this alert"
+                } else {
+                    "zone alert — click for the full NOAA text"
+                })
+                .weak()
+                .small(),
+            );
+        });
     }
     // A click on the Details button must not also count as a row click.
     (hovered, raw_clicked && !details, details)

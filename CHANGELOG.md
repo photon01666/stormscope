@@ -5,6 +5,12 @@ log; entries start at the first public release.
 
 ## Unreleased
 
+**Alerts**
+- The Alerts browser separates polygon alerts from zone/county alerts: the
+  **All US** and station tabs list only warnings with a polygon (the ones you
+  can click to center on the map), and a new **Zones** tab holds the
+  no-polygon alerts. Clicking a zone row opens its full NOAA text.
+
 ## v1.5.0 — 2026-10-22
 
 **Presentation**

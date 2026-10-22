@@ -134,6 +134,10 @@ pub enum AlertsTab {
     All,
     /// Only alerts whose polygon lies near the selected radar site.
     Station,
+    /// Active alerts with no polygon (zone/county based). Text and timing
+    /// only — nothing to draw or center the map on — so they live on their
+    /// own tab instead of crowding the polygon alerts.
+    Zones,
     /// Historical warnings for the archive day (IEM VTEC archive).
     Archive,
     /// The same archive day, restricted to the selected station's area

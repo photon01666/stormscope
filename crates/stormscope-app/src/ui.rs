@@ -1260,6 +1260,25 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     let panel_w = SIDEBAR_WIDTH * scale;
 
     let pointer = ctx.pointer_latest_pos();
+    // Touch: swipe right from the left edge pins the sidebar open. Track the
+    // start ourselves: egui's touch pointer does not reliably expose
+    // `press_origin` on Android, and the map pan owns the same drag.
+    let down = ctx.input(|i| i.pointer.any_down());
+    if down {
+        if let Some(p) = pointer {
+            if app.sidebar_swipe_start.is_none() && p.x - middle.min.x < SIDEBAR_EDGE_PX * 4.0 {
+                app.sidebar_swipe_start = Some(p.x);
+            }
+            if let Some(start) = app.sidebar_swipe_start {
+                if p.x - start > 48.0 {
+                    app.state.sidebar_pinned = true;
+                    app.sidebar_swipe_start = None;
+                }
+            }
+        }
+    } else {
+        app.sidebar_swipe_start = None;
+    }
     // Don't peek open mid-gesture: a map pan ending at the left edge must
     // not pop the sidebar over the map mid-drag.
     let pressing = ctx.input(|i| i.pointer.any_down());
@@ -1358,7 +1377,11 @@ fn edge_hint(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect, scale:
 
 fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.horizontal_wrapped(|ui| {
-        ui.strong("stormscope");
+        ui.strong(if cfg!(target_os = "android") {
+            "stormscope (android)"
+        } else {
+            "stormscope"
+        });
         ui.separator();
         ui.label(format!("site {}", app.state.site_id));
         ui.label(format!("{}", app.state.moment.label()));

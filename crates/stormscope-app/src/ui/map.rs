@@ -2452,14 +2452,20 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     let total_w: f32 =
         galleys.iter().map(|g| g.size().x + pad.x).sum::<f32>() + gap * (galleys.len() - 1) as f32;
     let top = rect.min.y + 8.0;
+    let row_h = galleys.iter().map(|g| g.size().y).fold(0.0_f32, f32::max) + pad.y;
     let mut x = (rect.center().x - total_w / 2.0).max(rect.min.x + 4.0);
+    let mut y = top;
     let mut rects: Vec<(BadgeKind, egui::Rect)> = Vec::new();
     for (badge, galley) in badges.iter().zip(galleys.iter()) {
         let size = galley.size();
-        let bg = egui::Rect::from_min_size(
-            egui::pos2(x, top),
-            egui::vec2(size.x + pad.x, size.y + pad.y),
-        );
+        let w = size.x + pad.x;
+        // Narrow screens: wrap the badge row instead of running off the edge.
+        if x + w > rect.max.x - 4.0 && x > rect.min.x + 4.0 {
+            x = rect.min.x + 4.0;
+            y += row_h + 6.0;
+        }
+        let bg = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, size.y + pad.y));
+        let top = y;
         let hovered = app.top_badge_hovered == Some(badge.kind);
         painter.rect_filled(bg, 7.0, egui::Color32::from_black_alpha(200));
         if badge.pulse {

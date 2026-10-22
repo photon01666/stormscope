@@ -52,6 +52,14 @@ libc = "0.2"
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
+# Force the native window frame dark (the app itself is always dark).
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+] }
+
 [dev-dependencies]
 # Headless render smoke test (`tests/render3d_smoke.rs`, ignored by default):
 # block_on for the async adapter/device request, png to dump the frame for

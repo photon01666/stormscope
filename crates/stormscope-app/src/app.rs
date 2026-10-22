@@ -7,6 +7,56 @@ use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+/// Force the native window frame dark, independent of the Windows app theme.
+///
+/// The app is always dark, so a light titlebar and the Windows 11 border look
+/// like a rendering bug. DWM's immersive dark mode darkens the caption; the
+/// caption/border/text colours (Windows 11) make the 1 px frame and titlebar
+/// match the egui panels. Best-effort: older Windows builds ignore the newer
+/// attributes.
+#[cfg(windows)]
+fn apply_dark_window_frame(cc: &eframe::CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+        DwmSetWindowAttribute,
+    };
+
+    let Ok(handle) = cc.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(win) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = win.hwnd.get() as HWND;
+    let dark: i32 = 1;
+    // egui's dark panel fill (#1b1b1b) as a COLORREF (0x00BBGGRR), and white
+    // caption text to go with it.
+    let panel: u32 = 0x001b_1b1b;
+    let white: u32 = 0x00ff_ffff;
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            &dark as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+        for (attr, value) in [
+            (DWMWA_BORDER_COLOR, panel),
+            (DWMWA_CAPTION_COLOR, panel),
+            (DWMWA_TEXT_COLOR, white),
+        ] {
+            DwmSetWindowAttribute(
+                hwnd,
+                attr as u32,
+                &value as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+    }
+}
+
 /// Messages from background data threads -> UI.
 pub enum DataMsg {
     Volume(Arc<radar_core::Volume>),
@@ -352,6 +402,15 @@ pub struct SharedData {
 
 impl StormApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // The whole UI is designed dark. egui otherwise follows the OS theme,
+        // and Windows' light app mode turned the AI window (and every stock
+        // widget) into white-on-white. Pin the dark theme on every platform.
+        cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
+        // The app is dark regardless of the Windows app theme; make the native
+        // frame match instead of leaving a light titlebar/border around it.
+        #[cfg(windows)]
+        apply_dark_window_frame(cc);
+
         let (tx_ui, rx_data): (Sender<DataMsg>, Receiver<DataMsg>) = std::sync::mpsc::channel();
         let (tx_data, rx_ui): (Sender<DataCmd>, Receiver<DataCmd>) = std::sync::mpsc::channel();
 

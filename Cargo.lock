@@ -3772,9 +3772,11 @@ dependencies = [
  "radar-data",
  "radar-decode",
  "radar-render",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "wgpu",
+ "windows-sys 0.59.0",
  "winresource",
 ]
 

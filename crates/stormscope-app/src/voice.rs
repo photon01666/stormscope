@@ -245,7 +245,12 @@ fn clip(text: &str, max_chars: usize) -> String {
 /// Every installed English Piper voice, best candidates first.
 #[cfg(not(target_os = "android"))]
 pub fn voices() -> &'static [Voice] {
-    VOICES.get_or_init(scan_voices)
+    VOICES.get_or_init(|| {
+        std::panic::catch_unwind(scan_voices).unwrap_or_else(|_| {
+            log::warn!("voice: voice discovery panicked; falling back to the system voice");
+            Vec::new()
+        })
+    })
 }
 
 /// The voice used when the user has not picked one. Lessac high is a female
@@ -287,52 +292,127 @@ fn selected_voice() -> Option<&'static Voice> {
 
 #[cfg(not(target_os = "android"))]
 fn scan_voices() -> Vec<Voice> {
-    let mut found = Vec::new();
-    for dir in voice_dirs() {
-        scan_dir(&dir, &dir, &mut found);
+    fn add(paths: &mut Vec<(&'static str, PathBuf)>, id: &'static str, path: PathBuf) {
+        paths.push((id, path));
     }
-    let mut seen = std::collections::HashSet::new();
-    found.retain(|voice| seen.insert(voice.id.clone()));
-    found.sort_by(|a, b| voice_sort_key(a).cmp(&voice_sort_key(b)));
-    found
-}
 
-#[cfg(not(target_os = "android"))]
-fn voice_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
+    let mut found = Vec::new();
+    let mut paths: Vec<(&'static str, PathBuf)> = Vec::new();
+
     #[cfg(target_os = "linux")]
     {
-        dirs.push(PathBuf::from("/usr/share/piper-voices"));
-        dirs.push(PathBuf::from("/usr/local/share/piper-voices"));
+        let mut roots = vec![
+            PathBuf::from("/usr/share/piper-voices"),
+            PathBuf::from("/usr/local/share/piper-voices"),
+        ];
         if let Some(data) = data_home() {
-            dirs.push(data.join("piper-voices"));
-            dirs.push(data.join("stormscope").join("piper"));
+            roots.push(data.join("piper-voices"));
+        }
+        for root in roots {
+            add(
+                &mut paths,
+                "en_US-lessac-high",
+                root.join("en/en_US/lessac/high/en_US-lessac-high.onnx"),
+            );
+            add(
+                &mut paths,
+                "en_US-hfc_female-medium",
+                root.join("en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx"),
+            );
+            add(
+                &mut paths,
+                "en_US-ljspeech-high",
+                root.join("en/en_US/ljspeech/high/en_US-ljspeech-high.onnx"),
+            );
+            add(
+                &mut paths,
+                "en_US-amy-medium",
+                root.join("en/en_US/amy/medium/en_US-amy-medium.onnx"),
+            );
+            add(
+                &mut paths,
+                "en_US-ryan-high",
+                root.join("en/en_US/ryan/high/en_US-ryan-high.onnx"),
+            );
         }
     }
+
     #[cfg(windows)]
     {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            dirs.push(PathBuf::from(appdata).join("stormscope").join("piper"));
-        }
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            dirs.push(PathBuf::from(local).join("stormscope").join("piper"));
-        }
+        let mut roots = Vec::new();
         if let Ok(exe) = std::env::current_exe()
             && let Some(parent) = exe.parent()
         {
-            dirs.push(parent.join("piper"));
+            roots.push(parent.join("piper").join("voices"));
+        }
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            roots.push(
+                PathBuf::from(appdata)
+                    .join("stormscope")
+                    .join("piper")
+                    .join("voices"),
+            );
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            roots.push(
+                PathBuf::from(local)
+                    .join("stormscope")
+                    .join("piper")
+                    .join("voices"),
+            );
+        }
+        for root in roots {
+            add(
+                &mut paths,
+                "en_US-lessac-high",
+                root.join("en/en_US/lessac/high/en_US-lessac-high.onnx"),
+            );
         }
     }
+
     #[cfg(target_os = "macos")]
     {
-        dirs.push(PathBuf::from("/usr/local/share/piper-voices"));
-        dirs.push(PathBuf::from("/opt/homebrew/share/piper-voices"));
+        let mut roots = vec![
+            PathBuf::from("/usr/local/share/piper-voices"),
+            PathBuf::from("/opt/homebrew/share/piper-voices"),
+        ];
         if let Some(data) = data_home() {
-            dirs.push(data.join("piper-voices"));
-            dirs.push(data.join("stormscope").join("piper"));
+            roots.push(data.join("piper-voices"));
+        }
+        for root in roots {
+            add(
+                &mut paths,
+                "en_US-lessac-high",
+                root.join("en/en_US/lessac/high/en_US-lessac-high.onnx"),
+            );
         }
     }
-    dirs
+
+    for (id, path) in paths {
+        if let Some(voice) = voice_from_path(id, &path)
+            && !found.iter().any(|existing: &Voice| existing.id == voice.id)
+        {
+            found.push(voice);
+        }
+    }
+    found
+}
+
+/// Explicit voice locations for the bundled Windows app and the common
+/// Linux/macOS Piper installs. This is deliberately not a recursive walk:
+/// scanning a bundled Piper tree on the UI thread was both slow and fragile,
+/// and a reparse-point loop on Windows could take the app down.
+#[cfg(not(target_os = "android"))]
+fn voice_from_path(id: &'static str, path: &Path) -> Option<Voice> {
+    if !path.is_file() || !path.with_extension("onnx.json").is_file() {
+        return None;
+    }
+    let stem = path.file_stem().and_then(|stem| stem.to_str())?;
+    Some(Voice {
+        id: id.to_string(),
+        path: path.to_path_buf(),
+        label: voice_label(stem),
+    })
 }
 
 #[cfg(not(target_os = "android"))]
@@ -342,65 +422,6 @@ fn data_home() -> Option<PathBuf> {
         .or_else(|| {
             std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
         })
-}
-
-#[cfg(not(target_os = "android"))]
-fn scan_dir(root: &Path, dir: &Path, out: &mut Vec<Voice>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            scan_dir(root, &path, out);
-            continue;
-        }
-        if path.extension().and_then(|ext| ext.to_str()) != Some("onnx") {
-            continue;
-        }
-        if !path.with_extension("onnx.json").is_file() {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        if !stem.starts_with("en_") && !stem.starts_with("en-") {
-            continue;
-        }
-        // Low-quality models are noticeably synthetic; keep high/medium only.
-        if !stem.ends_with("-high") && !stem.ends_with("-medium") {
-            continue;
-        }
-        let Ok(relative) = path.strip_prefix(root) else {
-            continue;
-        };
-        let id = relative
-            .with_extension("")
-            .to_string_lossy()
-            .replace('\\', "/");
-        let label = voice_label(stem);
-        out.push(Voice { id, path, label });
-    }
-}
-
-#[cfg(not(target_os = "android"))]
-fn voice_sort_key(voice: &Voice) -> (u8, u8, String) {
-    let stem = voice.id.rsplit('/').next().unwrap_or(&voice.id);
-    let quality = if stem.ends_with("-high") { 0 } else { 1 };
-    let preference = if stem.starts_with("en_US-lessac-high") {
-        0
-    } else if stem.starts_with("en_US-hfc_female") {
-        1
-    } else if stem.starts_with("en_US-ljspeech") {
-        2
-    } else if stem.starts_with("en_US-amy") {
-        3
-    } else if stem.starts_with("en_US-kristin") {
-        4
-    } else {
-        5
-    };
-    (quality, preference, voice.label.clone())
 }
 
 #[cfg(not(target_os = "android"))]

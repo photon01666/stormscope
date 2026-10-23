@@ -24,6 +24,10 @@ log; entries start at the first public release.
   **Voice alerts** switch, separate **Tornado warnings**, **Severe
   thunderstorm warnings**, **Watches** and **Other warnings** switches, and
   a test button.
+- Windows voice discovery no longer recursively walks the bundled Piper tree:
+  it checks the known model paths directly (and catches discovery panics), so
+  opening the slide-out menu cannot take the app down. The Windows bundle has
+  one voice, shown as a label instead of a combo box.
 
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,

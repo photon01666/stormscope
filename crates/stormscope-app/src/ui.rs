@@ -2559,7 +2559,6 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                     );
                 } else {
                     ui.add_space(4.0);
-                    ui.label("Voice");
                     let selected = app
                         .state
                         .voice_model
@@ -2569,20 +2568,27 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                     let selected_label = selected
                         .map(|voice| voice.label.as_str())
                         .unwrap_or("System voice");
-                    egui::ComboBox::from_id_salt("voice-model")
-                        .selected_text(selected_label)
-                        .show_ui(ui, |ui| {
-                            for voice in voices {
-                                let is_selected = selected
-                                    .map(|selected| selected.id == voice.id)
-                                    .unwrap_or(false);
-                                if ui.selectable_label(is_selected, &voice.label).clicked() {
-                                    app.state.voice_model = Some(voice.id.clone());
-                                    crate::voice::set_voice(Some(voice.id.clone()));
-                                    app.state.persist_voice_alerts();
+                    if voices.len() == 1 {
+                        // The Windows bundle has exactly one voice; a label is
+                        // enough (and avoids a combo box in the slide-out).
+                        ui.label(format!("Voice: {selected_label}"));
+                    } else {
+                        ui.label("Voice");
+                        egui::ComboBox::from_id_salt("voice-model")
+                            .selected_text(selected_label)
+                            .show_ui(ui, |ui| {
+                                for voice in voices {
+                                    let is_selected = selected
+                                        .map(|selected| selected.id == voice.id)
+                                        .unwrap_or(false);
+                                    if ui.selectable_label(is_selected, &voice.label).clicked() {
+                                        app.state.voice_model = Some(voice.id.clone());
+                                        crate::voice::set_voice(Some(voice.id.clone()));
+                                        app.state.persist_voice_alerts();
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    }
                     ui.label(
                         egui::RichText::new(
                             "Piper neural voice; lessac high is the female default.",

@@ -3203,6 +3203,7 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
     // every frame re-opens the Android IME, whose keyboard then opens and
     // closes in a loop.
     let mut focus = app.state.marker_focus_pending;
+    let mut kbd = false;
     let mut to_save = false;
     let mut to_delete = false;
     let mut to_cancel = false;
@@ -3226,6 +3227,7 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
             resp.request_focus();
             focus = false;
         }
+        kbd = resp.has_focus();
         let typed_ok = !draft.trim().is_empty();
         if typed_ok && resp.lost_focus() {
             to_save = true; // Enter or click-away commits a non-empty name
@@ -3249,6 +3251,7 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
         }
     });
     app.state.marker_focus_pending = focus;
+    app.state.text_focus |= kbd;
 
     if to_save {
         let name = app.state.pending_marker_label.trim().to_string();

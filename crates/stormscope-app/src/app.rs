@@ -297,9 +297,6 @@ pub struct StormApp {
     /// Derived storm tracks for the (prev, cur) frame pair at the current
     /// tilt: cached by signature, recomputed only when the frames change.
     pub tracks_cache: Option<(u64, Vec<radar_render::StormTrack>)>,
-    /// Touch swipe-from-edge tracking for the auto-hiding sidebar: the x
-    /// where the drag began, while a touch is down near the left edge.
-    pub sidebar_swipe_start: Option<f32>,
     /// When the in-flight SRM derivation was requested (staleness watchdog).
     pub srm_requested_at: Option<std::time::Instant>,
     /// Cached MRMS textures, one per window (Arc identity + egui handle).
@@ -466,7 +463,6 @@ impl StormApp {
             radar_view_change_at: std::time::Instant::now(),
             radar_last_view_sig: 0,
             tracks_cache: None,
-            sidebar_swipe_start: None,
             srm_requested_at: None,
             mrms_tex: Vec::new(),
             goes_tex: Vec::new(),

@@ -639,6 +639,10 @@ pub struct AppState {
     /// A new pin was just dropped, so the name popup should take text focus
     /// (once). Requesting it every frame makes the Android IME flicker.
     pub marker_focus_pending: bool,
+    /// Any text field had focus this frame (Android's on-screen keyboard
+    /// shows when this is true; winit never forwards the soft keyboard's
+    /// text input, so egui draws its own).
+    pub text_focus: bool,
     /// When true the next map click drops a new marker (the "＋ Place"
     /// toggle; Shift+click works regardless).
     pub add_marker_mode: bool,
@@ -945,6 +949,7 @@ impl Default for AppState {
             pending_marker: None,
             pending_marker_label: String::new(),
             marker_focus_pending: false,
+            text_focus: false,
             add_marker_mode: false,
             sidebar_pinned: false,
             measure_mode: false,

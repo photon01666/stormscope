@@ -244,6 +244,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     let mut clear_chat = false;
     let mut clear_marks = false;
     let mut retry = false;
+    let mut kbd = false;
 
     egui::Window::new("AI meteorologist")
         .id(egui::Id::new("stormscope.ai"))
@@ -373,6 +374,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                                 .desired_width((ui.available_width() - 72.0).max(100.0))
                                 .hint_text(hint),
                         );
+                        kbd = response.has_focus();
                         let can_ask = configured && !no_markers && !app.state.ai_pending;
                         let submit = response.lost_focus()
                             && ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -574,6 +576,8 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             resize_grips(ui, app);
         });
     app.state.ai_open = open;
+    // Keep the on-screen keyboard up while the composer holds focus.
+    app.state.text_focus |= kbd;
     if brief {
         app.ai_request(None);
     }

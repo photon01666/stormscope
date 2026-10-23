@@ -7,6 +7,8 @@ use radar_core::Moment;
 mod ai;
 pub(crate) mod alerts;
 mod forecast;
+#[cfg(target_os = "android")]
+mod keyboard;
 mod map;
 mod reports;
 mod totals;
@@ -28,6 +30,9 @@ const SIDEBAR_CLOSE_SLOP: f32 = 32.0;
 const SIDEBAR_ANIM_SECS: f32 = 0.18;
 
 pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
+    // Reset each frame; text fields below set it when they hold focus.
+    app.state.text_focus = false;
+
     // Android: the app window is full-screen and the system status / gesture
     // bars are drawn on top of it. Reserve their space so the status bar and
     // timeline are not hidden behind them.
@@ -101,6 +106,11 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     outlook_detail_window(ui.ctx(), app);
     reports::lsr_detail_window(ui.ctx(), app);
     reports::mcd_detail_window(ui.ctx(), app);
+
+    // Android: on-screen keyboard for focused text fields (winit does not
+    // forward the soft keyboard's text input).
+    #[cfg(target_os = "android")]
+    keyboard::show(ui.ctx(), app);
 
     // Archived NWS text for a historical warning (clicked on the map).
     alerts::archive_detail_popup(ui.ctx(), app);
@@ -198,6 +208,8 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             if controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
+            #[cfg(target_os = "android")]
+            settings_chip(ui, controls.rect, app, scale);
             ai_chip(ui, full, app, scale);
         }
         // The 3D pane maximized: volume fills the middle, "Split" brings the
@@ -250,6 +262,8 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             if controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
+            #[cfg(target_os = "android")]
+            settings_chip(ui, controls.rect, app, scale);
             ai_chip(ui, full, app, scale);
         }
         // Side-by-side split with a draggable divider.
@@ -326,6 +340,8 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             let map_controls =
                 pane_chip_bottom(ui, bottom_right(map_rect, scale), "Controls", scale)
                     .on_hover_text("Map display controls (Min dBZ, opacity)");
+            #[cfg(target_os = "android")]
+            settings_chip(ui, map_controls.rect, app, scale);
             let v3_controls = pane_chip_bottom(ui, bottom_right(v3_rect, scale), "Controls", scale)
                 .on_hover_text("3D display controls (echo, opacity, height, tilt, altitude)");
             if map_controls.clicked() {
@@ -341,6 +357,23 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
 /// Bottom-right anchor for a pane's chips.
 fn bottom_right(rect: egui::Rect, scale: f32) -> egui::Pos2 {
     egui::pos2(rect.max.x - 8.0 * scale, rect.max.y - 8.0 * scale)
+}
+
+/// Android: a visible "Settings" chip that opens the controls sidebar. Touch
+/// has no hover, so the auto-hide sidebar needs an explicit opener next to the
+/// map's own Controls chip.
+#[cfg(target_os = "android")]
+fn settings_chip(ui: &mut egui::Ui, left_of: egui::Rect, app: &mut StormApp, scale: f32) {
+    let chip = pane_chip_bottom(
+        ui,
+        egui::pos2(left_of.min.x - 6.0 * scale, left_of.max.y),
+        "Settings",
+        scale,
+    )
+    .on_hover_text("Open the controls sidebar");
+    if chip.clicked() {
+        app.state.sidebar_pinned = true;
+    }
 }
 
 /// Like [`pane_chip`], but pinned by its bottom-right corner.
@@ -1260,34 +1293,6 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     let panel_w = SIDEBAR_WIDTH * scale;
 
     let pointer = ctx.pointer_latest_pos();
-    // Touch: swipe right from the left edge pins the sidebar open. Track the
-    // start ourselves: egui's touch pointer does not reliably expose
-    // `press_origin` on Android, and the map pan owns the same drag.
-    let down = ctx.input(|i| i.pointer.any_down());
-    if down {
-        if let Some(p) = pointer {
-            if app.sidebar_swipe_start.is_none()
-                && (p.x - middle.min.x < SIDEBAR_EDGE_PX * 4.0
-                    || p.x < middle.min.x + panel_w + SIDEBAR_CLOSE_SLOP)
-            {
-                app.sidebar_swipe_start = Some(p.x);
-            }
-            if let Some(start) = app.sidebar_swipe_start {
-                let dx = p.x - start;
-                if dx > 48.0 {
-                    app.state.sidebar_pinned = true;
-                    app.sidebar_swipe_start = None;
-                } else if dx < -48.0 {
-                    // Swipe left across the sidebar to close it.
-                    app.state.sidebar_pinned = false;
-                    app.sidebar_open = false;
-                    app.sidebar_swipe_start = None;
-                }
-            }
-        }
-    } else {
-        app.sidebar_swipe_start = None;
-    }
     // Don't peek open mid-gesture: a map pan ending at the left edge must
     // not pop the sidebar over the map mid-drag.
     let pressing = ctx.input(|i| i.pointer.any_down());

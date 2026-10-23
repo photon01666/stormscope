@@ -31,6 +31,9 @@ log; entries start at the first public release.
   stays visible above it.
 - Window close (✕) buttons get a larger Heading font, growing their tap
   square from ~24 dp to ~35 dp — they were very hard to hit with a finger.
+- The 3D radar pane stacks **below** the 2D map in portrait and sits beside
+  it in landscape (the divider stays draggable, and is wider on touch).
+  Touch controls: one finger orbits, two fingers pan, pinch zooms.
 - The timeline scrub strip spans the full width of the bottom bar and is
   32 pt tall, so it can be dragged with a finger (after the control row it
   was only whatever space was left over — a few dozen pixels).

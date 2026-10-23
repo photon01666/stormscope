@@ -40,12 +40,18 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Reset each frame; text fields below set it when they hold focus.
     app.state.text_focus = false;
 
-    // Android: the app window is full-screen and the system status / gesture
-    // bars are drawn on top of it. Reserve their space so the status bar and
-    // timeline are not hidden behind them.
+    // Android: the app window is full-screen and the system status bar is
+    // drawn on top of it (black, ~24-26 dp). Reserve just that much: the old
+    // fixed 64 pt left an ~88 px dead grey band below the bar in landscape.
     #[cfg(target_os = "android")]
     egui::Panel::top("android_top_inset").show(ui, |ui| {
-        ui.add_space(64.0);
+        let content = ui.ctx().content_rect();
+        let portrait = content.height() > content.width();
+        let inset = ui
+            .ctx()
+            .input(|i| i.safe_area_insets().0.top)
+            .max(if portrait { 30.0 } else { 26.0 });
+        ui.add_space(inset);
     });
 
     // Top status bar.
@@ -264,19 +270,41 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             settings_chip(ui, controls.rect, app, scale);
             ai_chip(ui, full, app, scale);
         }
-        // Side-by-side split with a draggable divider.
+        // Side-by-side split with a draggable divider. On a phone in portrait
+        // the split stacks vertically (map on top, volume below) instead —
+        // side-by-side panes there are too narrow to be useful.
         (true, PaneMax::None) => {
+            let portrait = cfg!(target_os = "android") && full.height() > full.width();
             let frac = app.state.pane_split.clamp(0.25, 0.75);
-            let div_w = 7.0_f32;
-            let usable = (full.width() - div_w).max(80.0);
-            let map_rect =
-                egui::Rect::from_min_size(full.min, egui::vec2(usable * frac, full.height()));
-            let div_rect = egui::Rect::from_min_size(
-                egui::pos2(map_rect.max.x, full.min.y),
-                egui::vec2(div_w, full.height()),
-            );
-            let v3_rect =
-                egui::Rect::from_min_max(egui::pos2(div_rect.max.x, full.min.y), full.max);
+            // Wider on touch so a finger can grab it.
+            let div_w = if cfg!(target_os = "android") {
+                20.0
+            } else {
+                7.0
+            };
+            let (map_rect, div_rect, v3_rect) = if portrait {
+                let usable = (full.height() - div_w).max(80.0);
+                let map_rect =
+                    egui::Rect::from_min_size(full.min, egui::vec2(full.width(), usable * frac));
+                let div_rect = egui::Rect::from_min_size(
+                    egui::pos2(full.min.x, map_rect.max.y),
+                    egui::vec2(full.width(), div_w),
+                );
+                let v3_rect =
+                    egui::Rect::from_min_max(egui::pos2(full.min.x, div_rect.max.y), full.max);
+                (map_rect, div_rect, v3_rect)
+            } else {
+                let usable = (full.width() - div_w).max(80.0);
+                let map_rect =
+                    egui::Rect::from_min_size(full.min, egui::vec2(usable * frac, full.height()));
+                let div_rect = egui::Rect::from_min_size(
+                    egui::pos2(map_rect.max.x, full.min.y),
+                    egui::vec2(div_w, full.height()),
+                );
+                let v3_rect =
+                    egui::Rect::from_min_max(egui::pos2(div_rect.max.x, full.min.y), full.max);
+                (map_rect, div_rect, v3_rect)
+            };
 
             ui.scope_builder(egui::UiBuilder::new().max_rect(map_rect), |ui| {
                 crate::ui::map::map(ui, app);
@@ -289,12 +317,19 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
                 egui::Sense::drag(),
             );
             if resp.hovered() || resp.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                ui.ctx().set_cursor_icon(if portrait {
+                    egui::CursorIcon::ResizeVertical
+                } else {
+                    egui::CursorIcon::ResizeHorizontal
+                });
             }
             if resp.dragged() {
                 if let Some(p) = resp.interact_pointer_pos() {
-                    app.state.pane_split =
-                        ((p.x - full.min.x) / full.width().max(1.0)).clamp(0.25, 0.75);
+                    app.state.pane_split = if portrait {
+                        ((p.y - full.min.y) / full.height().max(1.0)).clamp(0.25, 0.75)
+                    } else {
+                        ((p.x - full.min.x) / full.width().max(1.0)).clamp(0.25, 0.75)
+                    };
                 }
             }
             ui.painter()

@@ -31,6 +31,13 @@ pub fn pump(ctx: &egui::Context, state: &mut AppState) {
     };
 
     let focused = ctx.memory(|m| m.focused().is_some());
+    if focused {
+        // Keep polling the IME state at display rate while a field is focused:
+        // egui otherwise only repaints on its ~1 Hz age/latency ticks, and a
+        // Gboard commit would sit in the queue until then — that reads as
+        // typing lag. This keeps the frame loop alive only while typing.
+        ctx.request_repaint();
+    }
     if focused != state.ime_was_focused {
         if focused {
             // Seed Gboard's editor with the field's current text when we know

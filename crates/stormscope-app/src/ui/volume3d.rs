@@ -16,7 +16,8 @@
 //! altitudes in feet — the way US radar displays do.
 //!
 //! Interaction: drag to orbit, right/middle-drag to pan the orbit center
-//! (free movement), wheel to zoom, double-click to re-fit. The
+//! (free movement), wheel to zoom, double-click to re-fit. Touch: one finger
+//! orbits, two fingers pan, pinch zooms. The
 //! display sliders (echo floor, opacity, height scale) float at the bottom
 //! center, mirroring the map's Min-dBZ bar; the sidebar carries the rest
 //! (tilt range, altitude slab, detail). Camera and settings live in
@@ -392,7 +393,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     );
     if resp.dragged() {
         let d = resp.drag_delta();
-        let panning = resp.dragged_by(egui::PointerButton::Secondary)
+        // Two fingers (touch) pan, like a right/middle-drag on the desktop.
+        let multi_touch = ui
+            .ctx()
+            .input(|i| i.multi_touch().is_some_and(|t| t.num_touches >= 2));
+        let panning = multi_touch
+            || resp.dragged_by(egui::PointerButton::Secondary)
             || resp.dragged_by(egui::PointerButton::Middle);
         if panning {
             // Free movement: right/middle drag slides the orbit center in
@@ -484,6 +490,18 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             let max_r_f = f64::from(max_r.max(20.0));
             let factor = (-f64::from(scroll) * 0.0015).exp();
             let d = (f64::from(app.state.view3d_dist_km).max(1.0) * factor)
+                .clamp(max_r_f * 0.08, max_r_f * 8.0);
+            app.state.view3d_dist_km = d as f32;
+            app.view3d_interact_at = std::time::Instant::now();
+        }
+    }
+    // Pinch to zoom (touch): while two fingers are on the pane, egui reports
+    // the gesture's proportional zoom factor each frame.
+    if resp.is_pointer_button_down_on() {
+        let zoom = ui.ctx().input(|i| i.zoom_delta());
+        if zoom != 1.0 {
+            let max_r_f = f64::from(max_r.max(20.0));
+            let d = (f64::from(app.state.view3d_dist_km).max(1.0) / f64::from(zoom))
                 .clamp(max_r_f * 0.08, max_r_f * 8.0);
             app.state.view3d_dist_km = d as f32;
             app.view3d_interact_at = std::time::Instant::now();

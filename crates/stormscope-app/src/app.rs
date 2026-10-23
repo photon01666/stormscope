@@ -761,14 +761,27 @@ impl StormApp {
             "CascadiaMono",
             "monospace",
         ] {
-            if let Some(font) = find_system_font(candidate) {
-                fonts
-                    .families
-                    .entry(egui::FontFamily::Monospace)
-                    .or_default()
-                    .insert(0, font);
-                break;
-            }
+            let Some(path) = find_system_font(candidate) else {
+                continue;
+            };
+            let Ok(bytes) = std::fs::read(&path) else {
+                log::warn!("font {candidate}: cannot read {path}");
+                continue;
+            };
+            // The family list holds *keys into font_data*, not file paths.
+            // Inserting the path alone made epaint panic with "No font data
+            // found" the first time a monospace glyph was drawn (notably on
+            // Windows, where Consolas is a top-level file in C:\Windows\Fonts).
+            let key = format!("system-mono-{candidate}");
+            fonts
+                .font_data
+                .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .insert(0, key);
+            break;
         }
         // Ubuntu-Light (egui's prose font) has no arrows or triangles, so
         // strings like "Settings → AI meteorologist" render as tofu boxes.

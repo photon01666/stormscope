@@ -24,10 +24,14 @@ log; entries start at the first public release.
   **Voice alerts** switch, separate **Tornado warnings**, **Severe
   thunderstorm warnings**, **Watches** and **Other warnings** switches, and
   a test button.
-- Windows voice discovery no longer recursively walks the bundled Piper tree:
-  it checks the known model paths directly (and catches discovery panics), so
-  opening the slide-out menu cannot take the app down. The Windows bundle has
-  one voice, shown as a label instead of a combo box.
+- **Windows no longer crashes when the slide-out menu first draws monospace
+  text.** The system font path (Consolas in `C:\Windows\Fonts`) was inserted
+  as a font-family entry without its bytes ever being loaded, so epaint
+  panicked with "No font data found". Stormscope now loads the font data and
+  falls back to the bundled Hack font if the file is unreadable.
+- Voice discovery checks explicit Piper paths instead of recursively walking
+  the bundle, avoiding UI stalls and reparse-point loops; the Windows bundle
+  has one voice, shown as a label instead of a combo box.
 
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,

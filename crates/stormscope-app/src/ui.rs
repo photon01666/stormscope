@@ -46,15 +46,18 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
         status_bar(ui, app);
     });
 
+    // Android: keep the timeline above the system gesture bar. This must be
+    // shown BEFORE the timeline panel — egui stacks bottom panels in the
+    // order they are shown, so the first one lands closest to the bottom edge.
+    // Drawn after, it would appear as an empty bar above the timeline.
+    #[cfg(target_os = "android")]
+    egui::Panel::bottom("android_bottom_inset").show(ui, |ui| {
+        ui.add_space(56.0);
+    });
+
     // Bottom timeline scrubber.
     egui::Panel::bottom("timeline").show(ui, |ui| {
         crate::timeline::timeline(ui, app);
-    });
-
-    // Android: keep the timeline above the system gesture bar.
-    #[cfg(target_os = "android")]
-    egui::Panel::bottom("android_bottom_inset").show(ui, |ui| {
-        ui.add_space(16.0);
     });
 
     // Middle rect (between top/bottom bars) before CentralPanel consumes it —

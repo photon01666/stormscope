@@ -23,9 +23,9 @@ const GO_MODELS: &[&str] = &[
     "longcat-2.0",
 ];
 
-pub fn ai_windows(ctx: &egui::Context, app: &mut StormApp) {
+pub fn ai_windows(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     settings_window(ctx, app);
-    report_window(ctx, app);
+    report_window(ctx, app, area);
 }
 
 fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
@@ -211,7 +211,7 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
     app.state.ai_settings_open = open;
 }
 
-fn report_window(ctx: &egui::Context, app: &mut StormApp) {
+fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if !app.state.ai_open {
         return;
     }
@@ -219,6 +219,11 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
         compact_bar(ctx, app);
         return;
     }
+    // On a phone there is no room for a floating window beside the map: fill
+    // the app's map area edge to edge (status bar and timeline stay visible;
+    // this is not the chrome-free fullscreen mode). Desktop keeps the
+    // resizable floating window.
+    let fill = cfg!(target_os = "android");
     let screen = ctx.content_rect().size();
     let text_scale = (app.sidebar_scale * 0.75).clamp(1.0, 1.8);
     // Leave real room below the window: opening it at ~62 % of the screen
@@ -246,15 +251,24 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
     let mut retry = false;
     let mut kbd = false;
 
-    egui::Window::new("AI meteorologist")
+    let window = egui::Window::new("AI meteorologist")
         .id(egui::Id::new("stormscope.ai"))
         .open(&mut open)
-        .fixed_size(window_size)
         // No inner frame margin: the custom resize grips then sit on the
         // actual window edge instead of a few pixels inside it.
-        .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::ZERO))
-        .default_pos(egui::pos2(18.0, 64.0))
-        .show(ctx, |ui| {
+        .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::ZERO));
+    let window = if fill {
+        window
+            .fixed_rect(area)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(area)
+    } else {
+        window
+            .fixed_size(window_size)
+            .default_pos(egui::pos2(18.0, 64.0))
+    };
+    window.show(ctx, |ui| {
             super::apply_text_scale(ui, text_scale);
             ui.set_min_width(400.0);
 
@@ -573,7 +587,9 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
                     });
                 });
 
-            resize_grips(ui, app);
+            if !fill {
+                resize_grips(ui, app);
+            }
         });
     app.state.ai_open = open;
     // Keep the soft keyboard up while the composer holds focus, and mirror

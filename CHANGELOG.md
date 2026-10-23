@@ -22,6 +22,11 @@ log; entries start at the first public release.
   (egui's collapsing headers never wrap).
 
 **Android**
+- **The AI meteorologist window fills the app screen** on a phone: it opens
+  edge to edge between the app's status bar and timeline (which stay visible
+  and usable — this is not the chrome-free fullscreen mode), with the whole
+  transcript and composer in view and no resize grips. Desktop keeps the
+  resizable floating window.
 - **Long-press the map (or the 3D pane) for a true fullscreen view**: all
   chrome disappears — status bar, timeline, chips, badges and windows — and
   only the radar fills the screen. On Android the system status bar is hidden

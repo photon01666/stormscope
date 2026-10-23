@@ -154,7 +154,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     alerts::alert_detail_popup(ui.ctx(), app);
 
     // AI meteorologist: the optional brief / question window and its settings.
-    ai::ai_windows(ui.ctx(), app);
+    ai::ai_windows(ui.ctx(), app, middle);
 
     // NWS forecast window (station by default, or a point picked on the map).
     forecast::forecast_window(ui.ctx(), app);

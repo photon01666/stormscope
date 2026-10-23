@@ -1429,14 +1429,18 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                 app.state.sidebar_pinned = false;
             }
             settings_menu(ui, app);
-            ui.checkbox(&mut app.state.sidebar_pinned, "Pin")
-                .on_hover_text("Keep the sidebar open instead of auto-hiding");
+            // Android opens/closes the sidebar from the map's Settings chip
+            // and the ✕ here, so the Pin toggle is a desktop-only affordance.
+            if !cfg!(target_os = "android") {
+                ui.checkbox(&mut app.state.sidebar_pinned, "Pin")
+                    .on_hover_text("Keep the sidebar open instead of auto-hiding");
+            }
         });
     });
     if !app.state.sidebar_pinned {
         ui.label(
             egui::RichText::new(if cfg!(target_os = "android") {
-                "tap the edge tab to open · Pin to keep open"
+                "tap Settings (map corner) to open · ✕ to close"
             } else {
                 "hover the left edge to peek · Pin to keep open"
             })

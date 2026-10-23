@@ -48,15 +48,18 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         } else {
             ui.label("no frames");
         }
-        if !cfg!(target_os = "android") {
-            ui.separator();
-            if ui
-                .button("Downloaded…")
-                .on_hover_text("Browse every cached day for this station")
-                .clicked()
-            {
-                app.state.downloads_open = true;
-            }
+        if let Some(f) = app.state.current() {
+            ui.label(crate::timefmt::fmt_central(&f.volume_start));
+        } else {
+            ui.label("no frames");
+        }
+        ui.separator();
+        if ui
+            .button("Downloaded…")
+            .on_hover_text("Browse every cached day for this station")
+            .clicked()
+        {
+            app.state.downloads_open = true;
         }
     });
 
@@ -65,10 +68,15 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
     if n == 0 {
         return;
     }
-    let height = 18.0;
+    // A taller strip is easier to drag with a finger than with a mouse.
+    let height = if cfg!(target_os = "android") {
+        26.0
+    } else {
+        18.0
+    };
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), height),
-        egui::Sense::click(),
+        egui::Sense::click_and_drag(),
     );
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(30, 32, 40));
@@ -97,7 +105,8 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         painter.rect_filled(bar, 1.0, color);
     }
 
-    if response.clicked() {
+    // Tap or drag a finger/pointer along the strip to scrub the ring.
+    if response.clicked() || response.dragged() {
         if let Some(pos) = response.interact_pointer_pos() {
             let idx = ((pos.x - rect.left()) / slot).floor();
             app.state.playhead = (idx as usize).min(n - 1);

@@ -370,9 +370,10 @@ fn settings_chip(ui: &mut egui::Ui, left_of: egui::Rect, app: &mut StormApp, sca
         "Settings",
         scale,
     )
-    .on_hover_text("Open the controls sidebar");
+    .on_hover_text("Open or hide the controls sidebar");
     if chip.clicked() {
-        app.state.sidebar_pinned = true;
+        // Toggle: tapping again (or the ✕ in the header) closes it.
+        app.state.sidebar_pinned = !app.state.sidebar_pinned;
     }
 }
 

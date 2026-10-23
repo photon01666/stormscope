@@ -576,8 +576,12 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp) {
             resize_grips(ui, app);
         });
     app.state.ai_open = open;
-    // Keep the on-screen keyboard up while the composer holds focus.
+    // Keep the soft keyboard up while the composer holds focus, and mirror
+    // its text for the Android IME bridge.
     app.state.text_focus |= kbd;
+    if kbd {
+        app.state.text_focus_text = app.state.ai_question.clone();
+    }
     if brief {
         app.ai_request(None);
     }

@@ -11,6 +11,32 @@ log; entries start at the first public release.
   can click to center on the map), and a new **Zones** tab holds the
   no-polygon alerts. Clicking a zone row opens its full NOAA text.
 
+**Presentation**
+- The project is spelled **Stormscope** everywhere it is shown: status bar,
+  window titles, the Android app label and the docs (crate/package names,
+  paths, URLs and the logcat tag stay lowercase as before).
+- The NWS forecast popup clamps its minimum width to the window instead of a
+  desktop-fixed 420 pt, and a period only puts its full
+  "night — temp · sky · wind" line in the header when that line actually
+  fits: on a phone the long lines were running off the right edge of the box
+  (egui's collapsing headers never wrap).
+
+**Android**
+- **The system keyboard (Gboard) now types into the app.** winit's Android
+  backend only shows/hides the IME and never forwards its text, so Stormscope
+  polls GameActivity's editor state once per frame and replays the commits
+  (insertions, deletions) as egui events at the top of the frame, before the
+  focused field reads the event queue. The hand-drawn on-screen keyboard is
+  gone. The window is `adjustResize` while the IME is open, so the field
+  stays visible above it.
+- Window close (✕) buttons get a larger Heading font, growing their tap
+  square from ~24 dp to ~35 dp — they were very hard to hit with a finger.
+- The timeline scrub strip spans the full width of the bottom bar and is
+  32 pt tall, so it can be dragged with a finger (after the control row it
+  was only whatever space was left over — a few dozen pixels).
+- The launcher icon is an adaptive icon on a dark background, so the system
+  no longer puts a white ring around it.
+
 ## v1.5.0 — 2026-10-22
 
 **Presentation**
@@ -453,7 +479,7 @@ patch releases were withdrawn unpublished.)*
 - One small day-file (~100–300 KB) per day viewed, cached forever and
   loaded only when you open the tab or change its day — never polled.
 - **Click a historical warning** (list row or its polygon on the map) and
-  stormscope snaps to the radar that covered it, loads the archive radar
+  Stormscope snaps to the radar that covered it, loads the archive radar
   for that date/time, zooms to the polygon, and parks the playhead at the
   warning's issuance once the data lands. The day's polygons also draw on
   the map in a calmer style than live warnings, with a dwell tooltip that

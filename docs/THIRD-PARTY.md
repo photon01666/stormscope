@@ -1,6 +1,6 @@
 # Third-party licenses
 
-stormscope itself is [MIT](../LICENSE). Its dependency tree is entirely
+Stormscope itself is [MIT](../LICENSE). Its dependency tree is entirely
 permissive (MIT / Apache-2.0 family); every crate is listed below with the
 license expression it declares in its own manifest. Dual-licensed crates
 are used under a permissive option (for example `self_cell` under

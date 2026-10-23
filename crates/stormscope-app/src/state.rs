@@ -639,10 +639,17 @@ pub struct AppState {
     /// A new pin was just dropped, so the name popup should take text focus
     /// (once). Requesting it every frame makes the Android IME flicker.
     pub marker_focus_pending: bool,
-    /// Any text field had focus this frame (Android's on-screen keyboard
-    /// shows when this is true; winit never forwards the soft keyboard's
-    /// text input, so egui draws its own).
+    /// Any text field had focus this frame. On Android this also means the
+    /// IME bridge mirrors `text_focus_text` into Gboard's editor.
     pub text_focus: bool,
+    /// Android: the focused field's current value, mirrored every frame so
+    /// the IME bridge can seed Gboard's editor state (marker label / AI
+    /// composer do this; other fields start Gboard from an empty buffer).
+    pub text_focus_text: String,
+    /// Android IME bridge: whether a widget held focus last frame.
+    pub ime_was_focused: bool,
+    /// Android IME bridge: the editor text the IME reported last frame.
+    pub ime_last_text: Option<String>,
     /// When true the next map click drops a new marker (the "＋ Place"
     /// toggle; Shift+click works regardless).
     pub add_marker_mode: bool,
@@ -950,6 +957,9 @@ impl Default for AppState {
             pending_marker_label: String::new(),
             marker_focus_pending: false,
             text_focus: false,
+            text_focus_text: String::new(),
+            ime_was_focused: false,
+            ime_last_text: None,
             add_marker_mode: false,
             sidebar_pinned: false,
             measure_mode: false,

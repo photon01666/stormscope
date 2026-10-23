@@ -1,4 +1,4 @@
-//! Timing probe for the stormscope data path.
+//! Timing probe for the Stormscope data path.
 //!
 //! Reproduces, step by step and with wall-clock timings, what the app does:
 //!   1. archive listing for a Central day (list_central_day equivalent),

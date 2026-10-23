@@ -48,11 +48,6 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         } else {
             ui.label("no frames");
         }
-        if let Some(f) = app.state.current() {
-            ui.label(crate::timefmt::fmt_central(&f.volume_start));
-        } else {
-            ui.label("no frames");
-        }
         ui.separator();
         if ui
             .button("Downloaded…")
@@ -69,13 +64,18 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         return;
     }
     // A taller strip is easier to drag with a finger than with a mouse.
+    // 32 pt is about a fingertip; below that the touch target gets fiddly.
     let height = if cfg!(target_os = "android") {
-        26.0
+        32.0
     } else {
         18.0
     };
+    // Use the panel's full width, not the space left over after the wrapped
+    // control row: on a phone that leftover can be a sliver, which made the
+    // strip a few dozen pixels wide and impossible to scrub.
+    let strip_width = ui.max_rect().width();
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height),
+        egui::vec2(strip_width, height),
         egui::Sense::click_and_drag(),
     );
     let painter = ui.painter_at(rect);

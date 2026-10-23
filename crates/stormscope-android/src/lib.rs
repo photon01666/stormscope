@@ -1,4 +1,4 @@
-//! Android entry point for stormscope.
+//! Android entry point for Stormscope.
 //!
 //! This crate is only the Android shell: it initialises logging and the app's
 //! private data directories, then hands control to the same `StormApp` the
@@ -40,7 +40,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
             std::env::set_var("HOME", &data);
         }
         log::info!(
-            "stormscope {} starting; data dir {}",
+            "Stormscope {} starting; data dir {}",
             env!("CARGO_PKG_VERSION"),
             data.display()
         );
@@ -69,9 +69,15 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
         log::warn!("rustls platform verifier attach failed: {e}");
     }
 
+    // Gboard → egui: GameActivity keeps an editor state the IME writes to
+    // (`AndroidApp::text_input_state`), and winit never forwards IME text, so
+    // the app polls that state and replays commits as egui events. Register
+    // the activity handle for the bridge before eframe takes `app`.
+    stormscope_app::android_ime::register(app.clone());
+
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("stormscope")
+            .with_title("Stormscope")
             .with_fullscreen(true),
         android_app: Some(app),
         ..Default::default()
@@ -80,10 +86,10 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     options.wgpu_options.surface.present_mode = eframe::egui_wgpu::wgpu::PresentMode::Fifo;
 
     if let Err(e) = eframe::run_native(
-        "stormscope",
+        "Stormscope",
         options,
         Box::new(|cc| Ok(Box::new(stormscope_app::StormApp::new(cc)))),
     ) {
-        log::error!("stormscope failed to start: {e}");
+        log::error!("Stormscope failed to start: {e}");
     }
 }

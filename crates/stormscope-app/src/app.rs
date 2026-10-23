@@ -436,6 +436,16 @@ impl StormApp {
         cc.egui_ctx.all_styles_mut(|style| {
             style.interaction.resize_grab_radius_side = 14.0;
             style.interaction.resize_grab_radius_corner = 18.0;
+            // Android: a window's ✕ is sized from the Heading font's row
+            // height — 18 pt is a ~24 dp target, far too small for a finger.
+            // A bigger Heading grows the tap square (and titles) to ~35 dp.
+            #[cfg(target_os = "android")]
+            {
+                style.text_styles.insert(
+                    egui::TextStyle::Heading,
+                    egui::FontId::new(26.0, egui::FontFamily::Proportional),
+                );
+            }
         });
 
         let state = AppState::default();

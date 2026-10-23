@@ -1,4 +1,4 @@
-//! radar-core — shared data model for the stormscope radar application.
+//! radar-core — shared data model for the Stormscope radar application.
 //!
 //! This crate is the contract between the decoder (`radar-decode`), the
 //! network/data layer (`radar-data`), the renderer (`radar-render`) and the

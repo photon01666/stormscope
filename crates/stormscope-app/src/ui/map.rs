@@ -3252,6 +3252,10 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
     });
     app.state.marker_focus_pending = focus;
     app.state.text_focus |= kbd;
+    if kbd {
+        // Mirror the field for the Android IME bridge: Gboard edits this text.
+        app.state.text_focus_text = app.state.pending_marker_label.clone();
+    }
 
     if to_save {
         let name = app.state.pending_marker_label.trim().to_string();

@@ -66,3 +66,8 @@ windows-sys = { version = "0.59", features = [
 # eyeballing.
 pollster = "0.4"
 png = "0.17"
+
+# Android: the IME bridge polls GameActivity's editor state (Gboard commits
+# land there even though winit never forwards IME text to egui).
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = "0.6"

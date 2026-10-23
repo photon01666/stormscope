@@ -1,4 +1,4 @@
-# stormscope on Android
+# Stormscope on Android
 
 Android shell for the same `StormApp` the desktop uses. `GameActivity` (from
 AndroidX Games) owns the window, surface, lifecycle and IME; the Rust cdylib

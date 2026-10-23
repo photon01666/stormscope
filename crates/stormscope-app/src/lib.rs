@@ -1,4 +1,4 @@
-//! stormscope — app shell.
+//! Stormscope — app shell.
 //!
 //! Layout: auto-hiding controls sidebar (site, product, tilt, opacity, loop
 //! controls) sliding in over the central map on left-edge hover,
@@ -9,6 +9,8 @@
 //! rasterize) happens on background threads whose results are polled each frame.
 
 mod ai_actions;
+#[cfg(target_os = "android")]
+pub mod android_ime;
 mod app;
 mod background;
 mod brief;

@@ -1,4 +1,4 @@
-# Contributing to stormscope
+# Contributing to Stormscope
 
 Thanks for taking a look! This is a small, fast-moving project; the notes below
 are what keeps it that way.

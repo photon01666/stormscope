@@ -40,8 +40,16 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
     request_forecast_if_stale(app);
 
     let scale = app.sidebar_scale.max(1.0);
+    let screen = ctx.content_rect().size();
     let size = super::popup_size(ctx, scale, 580.0, 520.0);
     let max_h = super::popup_max_height(ctx, scale);
+    // A phone is narrower than the 420 pt desktop minimum: clamping keeps the
+    // window (and the text inside it) on screen instead of running off the
+    // right edge.
+    let min_size = egui::vec2(
+        (420.0 * scale).min((screen.x - 24.0).max(200.0)),
+        (220.0 * scale).min((screen.y - 90.0).max(160.0)),
+    );
     let site_id = app.state.site_id.clone();
     let mut open = app.state.forecast_open;
     let mut refetch = false;
@@ -53,7 +61,8 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
         .open(&mut open)
         .default_size(size)
         .max_height(max_h)
-        .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
+        .max_width((screen.x - 16.0).max(200.0))
+        .min_size(min_size)
         // Centered *by its top-left corner*, not by a pivot: egui's pivot
         // is for anchored areas, and with a center pivot every size change
         // also shifts the stored position — which fights the resize drag.
@@ -171,15 +180,53 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
                                 } else {
                                     "—".to_string()
                                 };
-                                let title = if p.wind.is_empty() {
-                                    format!("{} — {temp} · {}", p.name, p.short)
+                                let subtitle = if p.wind.is_empty() {
+                                    p.short.clone()
+                                } else if p.short.is_empty() {
+                                    p.wind.clone()
                                 } else {
-                                    format!("{} — {temp} · {} · {}", p.name, p.short, p.wind)
+                                    format!("{} · {}", p.short, p.wind)
                                 };
+                                let title_short = format!("{} — {temp}", p.name);
+                                let title_full = if subtitle.is_empty() {
+                                    title_short.clone()
+                                } else {
+                                    format!("{title_short} · {subtitle}")
+                                };
+                                // CollapsingHeader draws its title on one line
+                                // with TextWrapMode::Extend: it does not wrap,
+                                // it just runs past the window and gets clipped
+                                // ("…Showers · S 5 mj" on a phone). Keep the
+                                // full line only when it actually fits; otherwise
+                                // use the short title and move the tail into the
+                                // body, which does wrap.
+                                let reserve = ui.spacing().indent
+                                    + ui.spacing().button_padding.x
+                                    + 6.0 * scale;
+                                let button_font = ui
+                                    .style()
+                                    .text_styles
+                                    .get(&egui::TextStyle::Button)
+                                    .cloned()
+                                    .unwrap_or(egui::FontId::proportional(14.0));
+                                let fits = ui.ctx().fonts_mut(|f| {
+                                    f.layout_no_wrap(
+                                        title_full.clone(),
+                                        button_font,
+                                        egui::Color32::WHITE,
+                                    )
+                                    .size()
+                                    .x
+                                }) <= (ui.available_width() - reserve).max(0.0);
+                                let title = if fits { title_full } else { title_short };
                                 egui::CollapsingHeader::new(title)
                                     .id_salt(("forecast.period", i))
                                     .default_open(i == 0)
                                     .show(ui, |ui| {
+                                        if !fits && !subtitle.is_empty() {
+                                            ui.label(egui::RichText::new(&subtitle).weak());
+                                            ui.add_space(2.0 * scale);
+                                        }
                                         if p.detailed.is_empty() {
                                             ui.label(egui::RichText::new(&p.short).weak());
                                         } else {

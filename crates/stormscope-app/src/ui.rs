@@ -7,8 +7,6 @@ use radar_core::Moment;
 mod ai;
 pub(crate) mod alerts;
 mod forecast;
-#[cfg(target_os = "android")]
-mod keyboard;
 mod map;
 mod reports;
 mod totals;
@@ -30,6 +28,15 @@ const SIDEBAR_CLOSE_SLOP: f32 = 32.0;
 const SIDEBAR_ANIM_SECS: f32 = 0.18;
 
 pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
+    #[cfg(target_os = "android")]
+    {
+        // Replay Gboard's commits into egui's event queue before any text
+        // field of this frame reads it: egui rebuilds the queue from the new
+        // frame's raw input on every frame boundary, so anything pushed after
+        // the field has run would be dropped.
+        crate::android_ime::pump(ui.ctx(), &mut app.state);
+    }
+
     // Reset each frame; text fields below set it when they hold focus.
     app.state.text_focus = false;
 
@@ -46,16 +53,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
         status_bar(ui, app);
     });
 
-    // Android: keep the timeline above the system gesture bar. This must be
-    // shown BEFORE the timeline panel — egui stacks bottom panels in the
-    // order they are shown, so the first one lands closest to the bottom edge.
-    // Drawn after, it would appear as an empty bar above the timeline.
-    #[cfg(target_os = "android")]
-    egui::Panel::bottom("android_bottom_inset").show(ui, |ui| {
-        ui.add_space(56.0);
-    });
-
     // Bottom timeline scrubber.
+    // (No Android bottom spacer: the system gesture bar sits outside the app
+    // window, and a spacer only added an empty band under the scrub strip.)
     egui::Panel::bottom("timeline").show(ui, |ui| {
         crate::timeline::timeline(ui, app);
     });
@@ -109,11 +109,6 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     outlook_detail_window(ui.ctx(), app);
     reports::lsr_detail_window(ui.ctx(), app);
     reports::mcd_detail_window(ui.ctx(), app);
-
-    // Android: on-screen keyboard for focused text fields (winit does not
-    // forward the soft keyboard's text input).
-    #[cfg(target_os = "android")]
-    keyboard::show(ui.ctx(), app);
 
     // Archived NWS text for a historical warning (clicked on the map).
     alerts::archive_detail_popup(ui.ctx(), app);
@@ -1396,9 +1391,9 @@ fn edge_hint(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect, scale:
 fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.horizontal_wrapped(|ui| {
         ui.strong(if cfg!(target_os = "android") {
-            "stormscope (android)"
+            "Stormscope (android)"
         } else {
-            "stormscope"
+            "Stormscope"
         });
         ui.separator();
         ui.label(format!("site {}", app.state.site_id));

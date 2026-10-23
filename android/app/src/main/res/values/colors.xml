@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Adaptive launcher icon background: the app's dark chrome, so the
+         launcher mask never shows a white ring around the icon. -->
+    <color name="ic_launcher_background">#0B0D12</color>
+</resources>

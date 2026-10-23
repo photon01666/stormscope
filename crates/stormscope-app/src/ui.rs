@@ -27,6 +27,49 @@ const SIDEBAR_CLOSE_SLOP: f32 = 32.0;
 /// Slide animation time (seconds).
 const SIDEBAR_ANIM_SECS: f32 = 0.18;
 
+/// Bigger type for the read-heavy phone popups (AI meteorologist, NWS
+/// forecast): the default 14 pt body is too small to read on a phone.
+pub(super) fn big_text_scale(app: &StormApp) -> f32 {
+    if cfg!(target_os = "android") {
+        (app.sidebar_scale * 1.3).clamp(1.25, 1.6)
+    } else {
+        app.sidebar_scale.max(1.0)
+    }
+}
+
+/// A finger-sized header for the AI/forecast windows on Android: egui's stock
+/// title bar sizes itself from the default Heading height, so the 26 pt
+/// Android Heading pokes out of the top and loses the top of the title.
+/// Returns true when the ✕ is tapped (the caller cannot write the window's
+/// `open` flag inside `Window::show` — it is already borrowed).
+#[cfg(target_os = "android")]
+fn phone_header(ui: &mut egui::Ui, title: &str) -> bool {
+    ui.add_space(4.0);
+    let mut close = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title).strong().size(20.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::click());
+            let visuals = ui.style().interact(&resp);
+            if resp.hovered() || resp.is_pointer_button_down_on() {
+                ui.painter()
+                    .rect_filled(rect.shrink(4.0), 6.0, visuals.weak_bg_fill);
+            }
+            // Painted arms, not a glyph: the bundled fonts have no "✕"
+            // (it rendered as a missing-glyph square).
+            let arm = rect.shrink(14.0);
+            let stroke = egui::Stroke::new(2.5, visuals.fg_stroke.color);
+            ui.painter()
+                .line_segment([arm.left_top(), arm.right_bottom()], stroke);
+            ui.painter()
+                .line_segment([arm.right_top(), arm.left_bottom()], stroke);
+            close = resp.clicked();
+        });
+    });
+    ui.separator();
+    close
+}
+
 /// Toggle the chrome-free fullscreen mode (map only; the status bar, timeline,
 /// chips, badges and windows all hide). On Android the system status bar is
 /// hidden too, so the radar truly fills the screen.
@@ -80,10 +123,38 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
         // frame's raw input on every frame boundary, so anything pushed after
         // the field has run would be dropped.
         crate::android_ime::pump(ui.ctx(), &mut app.state);
+        // The first fix centres the map, loads the nearest radar and points
+        // the forecast at the user; the GPS chip asks for a fresh one.
+        crate::android_location::apply(ui.ctx(), app);
     }
 
     // Reset each frame; text fields below set it when they hold focus.
     app.state.text_focus = false;
+
+    // The Android back gesture/button (KEYCODE_BACK) arrives as BrowserBack.
+    // Use it to dismiss what is on top: first the chrome-free fullscreen view,
+    // then the AI settings popup, then the AI meteorologist window.
+    #[cfg(target_os = "android")]
+    if ui.ctx().input(|i| i.key_pressed(egui::Key::BrowserBack)) {
+        if app.state.fullscreen {
+            set_fullscreen(ui.ctx(), app);
+        } else if app.state.ai_settings_open {
+            app.state.ai_settings_open = false;
+        } else if app.state.ai_open {
+            app.state.ai_open = false;
+        } else if app.state.outlook_detail_open {
+            app.state.outlook_detail_open = false;
+        } else if app.state.forecast_pick_mode {
+            // Cancel the map pick and bring the forecast back.
+            app.state.forecast_pick_mode = false;
+            app.state.forecast_reopen_after_pick = false;
+            app.state.forecast_open = true;
+        } else if app.state.forecast_open {
+            app.state.forecast_open = false;
+        } else if app.state.totals_open {
+            app.state.totals_open = false;
+        }
+    }
 
     // True fullscreen: nothing but the radar map — no status bar, timeline,
     // chips, badges or windows. Long-press again (or Esc on a desktop)
@@ -133,7 +204,13 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Central area: the map, or the map split with the 3D volume pane. The
     // sidebar floats above the panes instead of reserving space, so peeking
     // it in never resizes them (and never triggers a radar re-raster).
+    let mut pane_area = middle;
     egui::CentralPanel::default().show(ui, |ui| {
+        // The AI window fills exactly this pane (the real map area, below the
+        // status bar and above the timeline). `middle` above is captured
+        // before the panel settles and can be a few points too high, which
+        // tucked the window under the Android status bar.
+        pane_area = ui.max_rect();
         central_panes(ui, app);
     });
 
@@ -142,6 +219,10 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // Bulk radar download/stream progress (top-center, above the map).
     load_progress_pill(ui.ctx(), app, middle);
+
+    // Armed map pick: the forecast window is minimised, so tell the user
+    // what the next tap does (and give them a way out).
+    forecast_pick_hint(ui.ctx(), app, middle);
 
     // Downloaded radar history (from the timeline's "Downloaded…" button).
     crate::timeline::downloads_window(ui.ctx(), app);
@@ -154,11 +235,11 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     alerts::alert_detail_popup(ui.ctx(), app);
 
     // AI meteorologist: the optional brief / question window and its settings.
-    ai::ai_windows(ui.ctx(), app, middle);
+    ai::ai_windows(ui.ctx(), app, pane_area);
 
     // NWS forecast window (station by default, or a point picked on the map).
-    forecast::forecast_window(ui.ctx(), app);
-    totals::totals_window(ui.ctx(), app);
+    forecast::forecast_window(ui.ctx(), app, pane_area);
+    totals::totals_window(ui.ctx(), app, pane_area);
 
     // Archive popup (opened from Settings).
     archive_window(ui.ctx(), app);
@@ -171,7 +252,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     product_help_window(ui.ctx(), app);
 
     // SPC discussion popup (clicking an outlook outline).
-    outlook_detail_window(ui.ctx(), app);
+    outlook_detail_window(ui.ctx(), app, pane_area);
     reports::lsr_detail_window(ui.ctx(), app);
     reports::mcd_detail_window(ui.ctx(), app);
 
@@ -188,6 +269,11 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
 /// bar — a multi-second prime or archive window must never read as a stuck
 /// app. Auto-hides shortly after completion (or if the stream goes quiet).
 fn load_progress_pill(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) {
+    // It is drawn in the Foreground order, so it would paint over the AI
+    // window's header while a load runs.
+    if app.state.ai_open || app.state.forecast_open {
+        return;
+    }
     let Some(p) = app.state.load_progress.clone() else {
         return;
     };
@@ -202,7 +288,7 @@ fn load_progress_pill(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rec
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(
             middle.center().x - 220.0 * scale,
-            middle.min.y + 46.0 * scale,
+            middle.min.y + 80.0 * scale,
         ))
         .constrain(true)
         .interactable(false)
@@ -239,6 +325,47 @@ fn load_progress_pill(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rec
     ctx.request_repaint_after(std::time::Duration::from_millis(100));
 }
 
+/// While a map pick is armed the forecast window is minimised so the map is
+/// tappable; this pill says what the next tap does and offers a way back.
+fn forecast_pick_hint(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) {
+    if !app.state.forecast_pick_mode {
+        return;
+    }
+    let scale = app.sidebar_scale.max(1.0);
+    let top = middle.min.y - ctx.content_rect().min.y + 12.0 * scale;
+    let mut cancel = false;
+    egui::Area::new(egui::Id::new("stormscope.forecast_pick_hint"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_TOP, [0.0, top])
+        .constrain(true)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(egui::Color32::from_black_alpha(230))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Tap the map to forecast that spot")
+                                .strong()
+                                .size(if cfg!(target_os = "android") {
+                                    15.0
+                                } else {
+                                    13.0 * scale
+                                }),
+                        );
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+        });
+    if cancel {
+        app.state.forecast_pick_mode = false;
+        app.state.forecast_reopen_after_pick = false;
+        app.state.forecast_open = true;
+    }
+}
+
 /// The central area: 2D map alone, or side-by-side with the 3D volume pane.
 ///
 /// Panes carry small chips in their top-right corner ("Max" / "Split" /
@@ -255,9 +382,10 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
         (false, _) => {
             crate::ui::map::map(ui, app);
             app.map_rect_at = Some(full);
-            let chip = pane_chip(
+            let chip = pane_chip_bottom_centered(
                 ui,
-                egui::pos2(full.max.x - 8.0 * scale, chip_y(full)),
+                full.center().x,
+                full.max.y - 8.0 * scale,
                 "3D",
                 scale,
             )
@@ -272,7 +400,15 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
             #[cfg(target_os = "android")]
-            settings_chip(ui, controls.rect, app, scale);
+            {
+                gps_chip(
+                    ui,
+                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 8.0 * scale),
+                    app,
+                    scale,
+                );
+                settings_chip(ui, controls.rect, app, scale);
+            }
             ai_chip(ui, full, app, scale);
         }
         // The 3D pane maximized: volume fills the middle, "Split" brings the
@@ -310,9 +446,10 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
         (true, PaneMax::Map) => {
             crate::ui::map::map(ui, app);
             app.map_rect_at = Some(full);
-            let split = pane_chip(
+            let split = pane_chip_bottom_centered(
                 ui,
-                egui::pos2(full.max.x - 8.0 * scale, chip_y(full)),
+                full.center().x,
+                full.max.y - 8.0 * scale,
                 "Split",
                 scale,
             )
@@ -326,7 +463,15 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
             #[cfg(target_os = "android")]
-            settings_chip(ui, controls.rect, app, scale);
+            {
+                gps_chip(
+                    ui,
+                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 8.0 * scale),
+                    app,
+                    scale,
+                );
+                settings_chip(ui, controls.rect, app, scale);
+            }
             ai_chip(ui, full, app, scale);
         }
         // Side-by-side split with a draggable divider. On a phone in portrait
@@ -397,9 +542,10 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             crate::ui::volume3d::show_pane(ui, app, v3_rect);
 
             ai_chip(ui, map_rect, app, scale);
-            let map_max = pane_chip(
+            let map_max = pane_chip_bottom_centered(
                 ui,
-                egui::pos2(map_rect.max.x - 8.0 * scale, chip_y(map_rect)),
+                map_rect.center().x,
+                map_rect.max.y - 8.0 * scale,
                 "Max",
                 scale,
             )
@@ -433,7 +579,18 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
                 pane_chip_bottom(ui, bottom_right(map_rect, scale), "Controls", scale)
                     .on_hover_text("Map display controls (Min dBZ, opacity)");
             #[cfg(target_os = "android")]
-            settings_chip(ui, map_controls.rect, app, scale);
+            {
+                gps_chip(
+                    ui,
+                    egui::pos2(
+                        map_controls.rect.max.x,
+                        map_controls.rect.min.y - 8.0 * scale,
+                    ),
+                    app,
+                    scale,
+                );
+                settings_chip(ui, map_controls.rect, app, scale);
+            }
             let v3_controls = pane_chip_bottom(ui, bottom_right(v3_rect, scale), "Controls", scale)
                 .on_hover_text("3D display controls (echo, opacity, height, tilt, altitude)");
             if map_controls.clicked() {
@@ -476,20 +633,31 @@ fn pane_chip_bottom(
     label: &str,
     scale: f32,
 ) -> egui::Response {
-    let font = egui::TextStyle::Small.resolve(ui.style());
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE);
-    let size = galley.size() + egui::vec2(16.0 * scale, 9.0 * scale);
+    let font = chip_font_size(ui);
+    let galley = chip_galley(ui, label, font);
+    let size = galley.size() + chip_padding() * scale;
     let rect = egui::Rect::from_min_size(
         egui::pos2(right_bottom.x - size.x, right_bottom.y - size.y),
         size,
     );
-    ui.put(
-        rect,
-        egui::Button::new(egui::RichText::new(label).small())
-            .fill(egui::Color32::from_black_alpha(170)),
-    )
+    chip_button(ui, rect, label, font)
+}
+
+/// A chip pinned by the bottom edge and centred horizontally (`centre_x` is
+/// the chip's middle). Used for the 3D opener at the bottom of the map.
+fn pane_chip_bottom_centered(
+    ui: &mut egui::Ui,
+    centre_x: f32,
+    bottom_y: f32,
+    label: &str,
+    scale: f32,
+) -> egui::Response {
+    let font = chip_font_size(ui);
+    let galley = chip_galley(ui, label, font);
+    let size = galley.size() + chip_padding() * scale;
+    let rect =
+        egui::Rect::from_min_size(egui::pos2(centre_x - size.x / 2.0, bottom_y - size.y), size);
+    chip_button(ui, rect, label, font)
 }
 
 /// Like [`pane_chip_bottom`], but pinned by its bottom-left corner.
@@ -499,17 +667,71 @@ fn pane_chip_bottom_left(
     label: &str,
     scale: f32,
 ) -> egui::Response {
-    let font = egui::TextStyle::Small.resolve(ui.style());
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE);
-    let size = galley.size() + egui::vec2(16.0 * scale, 9.0 * scale);
+    let font = chip_font_size(ui);
+    let galley = chip_galley(ui, label, font);
+    let size = galley.size() + chip_padding() * scale;
     let rect = egui::Rect::from_min_size(egui::pos2(left_bottom.x, left_bottom.y - size.y), size);
-    ui.put(
+    chip_button(ui, rect, label, font)
+}
+
+/// Android: a compact "locate me" button above the map's Controls chip. A
+/// painted crosshair (the bundled fonts have no GPS glyph) that turns amber
+/// while a fix is outstanding.
+#[cfg(target_os = "android")]
+fn gps_chip(ui: &mut egui::Ui, right_bottom: egui::Pos2, app: &mut StormApp, scale: f32) {
+    let size = egui::vec2(44.0, 44.0) * scale;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(right_bottom.x - size.x, right_bottom.y - size.y),
+        size,
+    );
+    let resp = ui
+        .interact(
+            rect,
+            egui::Id::new("stormscope.gps_chip"),
+            egui::Sense::click(),
+        )
+        .on_hover_text("Get a fresh GPS fix: centre the map here and select the nearest radar");
+    let pressed = resp.is_pointer_button_down_on();
+    ui.painter().rect_filled(
         rect,
-        egui::Button::new(egui::RichText::new(label).small())
-            .fill(egui::Color32::from_black_alpha(170)),
-    )
+        12.0,
+        egui::Color32::from_black_alpha(if resp.hovered() || pressed { 255 } else { 240 }),
+    );
+
+    let waiting = app.state.gps_waiting;
+    let color = if waiting {
+        egui::Color32::from_rgb(255, 200, 80)
+    } else {
+        egui::Color32::from_gray(228)
+    };
+    let c = rect.center();
+    let r = 8.0 * scale;
+    let stroke = egui::Stroke::new(2.0 * scale, color);
+    ui.painter().circle_stroke(c, r, stroke);
+    ui.painter().circle_filled(c, 2.0 * scale, color);
+    for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        let d = egui::vec2(dx, dy);
+        ui.painter().line_segment(
+            [c + d * (r + 3.0 * scale), c + d * (r + 8.0 * scale)],
+            stroke,
+        );
+    }
+    if waiting {
+        // A slow pulse makes the button legible as "working" on a phone
+        // (hover text is not discoverable by touch).
+        let pulse = 0.5 + 0.5 * (ui.ctx().input(|i| i.time) * 3.0).sin() as f32;
+        ui.painter().circle_stroke(
+            c,
+            r + 6.0 * scale,
+            egui::Stroke::new(1.5 * scale, color.gamma_multiply(pulse)),
+        );
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(120));
+    }
+
+    if resp.clicked() {
+        crate::android_location::request(&mut app.state);
+    }
 }
 
 /// The AI meteorologist opener, bottom-left of whichever 2D map is on screen.
@@ -810,16 +1032,26 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         return;
     }
     let scale = app.sidebar_scale.max(1.0);
-    let size = egui::vec2(300.0 * scale, 340.0 * scale);
+    // Compact on the phone. The content scrolls only if a small screen or a
+    // larger system font makes it overflow; at the default size the window
+    // ends just below the warning-fill row instead of leaving an empty band.
+    let size = egui::vec2(270.0 * scale, 238.0 * scale);
     let mut open = true;
-    egui::Window::new("Map controls")
+    let mut window = egui::Window::new("Map controls")
         .id(egui::Id::new("stormscope.map_controls"))
         .open(&mut open)
         .resizable(false)
         .default_size(size)
-        .default_pos(anchored_pos(ctx, app.map_rect_at, size, scale))
-        .show(ctx, |ui| {
-            apply_text_scale(ui, scale);
+        .default_pos(anchored_pos(ctx, app.map_rect_at, size, scale));
+    if cfg!(target_os = "android") {
+        window = window.fixed_size(size);
+    }
+    window.show(ctx, |ui| {
+        apply_text_scale(ui, scale);
+        egui::ScrollArea::vertical()
+            .id_salt("stormscope.map_controls.scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
             let mut sliders: Vec<(u8, egui::Rect)> = Vec::new();
             let ref_moment = matches!(
                 app.state.moment,
@@ -945,6 +1177,7 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                         (app.state.alerts_fill + 0.05 * steps).clamp(0.0, 1.0);
                 }
                 _ => {}
+            });
             });
         });
     if !open {
@@ -1264,18 +1497,49 @@ fn view3d_controls_window(ctx: &egui::Context, app: &mut StormApp) {
 
 /// A small chip button pinned by its right edge at `right_top`, used for the
 /// pane controls. Sized to its label so "Max"/"Split"/"Fit" all fit.
-fn pane_chip(ui: &mut egui::Ui, right_top: egui::Pos2, label: &str, scale: f32) -> egui::Response {
-    let font = egui::TextStyle::Small.resolve(ui.style());
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font, egui::Color32::WHITE);
-    let size = galley.size() + egui::vec2(16.0 * scale, 9.0 * scale);
-    let rect = egui::Rect::from_min_size(egui::pos2(right_top.x - size.x, right_top.y), size);
+/// Map-chip type size. The phone chips are primary touch targets and the
+/// stock 10 pt "Small" is hard to read and hit on a phone; desktops keep the
+/// compact look.
+fn chip_font_size(ui: &egui::Ui) -> f32 {
+    if cfg!(target_os = "android") {
+        14.0
+    } else {
+        egui::TextStyle::Small.resolve(ui.style()).size
+    }
+}
+
+/// Padding around a chip's label (phone chips get a ~40 pt-tall target).
+fn chip_padding() -> egui::Vec2 {
+    if cfg!(target_os = "android") {
+        egui::vec2(20.0, 11.0)
+    } else {
+        egui::vec2(16.0, 9.0)
+    }
+}
+
+fn chip_button(ui: &mut egui::Ui, rect: egui::Rect, label: &str, font: f32) -> egui::Response {
     ui.put(
         rect,
-        egui::Button::new(egui::RichText::new(label).small())
-            .fill(egui::Color32::from_black_alpha(170)),
+        egui::Button::new(egui::RichText::new(label).size(font))
+            .fill(egui::Color32::from_black_alpha(240))
+            .corner_radius(12.0),
     )
+}
+
+fn chip_galley(ui: &egui::Ui, label: &str, font: f32) -> std::sync::Arc<egui::Galley> {
+    ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(font),
+        egui::Color32::WHITE,
+    )
+}
+
+fn pane_chip(ui: &mut egui::Ui, right_top: egui::Pos2, label: &str, scale: f32) -> egui::Response {
+    let font = chip_font_size(ui);
+    let galley = chip_galley(ui, label, font);
+    let size = galley.size() + chip_padding() * scale;
+    let rect = egui::Rect::from_min_size(egui::pos2(right_top.x - size.x, right_top.y), size);
+    chip_button(ui, rect, label, font)
 }
 
 /// Extra text/element scale for the sidebar on high-res monitors.
@@ -1383,20 +1647,35 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     });
     let scale = hidpi_text_scale(mon_h, nppp, ppp, middle.height());
     app.sidebar_scale = scale;
-    let panel_w = SIDEBAR_WIDTH * scale;
+    let panel_w = if cfg!(target_os = "android") {
+        (middle.width() * 0.5).max(220.0)
+    } else {
+        SIDEBAR_WIDTH * scale
+    };
 
     let pointer = ctx.pointer_latest_pos();
     // Don't peek open mid-gesture: a map pan ending at the left edge must
     // not pop the sidebar over the map mid-drag.
     let pressing = ctx.input(|i| i.pointer.any_down());
-    let want_open = sidebar_want_open(
-        app.state.sidebar_pinned,
-        app.sidebar_open,
-        pressing,
-        pointer,
-        middle,
-        panel_w,
-    );
+    // Clear the touch-close latch only once the pointer is outside the panel
+    // and no button is held: the tap that hit Close is itself inside it.
+    if app.state.sidebar_dismissed {
+        let outside = pointer.is_none_or(|p| {
+            p.x > middle.min.x + panel_w + SIDEBAR_CLOSE_SLOP || !middle.y_range().contains(p.y)
+        });
+        if outside && !pressing {
+            app.state.sidebar_dismissed = false;
+        }
+    }
+    let want_open = !app.state.sidebar_dismissed
+        && sidebar_want_open(
+            app.state.sidebar_pinned,
+            app.sidebar_open,
+            pressing,
+            pointer,
+            middle,
+            panel_w,
+        );
     app.sidebar_open = want_open;
 
     let frac = ctx.animate_bool_with_time(
@@ -1437,11 +1716,13 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
                 let h = sidebar_panel_height(middle);
                 ui.set_min_height(h);
                 ui.set_max_height(h);
+                sidebar_header(ui, app);
+                ui.separator();
                 egui::ScrollArea::vertical()
-                    .max_height(h)
+                    .max_height(ui.available_height())
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        controls(ui, app);
+                        controls_body(ui, app);
                     });
             });
         });
@@ -1509,20 +1790,37 @@ fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
     });
 }
 
-fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
+/// The fixed sidebar header. It lives outside the scroll area so the title and
+/// the Close button never clip at the top, even when the controls below are
+/// scrolled.
+fn sidebar_header(ui: &mut egui::Ui, app: &mut StormApp) {
+    // The taller Close button touches the very top edge of the floating area
+    // with only a 2 pt lead; its rounded top (and the heading's cap height)
+    // were clipped by the area's clip rect on the phone.
+    ui.add_space(if cfg!(target_os = "android") {
+        12.0
+    } else {
+        2.0
+    });
     ui.horizontal(|ui| {
-        ui.heading("Controls");
+        let title_size = if cfg!(target_os = "android") {
+            20.0
+        } else {
+            26.0
+        };
+        ui.label(egui::RichText::new("Controls").strong().size(title_size));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button("✕")
-                .on_hover_text("Hide the controls")
-                .clicked()
-            {
+            let close = if cfg!(target_os = "android") {
+                ui.add(egui::Button::new("Close").min_size(egui::vec2(64.0, 32.0)))
+            } else {
+                ui.add(egui::Button::new("Close").min_size(egui::vec2(52.0, 24.0)))
+            };
+            if close.on_hover_text("Hide the controls").clicked() {
                 app.state.sidebar_pinned = false;
+                app.state.sidebar_dismissed = true;
             }
-            settings_menu(ui, app);
             // Android opens/closes the sidebar from the map's Settings chip
-            // and the ✕ here, so the Pin toggle is a desktop-only affordance.
+            // and Close here, so the Pin toggle is a desktop-only affordance.
             if !cfg!(target_os = "android") {
                 ui.checkbox(&mut app.state.sidebar_pinned, "Pin")
                     .on_hover_text("Keep the sidebar open instead of auto-hiding");
@@ -1532,7 +1830,7 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
     if !app.state.sidebar_pinned {
         ui.label(
             egui::RichText::new(if cfg!(target_os = "android") {
-                "tap Settings (map corner) to open · ✕ to close"
+                "tap Settings (map corner) to open · Close to hide"
             } else {
                 "hover the left edge to peek · Pin to keep open"
             })
@@ -1550,6 +1848,9 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
             .small(),
         );
     }
+}
+
+fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.add_space(6.0);
 
     // Site selector.
@@ -1759,6 +2060,10 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                     .clicked()
                 {
                     app.state.outlook_day = d;
+                    // Drop the previous day's products immediately; the map
+                    // must not keep drawing day 1 under a day 2 selection.
+                    app.state.outlooks.clear();
+                    app.state.outlook = None;
                     // Day 3 has no probability products: fall back so the
                     // selector and the fetch always agree.
                     if d == 3 && app.state.outlook_type.is_probability() {
@@ -1770,14 +2075,30 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                 }
             }
         });
-        // Product type, as SPC offers it: categorical always; the
-        // probabilistic outlooks (chance within 25 miles of a point) exist
-        // for days 1–2 only, so day 3 disables them.
+        // Product type, as SPC offers it: ALL (the default) draws the
+        // categorical plus tornado/wind/hail probabilities together. Picking
+        // one product instead shows only it; the choice also selects the
+        // legend, hover emphasis and discussion target. Days 1–2 have the
+        // probability products; day 3 is categorical only.
         ui.horizontal_wrapped(|ui| {
             use radar_core::outlooks::OutlookType as T;
+            let all = app.state.outlook_all_types;
+            if ui
+                .selectable_label(all, "ALL")
+                .on_hover_text("Show categorical, tornado, wind and hail together")
+                .clicked()
+            {
+                app.state.outlook_all_types = true;
+                // Keep the primary (categorical) legend under ALL.
+                app.state.outlook_type = T::Categorical;
+                let _ = app.tx.send(crate::app::DataCmd::LoadOutlook(
+                    app.state.outlook_day,
+                    T::Categorical,
+                ));
+            }
             for t in [T::Categorical, T::Tornado, T::Wind, T::Hail] {
                 let enabled = t == T::Categorical || app.state.outlook_day < 3;
-                let selected = app.state.outlook_type == t;
+                let selected = !app.state.outlook_all_types && app.state.outlook_type == t;
                 // egui 0.36 has no disabled selectable widget (only the Ui
                 // method remains), so unavailable options explain themselves
                 // on hover instead of looking broken.
@@ -1788,6 +2109,7 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                     resp.on_hover_text("SPC publishes no probability outlooks for day 3")
                 };
                 if enabled && resp.clicked() {
+                    app.state.outlook_all_types = false;
                     app.state.outlook_type = t;
                     let _ = app
                         .tx
@@ -1795,6 +2117,21 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
                 }
             }
         });
+        ui.label(
+            egui::RichText::new(if app.state.outlook_all_types {
+                "ALL: categorical risk fills plus Tornado, Wind and Hail outlines \
+                 are drawn together."
+                    .to_string()
+            } else {
+                format!(
+                    "Showing only the {} outlook; choose ALL to draw every product \
+                     together.",
+                    app.state.outlook_type.label()
+                )
+            })
+            .weak()
+            .small(),
+        );
         match &app.state.outlook {
             Some(o) if o.day == app.state.outlook_day && o.ty == app.state.outlook_type => {
                 let issued = o
@@ -1895,9 +2232,11 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.label("Outlook fill");
         ui.add(egui::Slider::new(&mut app.state.outlook_opacity, 0.0..=1.0));
         ui.label(
-            egui::RichText::new("risk fills sit under the radar; outlines on top")
-                .weak()
-                .small(),
+            egui::RichText::new(
+                "categorical fills sit under the radar; all product outlines on top",
+            )
+            .weak()
+            .small(),
         );
     }
 
@@ -2052,13 +2391,28 @@ fn controls(ui: &mut egui::Ui, app: &mut StormApp) {
         }
         app.state.persist_markers();
     }
+
+    // App-level settings live at the bottom of the slide-out instead of
+    // behind a second Settings button in its header.
+    ui.add_space(12.0);
+    ui.separator();
+    ui.label(
+        egui::RichText::new("Settings")
+            .strong()
+            .size(if cfg!(target_os = "android") {
+                18.0
+            } else {
+                20.0
+            }),
+    );
+    ui.add_space(4.0);
+    settings_body(ui, app);
 }
 
-/// App-level "Settings" popup: live per-section cache usage and one clear
-/// button per section (each gated behind [`confirm_clear_dialog`]).
-fn settings_menu(ui: &mut egui::Ui, app: &mut StormApp) {
-    ui.menu_button("Settings", |ui| {
-        ui.set_min_width(260.0);
+/// App-level settings: live per-section cache usage and one clear button per
+/// section (each gated behind [`confirm_clear_dialog`]).
+fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
+    {
         ui.label(egui::RichText::new("Disk cache").strong());
         ui.add_space(4.0);
         cache_row(
@@ -2120,7 +2474,7 @@ fn settings_menu(ui: &mut egui::Ui, app: &mut StormApp) {
                 .weak()
                 .small(),
         );
-    });
+    }
 }
 
 /// The Archive popup (opened from Settings): day + time-of-day pickers, the
@@ -2451,7 +2805,7 @@ pub(super) fn fill_popup_height(ui: &mut egui::Ui) {
 /// SPC forecaster discussion popup, opened by clicking an outlook outline on
 /// the map (or its category in the legend): the clicked risk level's meaning
 /// plus the full text of that day's outlook.
-fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
+fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if !app.state.outlook_detail_open {
         return;
     }
@@ -2464,140 +2818,164 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp) {
         let _ = app.tx.send(crate::app::DataCmd::LoadOutlookDiscussion(day));
     }
 
-    let scale = app.sidebar_scale.max(1.0);
+    let fill = cfg!(target_os = "android");
+    let scale = big_text_scale(app);
+    let screen = ctx.content_rect().size();
     let size = popup_size(ctx, scale, 640.0, 560.0);
     let max_h = popup_max_height(ctx, scale);
+    let min_size = egui::vec2(
+        (460.0 * scale).min((screen.x - 24.0).max(220.0)),
+        (220.0 * scale).min((screen.y - 90.0).max(160.0)),
+    );
     let mut open = true;
-    egui::Window::new(format!("SPC Day {day} outlook"))
+    let mut window = egui::Window::new(format!("SPC Day {day} outlook"))
         .id(egui::Id::new("stormscope.outlook.detail"))
-        .open(&mut open)
-        .default_size(size)
-        .max_height(max_h)
-        .min_size(egui::vec2(460.0 * scale, 220.0 * scale))
         // Centered *by its top-left corner*, not by a pivot: egui's pivot
         // is for anchored areas, and with a center pivot every size change
         // also shifts the stored position — which fights the resize drag.
         .default_pos(centered_popup_pos(ctx, size))
-        .resizable(true)
-        .show(ctx, |ui| {
-            // The risk level that was clicked, as a summary card.
-            if let (Some(dn), Some(o)) = (app.state.outlook_detail_dn, app.state.outlook.as_ref()) {
-                ui.label(
-                    egui::RichText::new("What this level means")
-                        .strong()
-                        .small(),
-                );
-                egui::Frame::group(ui.style())
-                    .inner_margin(egui::Margin::symmetric(10, 8))
-                    .show(ui, |ui| {
-                        if let Some(f) = o.features.iter().find(|f| f.dn == dn) {
-                            ui.horizontal_wrapped(|ui| {
-                                let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(12.0 * scale, 12.0 * scale),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter().rect_filled(
-                                    rect,
-                                    2.0,
-                                    egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
-                                );
-                                ui.heading(f.headline());
-                            });
-                            ui.label(egui::RichText::new(f.description()));
-                        }
-                        let mut meta = vec![format!("SPC Day {day} Convective Outlook")];
-                        if !o.forecaster.is_empty() {
-                            meta.push(o.forecaster.clone());
-                        }
-                        if let Some(issue) = o.issue {
-                            meta.push(format!("issued {}", crate::timefmt::fmt_central(&issue)));
-                        }
-                        if let Some(expire) = o.expire {
-                            meta.push(format!(
-                                "valid until {}",
-                                crate::timefmt::fmt_central(&expire)
-                            ));
-                        }
-                        ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
-                    });
-            }
-
-            ui.add_space(4.0);
+        .max_width((screen.x - 16.0).max(200.0))
+        .min_size(min_size);
+    #[cfg(target_os = "android")]
+    if fill {
+        window = window.title_bar(false);
+    }
+    window = if fill {
+        // Same phone treatment as AI, forecast and totals: fill the map
+        // pane, painted header, no drag/resize.
+        window
+            .fixed_rect(area)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(area)
+    } else {
+        window.default_size(size).max_height(max_h).resizable(true)
+    };
+    let window = window.open(&mut open);
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if fill {
+            close_requested |= phone_header(ui, &format!("SPC Day {day} outlook"));
+        }
+        apply_text_scale(ui, scale);
+        // The risk level that was clicked, as a summary card.
+        if let (Some(dn), Some(o)) = (app.state.outlook_detail_dn, app.state.outlook.as_ref()) {
             ui.label(
-                egui::RichText::new("Forecaster discussion")
+                egui::RichText::new("What this level means")
                     .strong()
                     .small(),
             );
-            // Height budget: the window keeps the size it opened with instead
-            // of growing to fit the whole text.
-            // Grows with the window: dragging the popup taller reveals more
-            // of the discussion instead of leaving dead space.
-            let text_height = (ui.available_height() - 60.0 * scale).max(140.0);
-
-            match app.state.outlook_discussion.as_ref() {
-                Some((d, text)) if *d == day => {
-                    egui::Frame::NONE
-                        .fill(ui.visuals().extreme_bg_color)
-                        .corner_radius(4.0)
-                        .inner_margin(egui::Margin::same(8))
-                        .show(ui, |ui| {
-                            // The SPC product is pre-formatted for a fixed
-                            // column width, so it is *not* re-wrapped: a
-                            // wrapped galley of the whole discussion would be
-                            // re-laid-out on every resize frame (visible
-                            // jitter while dragging the window edge) and the
-                            // widest lines would shift as the window changes.
-                            // Both scrollbars are always reserved so growing
-                            // or shrinking the window cannot make a bar
-                            // appear and disappear, which oscillates the
-                            // layout.
-                            egui::ScrollArea::both()
-                                .max_height(text_height)
-                                .auto_shrink([false, false])
-                                .scroll_bar_visibility(
-                                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
-                                )
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(text)
-                                                .monospace()
-                                                .size(12.0 * scale),
-                                        )
-                                        .wrap_mode(egui::TextWrapMode::Extend),
-                                    );
-                                });
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    if let Some(f) = o.features.iter().find(|f| f.dn == dn) {
+                        ui.horizontal_wrapped(|ui| {
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(12.0 * scale, 12.0 * scale),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().rect_filled(
+                                rect,
+                                2.0,
+                                egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
+                            );
+                            ui.heading(f.headline());
                         });
-                }
-                _ => {
-                    ui.allocate_ui(egui::vec2(ui.available_width(), text_height), |ui| {
-                        ui.label(egui::RichText::new("Loading the forecaster discussion…").weak());
-                    });
-                }
-            }
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Reload text")
-                    .on_hover_text("Refetch the discussion from spc.noaa.gov")
-                    .clicked()
-                {
-                    app.state.outlook_discussion = None;
-                    app.state.outlook_discussion_requested = Some(day);
-                    let _ = app.tx.send(crate::app::DataCmd::LoadOutlookDiscussion(day));
-                }
-                ui.label(
-                    egui::RichText::new("source: spc.noaa.gov (public domain)")
-                        .weak()
-                        .small(),
-                );
-            });
-            fill_popup_height(ui);
-        });
+                        ui.label(egui::RichText::new(f.description()));
+                    }
+                    let mut meta = vec![format!("SPC Day {day} Convective Outlook")];
+                    if !o.forecaster.is_empty() {
+                        meta.push(o.forecaster.clone());
+                    }
+                    if let Some(issue) = o.issue {
+                        meta.push(format!("issued {}", crate::timefmt::fmt_central(&issue)));
+                    }
+                    if let Some(expire) = o.expire {
+                        meta.push(format!(
+                            "valid until {}",
+                            crate::timefmt::fmt_central(&expire)
+                        ));
+                    }
+                    ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+                });
+        }
 
-    if !open {
-        app.state.outlook_detail_open = false;
-    }
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Forecaster discussion")
+                .strong()
+                .small(),
+        );
+        // Height budget: the window keeps the size it opened with instead
+        // of growing to fit the whole text.
+        // Grows with the window: dragging the popup taller reveals more
+        // of the discussion instead of leaving dead space.
+        let text_height = (ui.available_height() - 60.0 * scale).max(140.0);
+
+        match app.state.outlook_discussion.as_ref() {
+            Some((d, text)) if *d == day => {
+                egui::Frame::NONE
+                    .fill(ui.visuals().extreme_bg_color)
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        // The SPC product is pre-formatted for a fixed
+                        // column width, so it is *not* re-wrapped: a
+                        // wrapped galley of the whole discussion would be
+                        // re-laid-out on every resize frame (visible
+                        // jitter while dragging the window edge) and the
+                        // widest lines would shift as the window changes.
+                        // Both scrollbars are always reserved so growing
+                        // or shrinking the window cannot make a bar
+                        // appear and disappear, which oscillates the
+                        // layout.
+                        egui::ScrollArea::both()
+                            .max_height(text_height)
+                            .auto_shrink([false, false])
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                            )
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(text).monospace().size(12.0 * scale),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                );
+                            });
+                    });
+            }
+            _ => {
+                ui.allocate_ui(egui::vec2(ui.available_width(), text_height), |ui| {
+                    ui.label(egui::RichText::new("Loading the forecaster discussion…").weak());
+                });
+            }
+        }
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            if ui
+                .button("Reload text")
+                .on_hover_text("Refetch the discussion from spc.noaa.gov")
+                .clicked()
+            {
+                app.state.outlook_discussion = None;
+                app.state.outlook_discussion_requested = Some(day);
+                let _ = app.tx.send(crate::app::DataCmd::LoadOutlookDiscussion(day));
+            }
+            ui.label(
+                egui::RichText::new("source: spc.noaa.gov (public domain)")
+                    .weak()
+                    .small(),
+            );
+        });
+        if !fill {
+            fill_popup_height(ui);
+        }
+    });
+
+    app.state.outlook_detail_open = open && !close_requested;
 }
 
 /// Human-readable byte size (B/KiB/MiB/GiB) for the Settings menu.
@@ -2729,16 +3107,18 @@ mod tests {
         );
     }
 
-    /// The default echo floor has to serve both seasons: low enough that light
-    /// snow and drizzle (10-25 dBZ) actually draw, high enough that a
-    /// clear-air scan is not a field of speckle. Snow is the stricter case —
-    /// a 30 dBZ floor hid all but the heaviest winter cores — so the default
-    /// sits at 10 and the map Controls slider is the escape hatch.
+    /// The default echo floor keeps clear-air speckle and drizzle out of the
+    /// picture while light rain (~20-25 dBZ) still draws. The map Controls
+    /// slider reaches down to 5 dBZ for winter snow.
     #[test]
-    fn default_min_dbz_shows_snow_but_not_zero() {
+    fn default_min_dbz_keeps_clear_air_out() {
         let floor = crate::state::AppState::default().min_dbz;
-        assert!(floor <= 15.0, "snow lives at 10-25 dBZ, floor is {floor}");
+        assert_eq!(floor, 20.0);
         assert!(floor > 0.0, "a zero floor is clear-air noise");
+        assert!(
+            floor <= 25.0,
+            "light rain sits at 20-25 dBZ, floor is {floor}"
+        );
     }
 
     #[test]

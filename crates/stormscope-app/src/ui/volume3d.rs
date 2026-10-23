@@ -874,6 +874,40 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
         }
     }
 
+    // --- The device's GPS fix, on the 3D ground -------------------------
+    // Same blue "You" beacon as the 2D map: a pulsing halo and white collar
+    // at the fix, drawn above the volume so it is never lost in the echoes.
+    if let Some((lat, lon)) = app.state.gps_fix {
+        let x = ((lon - site.longitude) * 111.32 * cos_lat) as f32;
+        let y = ((lat - site.latitude) * 110.574) as f32;
+        if (x * x + y * y).sqrt() <= max_r.max(1.0) * 1.1 {
+            if let Some(ndc) = project([x, y, 0.0]) {
+                let at = ndc_to_screen(ndc);
+                if rect.contains(at) {
+                    let blue = Color32::from_rgb(66, 148, 255);
+                    let now = ui.ctx().input(|i| i.time) as f32;
+                    let pulse = 0.5 + 0.5 * (now * 2.4).sin();
+                    painter.circle_filled(at, 14.0 + 3.0 * pulse, blue.gamma_multiply(0.14));
+                    painter.circle_filled(at, 7.0, Color32::from_black_alpha(140));
+                    painter.circle_stroke(at, 5.5, Stroke::new(2.0, Color32::WHITE));
+                    painter.circle_filled(at, 3.5, blue);
+                    let label = at + Vec2::new(10.0, -2.0);
+                    let font = FontId::proportional(11.0 * scale);
+                    painter.text(
+                        label + Vec2::new(1.0, 1.0),
+                        Align2::LEFT_CENTER,
+                        "You",
+                        font.clone(),
+                        Color32::from_black_alpha(200),
+                    );
+                    painter.text(label, Align2::LEFT_CENTER, "You", font, Color32::WHITE);
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
     // --- Data probe: the echo under the cursor ----------------------------
     // The camera works in *display* space (Z exaggerated), so the ray is
     // un-exaggerated before marching the physical volume; the hit is

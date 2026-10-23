@@ -74,6 +74,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     // the app polls that state and replays commits as egui events. Register
     // the activity handle for the bridge before eframe takes `app`.
     stormscope_app::android_ime::register(app.clone());
+    stormscope_app::android_location::register(app.clone());
 
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

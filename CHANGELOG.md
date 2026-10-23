@@ -36,8 +36,52 @@ log; entries start at the first public release.
   polls GameActivity's editor state once per frame and replays the commits
   (insertions, deletions) as egui events at the top of the frame, before the
   focused field reads the event queue. The hand-drawn on-screen keyboard is
-  gone. The window is `adjustResize` while the IME is open, so the field
-  stays visible above it.
+  gone. The window is `adjustResize`, and the AI window also lifts its
+  bottom edge by the IME inset GameActivity reports, so Gboard never covers
+  the question box while typing.
+- **SPC outlooks show every product at once**: categorical risk areas keep
+  their fills, and the Tornado, Wind and Hail probability bands are drawn
+  as outlines together on the same map. The product selector now chooses
+  which legend/discussion is emphasized, not which product is visible.
+- **Rain & snow totals opens as a full-pane phone window**: same treatment
+  as the AI and forecast windows (painted ✕, phone type scale, back gesture
+  closes it), with the table scrolling inside it.
+- **GPS fixes are now part of the app**: a fix is requested on launch, the
+  map centres on it, the nearest radar station is selected and the forecast
+  is pointed at the fix. The fix is drawn as a pulsing blue **You** dot on
+  top of every map layer, with a manual crosshair button above the Controls
+  chip for a fresh fix. The AI brief and chat sample the current GPS
+  location even with no markers, so a phone with no pins still gets a
+  brief.
+- **No phantom snow in AI briefs**: surface temperature now outranks the
+  radar's winter classifiers. Above 40 °F the snow-rate and melting-level
+  fields are omitted and the prompt forbids snow/ice; weak echoes below
+  20 dBZ with no echo regions are described as clutter/drizzle, not wet
+  snow.
+- **AI briefs speak plain English**: the prompt translates radar shorthand
+  ("a few very light returns", "no hail signature") into everyday weather
+  language while keeping the detail that matters — timing, amounts, wind
+  and hail size — instead of dropping it.
+- **The slide-out sidebar is phone-sized**: half the map width, a fixed
+  header whose title and ✕ no longer clip at the top, and the app settings
+  at the bottom of the scroll instead of behind a Settings menu.
+- **SPC outlooks are touchable**: ALL is the default and draws the
+  categorical, tornado, wind and hail products together; the risk outlines
+  get a 40 px touch reach, and tapping any of them opens the full-pane
+  forecaster discussion (back or ✕ closes).
+- **The 3D pane shows the GPS fix** with the same pulsing blue **You**
+  beacon as the 2D map, drawn on the volume's ground plane.
+- **Forecast "Pick on map…" works on a phone**: the window minimises so the
+  map is fully tappable, then reopens and loads the picked point. Back
+  cancels the pick and restores the window.
+- **Phone map chrome**: chips are larger, darker and rounded; the 3D opener
+  and Split/Max chips sit at the bottom centre; the LIVE pill centres itself
+  below a wrapped badge row; Settings and Controls flank the GPS button.
+  Badges on the top row stretch to the full map width (labels stay centred
+  in their pills) instead of leaving a wide empty strip at the right, and
+  the 2D Map controls window is a compact 270×238 pt that scrolls only when
+  its content needs it. Lightning is on by default, the 0 °C level is off,
+  and the reflectivity floor starts at 20 dBZ.
 - Window close (✕) buttons get a larger Heading font, growing their tap
   square from ~24 dp to ~35 dp — they were very hard to hit with a finger.
 - The 3D radar pane stacks **below** the 2D map in portrait and sits beside

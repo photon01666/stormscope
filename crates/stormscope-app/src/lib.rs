@@ -11,6 +11,8 @@
 mod ai_actions;
 #[cfg(target_os = "android")]
 pub mod android_ime;
+#[cfg(target_os = "android")]
+pub mod android_location;
 mod app;
 mod background;
 mod brief;

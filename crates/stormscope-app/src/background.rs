@@ -534,7 +534,13 @@ pub fn run(
                 DataCmd::LoadOutlook(day, ty) => {
                     outlook_day = day;
                     outlook_type = ty;
-                    refresh_outlook(&outlooks, day, ty, &out);
+                    // Fetch all four products for the day on a worker: four
+                    // sequential SPC downloads must not hold up radar
+                    // commands (the layer shows them together).
+                    if let Some(src) = outlooks.clone() {
+                        let out = out.clone();
+                        std::thread::spawn(move || refresh_outlook(&src, day, ty, &out));
+                    }
                 }
                 DataCmd::LoadMrms => {
                     // Its own worker: the newest file is a several-MB download
@@ -844,7 +850,12 @@ pub fn run(
         }
         if last_outlook.elapsed() >= OUTLOOK_REFRESH {
             last_outlook = std::time::Instant::now();
-            refresh_outlook(&outlooks, outlook_day, outlook_type, &out);
+            if let Some(src) = outlooks.clone() {
+                let out = out.clone();
+                let day = outlook_day;
+                let ty = outlook_type;
+                std::thread::spawn(move || refresh_outlook(&src, day, ty, &out));
+            }
         }
         // Keep the Settings cache readout live. Only send on an actual
         // change — a directory walk every 2s that says the same thing would
@@ -1468,29 +1479,54 @@ fn refresh_forecast(
     }
 }
 
+/// Fetch every SPC outlook product SPC publishes for `day` — categorical
+/// plus tornado/wind/hail probabilities — so the map can show them at once.
+/// The selected type goes first so its legend fills in without waiting on the
+/// other three downloads. Errors for the extra products are logged only; the
+/// status bar reports a failure of the selected product.
 fn refresh_outlook(
-    outlooks: &Option<OutlookSource>,
+    src: &OutlookSource,
     day: u8,
-    ty: radar_core::outlooks::OutlookType,
+    selected: radar_core::outlooks::OutlookType,
     out: &Sender<DataMsg>,
 ) {
-    let Some(src) = outlooks else { return };
-    match src.fetch(day, ty) {
-        Ok(o) => {
-            let issued = o
-                .issue
-                .map(|t| crate::timefmt::fmt_central(&t))
-                .unwrap_or_else(|| "?".into());
-            log::info!(
-                "outlook day {day} {}: {} areas, issued {issued}",
-                ty.label(),
-                o.features.len()
-            );
-            let _ = out.send(DataMsg::Outlook(o));
+    use radar_core::outlooks::OutlookType as T;
+    let available = radar_core::outlooks::probabilities_available(day);
+    let selected = if selected.is_probability() && !available {
+        T::Categorical
+    } else {
+        selected
+    };
+    let mut types = vec![selected];
+    for ty in [T::Categorical, T::Tornado, T::Wind, T::Hail] {
+        if ty == selected || (ty.is_probability() && !available) {
+            continue;
         }
-        Err(e) => {
-            log::warn!("outlook day {day} fetch failed: {e:#}");
-            let _ = out.send(DataMsg::Error(format!("outlook day {day}: {e:#}")));
+        types.push(ty);
+    }
+    for ty in types {
+        match src.fetch(day, ty) {
+            Ok(o) => {
+                let issued = o
+                    .issue
+                    .map(|t| crate::timefmt::fmt_central(&t))
+                    .unwrap_or_else(|| "?".into());
+                log::info!(
+                    "outlook day {day} {}: {} areas, issued {issued}",
+                    ty.label(),
+                    o.features.len()
+                );
+                let _ = out.send(DataMsg::Outlook(o));
+            }
+            Err(e) => {
+                log::warn!("outlook day {day} {} fetch failed: {e:#}", ty.label());
+                if ty == selected {
+                    let _ = out.send(DataMsg::Error(format!(
+                        "outlook day {day} {}: {e:#}",
+                        ty.label()
+                    )));
+                }
+            }
         }
     }
 }

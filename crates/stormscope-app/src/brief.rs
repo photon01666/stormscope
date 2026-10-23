@@ -37,6 +37,9 @@ pub struct BriefInputs<'a> {
     pub forecast: Option<&'a radar_core::forecast::Forecast>,
     /// Where the loaded forecast applies (station or picked point).
     pub forecast_point: Option<(f64, f64)>,
+    /// The device's GPS fix, sampled like a marker so a brief always covers
+    /// where the spotter actually is.
+    pub gps_fix: Option<(f64, f64)>,
     pub forecast_age_min: Option<u64>,
     pub observation: Option<&'a radar_core::forecast::Observation>,
     pub totals: &'a [radar_data::StationTotals],
@@ -82,26 +85,41 @@ pub struct Brief {
 /// The model's role and its rules. Kept short: every sentence here is paid
 /// for on every request.
 pub fn system_prompt() -> String {
-    "You are a senior NWS meteorologist writing a tactical briefing for a trained spotter. \
+    "You are a meteorologist explaining the weather to a neighbor in plain English. \
      The user message is one JSON snapshot from stormscope: radar gates sampled at the spotter's \
-     marked locations, plus warnings, tracked storm cells, spotter reports, SPC outlook/MCD \
-     context, station observations and the NWS forecast.\n\
+     current GPS location and marked locations, plus warnings, tracked storm cells, spotter \
+     reports, SPC outlook/MCD context, station observations and the NWS forecast.\n\
      Rules:\n\
      - Use only the snapshot. Never invent a measurement or a time. If a variable is missing, say \
      it is not available.\n\
-     - Units: dBZ, kft above ground, miles, mph, °F, inches, inches/hour. Radar values under \
-     `radar` apply to that marker; `mrms.dbz` is the national multi-radar composite at the same spot.\n\
-     - Lead with the most dangerous thing and when it arrives. For each marker write 2-4 sentences: \
-     what is happening now, what the next 30-90 minutes look like, the specific hazard \
-     (tornado/hail/wind/ice/snow/fog/visibility), and confidence.\n\
+     - Write for a normal person, not a radar operator. Do not recite radar variables or \
+     acronyms (dBZ, kft, HCA, ZDR, CC, MEHS, VIL, spectrum width, echo regions, melting level). \
+     Translate them into what they mean: \"a few very light returns\", \"the storm tops are low\", \
+     \"no hail signature\", \"hardly any rain\". In the answer use everyday units only: °F, mph, \
+     miles, inches. Give the numbers that matter (temperature, arrival time, rainfall, wind, hail \
+     size); skip the rest of the data dump. Do not lose detail: timing, amounts and what to watch \
+     for still belong, just in everyday words.\n\
+     - If the user explicitly asks a technical question or uses radar terms, answer in kind; \
+     otherwise keep both briefs and chat replies conversational.\n\
+     - `current_location` is the spotter's own GPS fix, sampled exactly like a marker. Include it \
+     in every brief when present, even when no markers exist, and never ask the spotter to place \
+     a marker while it is present.\n\
+     - Lead with the answer in the first sentence: is anything dangerous coming, when, and what \
+     should the reader do? For `current_location` and each marker write 2-4 short sentences: what \
+     is happening now, what the next 30-90 minutes look like, the specific hazard \
+     (tornado/hail/wind/ice/snow/fog/visibility), and how confident you are.\n\
      - Respect warning polygons and tracked motion; `next_arrival_min` is the tracker's closest-\
      approach estimate for that marker, `storm_cells` are nearby cells with their own motion.\n\
-     - Winter: use `hca`, `snow_rate_in_hr`, `melting_level_kft` and the surface observation to \
-     distinguish rain / wet snow / dry snow / ice.\n\
+     - Surface temperature outranks the radar's winter products. Only describe frozen \
+     precipitation when `surface_observation.temperature_f` is 38 F or lower (or the observation \
+     text names snow/ice). Above 40 F never mention snow, ice, the melting level or snow rate: HCA \
+     \"mixed\" and a low melting level in weak echoes are algorithm artifacts at warm temperatures. \
+     Below 20 dBZ with no `echo_regions`, call it light isolated returns (possibly clutter or \
+     drizzle), not a hydrometeor type.\n\
      - Plain text only: no tables, no code blocks, no markdown headings. One short line with the \
      marker name, then the sentences. End with a single line starting \"Watch for:\" naming the \
      biggest uncertainty.\n\
-     - Length: under 220 words for up to 3 markers, under 350 words otherwise.\n\
+     - Length: under 220 words for up to 3 locations, under 350 words otherwise.\n\
      - No screenshot is taken or sent. Every value comes from the decoded radar volume and the \
      loaded overlays sampled by the app.\n\
      - `echo_regions` is the spatial overview: connected areas of >=20 dBZ on the lowest cut \
@@ -110,7 +128,7 @@ pub fn system_prompt() -> String {
      a cell beyond the pins). If the question is about a direction or area (\"what about the \
      south?\"), find the matching region in this list and look at ITS centroid/edges — never \
      pick points blindly along a compass direction.\n\
-     - The snapshot samples only the markers (and any `requested_samples`). If a question needs \
+     - The snapshot samples only `current_location`, the markers (and any `requested_samples`). If a question needs \
      data somewhere else — a town the spotter names, a cell outside the pins — do not guess: \
      reply with ONLY a line\n\
      LOOK: {\"points\": [{\"lat\": 37.69, \"lon\": -97.34, \"label\": \"Wichita\", \"radius_mi\": 25}], \"product\": \"REF\"}\n\
@@ -335,6 +353,16 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
                 "precip_last_hour_in": obs.precip_last_hour_mm.map(|mm| round2(mm / 25.4)),
             }),
         );
+        if let Some(temp_f) = obs.temperature_c.map(c_to_f) {
+            let guidance = if temp_f >= 45.0 {
+                "Surface temperature is well above freezing: snow and ice are NOT possible. Do                  not mention snow, ice, the melting level, or snow rate. Weak-echo HCA 'mixed'                  values are clutter or melting-layer artifacts."
+            } else if temp_f >= 34.0 {
+                "Surface temperature is near freezing: rain or a rain/snow mix is possible. Do                  not call it all snow unless the observation text says snow."
+            } else {
+                "Surface temperature is at or below freezing: snow and ice are possible; use HCA,                  snow rate and the melting level."
+            };
+            root.insert("precip_type_guidance".into(), json!(guidance));
+        }
     }
 
     if let Some(forecast) = input.forecast {
@@ -392,6 +420,21 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
     }
     root.insert("markers".into(), json!(markers));
 
+    // Always sample the spotter's actual position: a brief must cover where
+    // they are, even if they have not dropped a pin.
+    if let Some((lat, lon)) = input.gps_fix {
+        let marker = MapMarker {
+            lat,
+            lon,
+            label: "My location (GPS)".into(),
+        };
+        let mut sample = marker_snapshot(input, &marker, input.markers.len());
+        if let Some(obj) = sample.as_object_mut() {
+            obj.insert("source".into(), json!("device GPS fix"));
+        }
+        root.insert("current_location".into(), sample);
+    }
+
     if !input.look_points.is_empty() {
         // Data the model asked for by name; same sampling as a marker, but
         // not persisted as a pin and without an ETA cache entry.
@@ -437,13 +480,22 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
     Brief {
         system: system_prompt(),
         user,
-        label: format!(
-            "{} {}Z · {} marker{}",
-            site.id,
-            scan.format("%H:%M"),
-            shown.len(),
-            if shown.len() == 1 { "" } else { "s" }
-        ),
+        label: if shown.is_empty() && input.gps_fix.is_some() {
+            format!("{} {}Z · GPS location", site.id, scan.format("%H:%M"))
+        } else {
+            format!(
+                "{} {}Z · {} marker{}{}",
+                site.id,
+                scan.format("%H:%M"),
+                shown.len(),
+                if shown.len() == 1 { "" } else { "s" },
+                if input.gps_fix.is_some() {
+                    " + GPS"
+                } else {
+                    ""
+                }
+            )
+        },
     }
 }
 
@@ -659,7 +711,12 @@ fn look_snapshot(input: &BriefInputs<'_>, point: &LookPointSample) -> Value {
     );
     root.insert(
         "radar_at_center".into(),
-        radar_column(input.volume, bearing, range_km),
+        radar_column(
+            input.volume,
+            bearing,
+            range_km,
+            frozen_possible(input, point.lat, point.lon) == Some(true),
+        ),
     );
     root.insert(
         "area".into(),
@@ -844,7 +901,12 @@ fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) ->
     }
     root.insert(
         "radar".into(),
-        radar_column(input.volume, bearing, range_km),
+        radar_column(
+            input.volume,
+            bearing,
+            range_km,
+            frozen_possible(input, lat, lon) == Some(true),
+        ),
     );
 
     // Nearby tracked cells (not only the one that triggers next_arrival).
@@ -1091,8 +1153,24 @@ fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) ->
     Value::Object(root)
 }
 
+/// Is frozen precipitation plausible at `lat/lon` according to the loaded
+/// surface observation? `None` when there is no observation, or it belongs to
+/// a point too far away to represent this marker.
+fn frozen_possible(input: &BriefInputs<'_>, lat: f64, lon: f64) -> Option<bool> {
+    let obs = input.observation?;
+    let temp_f = c_to_f(obs.temperature_c?);
+    let (olat, olon) = input
+        .forecast_point
+        .unwrap_or((input.site.latitude, input.site.longitude));
+    let d_mi = radar_render::surface_distance_m(lon, lat, olon, olat) / 1609.344;
+    if d_mi > 60.0 {
+        return None;
+    }
+    Some(temp_f <= 38.0)
+}
+
 /// One marker's radar column, sampled with the map probe's gate rule.
-fn radar_column(volume: &Volume, bearing: f32, range_km: f32) -> Value {
+fn radar_column(volume: &Volume, bearing: f32, range_km: f32, include_winter: bool) -> Value {
     let mut root = Map::new();
 
     // Surface gates (the lowest cut carrying each moment).
@@ -1157,11 +1235,17 @@ fn radar_column(volume: &Volume, bearing: f32, range_km: f32) -> Value {
             column.insert("hca".into(), json!(class.label()));
         }
     }
-    if let Some((v, _)) = gate(volume, Moment::SnowRate, bearing, range_km) {
-        column.insert("snow_rate_in_hr".into(), json!(round2(v)));
-    }
-    if let Some((v, _)) = gate(volume, Moment::MeltingLayer, bearing, range_km) {
-        column.insert("melting_level_kft".into(), json!(round1f(v)));
+    // Snow rate and the melting level only make sense with a cold surface;
+    // including them in a 60 F column invited the model to call weak clutter
+    // "wet snow" (the melting-layer algorithm reports a level even in clear
+    // air, and the snow-rate product is nonzero on mixed echoes).
+    if include_winter {
+        if let Some((v, _)) = gate(volume, Moment::SnowRate, bearing, range_km) {
+            column.insert("snow_rate_in_hr".into(), json!(round2(v)));
+        }
+        if let Some((v, _)) = gate(volume, Moment::MeltingLayer, bearing, range_km) {
+            column.insert("melting_level_kft".into(), json!(round1f(v)));
+        }
     }
 
     // Every cut at this column, so tilt-specific questions get the actual
@@ -1690,6 +1774,7 @@ mod tests {
             lsrs: &[],
             forecast: None,
             forecast_point: None,
+            gps_fix: None,
             forecast_age_min: None,
             observation: None,
             totals: &[],
@@ -1740,6 +1825,141 @@ mod tests {
                 brief.user
             );
         }
+    }
+
+    fn simple_volume() -> radar_core::Volume {
+        use radar_core::{MomentCalibration, MomentData, Sweep, Volume, VolumeMeta};
+        let rays: Vec<f32> = (0..360).map(|i| i as f32).collect();
+        let mut data = vec![0i16; 360 * 200];
+        for r in 0..360 {
+            for g in 0..200 {
+                let range_km = (g as f32 + 0.5) * 0.25;
+                if range_km > 20.0 && range_km < 40.0 {
+                    data[r * 200 + g] = 12; // 10 dBZ after the +2 offset
+                }
+            }
+        }
+        let mut volume = Volume {
+            meta: VolumeMeta {
+                site_id: "KTWX".into(),
+                volume_start: chrono::Utc::now(),
+                vcp: None,
+                sequence_number: None,
+                sweep_count: 1,
+                moments: vec![Moment::Reflectivity],
+            },
+            sweeps: vec![Sweep {
+                elevation_deg: 0.5,
+                elevation_measured_deg: 0.5,
+                azimuth_width_deg: 1.0,
+                azimuths_deg: rays,
+                moments: vec![MomentData {
+                    kind: Moment::Reflectivity,
+                    calibration: MomentCalibration {
+                        scale: 1.0,
+                        offset: 2.0,
+                        threshold: 0.0,
+                    },
+                    range_start_m: 0.0,
+                    gate_size_m: 250.0,
+                    gate_count: 200,
+                    ray_count: 360,
+                    data,
+                }],
+            }],
+        };
+        radar_core::derived::attach_derived(&mut volume);
+        volume
+    }
+
+    /// A warm surface observation suppresses the radar's winter classifiers
+    /// and the GPS fix is sampled even with no markers (the "wet snow at
+    /// 63 F" regression).
+    #[test]
+    fn warm_surface_forbids_snow_and_gps_is_always_sampled() {
+        let site = radar_core::sites::site("KTWX").expect("site");
+        let volume = simple_volume();
+        let observation = radar_core::forecast::Observation {
+            station_id: "KTOP".into(),
+            station_name: "Topeka".into(),
+            timestamp: Some(chrono::Utc::now()),
+            text: "Mostly Cloudy".into(),
+            temperature_c: Some(17.2), // 63 F
+            dewpoint_c: Some(10.0),
+            wind_speed_kmh: None,
+            wind_direction_deg: None,
+            wind_gust_kmh: None,
+            humidity_pct: None,
+            pressure_pa: None,
+            visibility_m: None,
+            precip_last_hour_mm: None,
+            heat_index_c: None,
+            wind_chill_c: None,
+        };
+        let gps = (site.latitude + 0.1, site.longitude + 0.1);
+        let brief = build(&BriefInputs {
+            site,
+            mode: "live",
+            volume: &volume,
+            min_dbz: 20.0,
+            markers: &[],
+            marker_etas: &[],
+            tracks: &[],
+            alerts: &[],
+            outlook: None,
+            mcds: &[],
+            lsrs: &[],
+            forecast: None,
+            forecast_point: Some(gps),
+            gps_fix: Some(gps),
+            forecast_age_min: None,
+            observation: Some(&observation),
+            totals: &[],
+            mrms: None,
+            view_moment: Moment::Reflectivity,
+            view_tilt_deg: 0.5,
+            view_center: gps,
+            view_zoom: 8.0,
+            view3d_open: false,
+            show_melting_layer: false,
+            look_points: &[],
+            srm_volume: None,
+            goes: None,
+            scan_interval_min: None,
+            now: chrono::Utc::now(),
+        });
+        for needle in [
+            r#""current_location""#,
+            r#""name":"My location (GPS)""#,
+            r#""source":"device GPS fix""#,
+            r#""precip_type_guidance""#,
+            "snow and ice are NOT possible",
+        ] {
+            assert!(
+                brief.user.contains(needle),
+                "missing {needle}: {}",
+                brief.user
+            );
+        }
+        assert!(
+            !brief.user.contains(r#""snow_rate_in_hr""#),
+            "snow rate must be omitted at 63 F: {}",
+            brief.user
+        );
+        assert!(
+            !brief.user.contains(r#""melting_level_kft""#),
+            "melting level must be omitted at 63 F: {}",
+            brief.user
+        );
+        assert!(
+            brief.label.contains("GPS") && !brief.label.contains("marker"),
+            "{}",
+            brief.label
+        );
+        assert!(
+            brief.system.contains("Surface temperature outranks"),
+            "the prompt must rank the surface observation first"
+        );
     }
 
     #[test]

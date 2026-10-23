@@ -69,9 +69,16 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             let (cx, cy) = viewport_pos(rect, click);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
             app.state.forecast_point = Some((lat, lon));
+            app.state.forecast_point_gps = false;
             app.state.forecast_pick_mode = false;
             app.state.forecast = None;
             app.state.forecast_requested = None;
+            // The window was minimised to expose the map; bring it back now
+            // that the point is chosen.
+            if app.state.forecast_reopen_after_pick {
+                app.state.forecast_reopen_after_pick = false;
+                app.state.forecast_open = true;
+            }
             let _ = app.tx.send(crate::app::DataCmd::LoadForecast(lat, lon));
         }
     } else if response.clicked() && !measuring && app.state.pending_marker.is_none() {
@@ -186,12 +193,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                 app.state.mcd_detail = Some(m.number);
                             } else if app.state.show_outlook {
                                 // Clicking an SPC outline opens that day's
-                                // forecaster discussion.
-                                let hit = app.state.outlook.as_ref().and_then(|o| {
-                                    outlook_border_at(o, &view, lon, lat, OUTLOOK_BORDER_PX)
-                                        .map(|f| f.dn)
-                                });
-                                if let Some(dn) = hit {
+                                // forecaster discussion. ALL mode accepts a
+                                // click on any product's outline, and the
+                                // tapped product becomes the legend/detail.
+                                if let Some((o, f)) = outlook_hit(app, &view, lon, lat) {
+                                    let (ty, dn) = (o.ty, f.dn);
+                                    app.state.outlook = Some(o.clone());
+                                    app.state.outlook_type = ty;
+                                    app.state.outlook_hover = None;
                                     app.state.outlook_detail_open = true;
                                     app.state.outlook_detail_dn = Some(dn);
                                     let day = app.state.outlook_day;
@@ -230,13 +239,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 .ctx()
                 .input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
             let mut z = app.state.view.zoom;
-            let mut pinch = pinch;
             // Touch pinch on Android arrives as much larger deltas than a
             // trackpad; dampen it so a two-finger zoom doesn't overshoot.
             #[cfg(target_os = "android")]
-            {
-                pinch = 1.0 + (pinch - 1.0) * 0.4;
-            }
+            let pinch = 1.0 + (pinch - 1.0) * 0.4;
             let zd = pinch as f64;
             if zd != 1.0 {
                 z *= zd;
@@ -848,6 +854,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             app.sidebar_scale.max(1.0),
         );
     }
+
+    // --- The device's own position: always the topmost map mark ----------
+    // Drawn after every layer, probe plate and label so the blue "You" dot
+    // is never buried by echoes, warnings, sites, annotations or reports.
+    draw_gps_position(&painter, origin, &view, app);
 
     // Label editor popup for the selected/new marker (drawn in its own
     // egui layer; lives here so it has the map context).
@@ -1727,11 +1738,14 @@ pub(super) fn draw_tag_label(
     painter.galley(rect.min, galley, fg);
 }
 
-/// SPC convective-outlook overlay (Day 1/2/3 categorical risk areas).
+/// SPC convective-outlook overlay, all products for the selected day at once:
+/// categorical plus the tornado/wind/hail probability bands.
 ///
-/// `fills == true` paints translucent fills (called *under* the radar so
-/// echoes stay crisp); `fills == false` paints only the boundary outlines
-/// (called *over* the radar so the risk areas stay legible across rain).
+/// `fills == true` paints translucent categorical fills (called *under* the
+/// radar so echoes stay crisp); `fills == false` paints every product's
+/// boundary outlines (called *over* the radar so they stay legible across
+/// rain). Probability fills are skipped: stacking four filled products turns
+/// the map into mud, while their outlines still show each hazard band.
 /// Colors come straight from SPC's GeoJSON, so the overlay matches their maps.
 fn draw_outlooks(
     painter: &egui::Painter,
@@ -1743,37 +1757,66 @@ fn draw_outlooks(
     if !app.state.show_outlook {
         return;
     }
-    let Some(o) = &app.state.outlook else { return };
-    if o.day != app.state.outlook_day {
-        return; // a newer day is on its way; don't draw a stale one
+    // Every product loaded for the current day. The fallback keeps a
+    // pre-existing single `outlook` drawing while the four-product set is
+    // still arriving (e.g. right after launch).
+    let products: Vec<&radar_core::outlooks::Outlook> = if app.state.outlooks.is_empty() {
+        app.state.outlook.iter().collect()
+    } else {
+        app.state.outlooks.iter().collect()
+    };
+    let products: Vec<&radar_core::outlooks::Outlook> = products
+        .into_iter()
+        .filter(|o| o.day == app.state.outlook_day)
+        .collect();
+    if products.is_empty() {
+        return; // a newer day/product is on its way; don't draw a stale one
     }
     let fill_alpha = (app.state.outlook_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
 
-    for f in o.sorted_features() {
-        let stroke = egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]);
-        for poly in &f.polygons {
-            let rings: Vec<Vec<egui::Pos2>> = poly
-                .iter()
-                .map(|ring| project_ring(ring, view, origin))
-                .collect();
-            if fills {
-                let fill = egui::Color32::from_rgba_unmultiplied(
-                    f.fill[0], f.fill[1], f.fill[2], fill_alpha,
-                );
-                if let Some(mesh) = triangulate(&rings, fill) {
-                    painter.add(egui::Shape::mesh(mesh));
-                }
-            } else {
-                // The hovered category draws bolder so pointing at the map
-                // tells you which band you are in.
-                let hovered = app.state.outlook_hover == Some(f.dn);
-                let width = if hovered { 3.5 } else { 1.6 };
-                for pts in &rings {
-                    if pts.len() >= 3 {
-                        painter.add(egui::Shape::closed_line(
-                            pts.clone(),
-                            egui::Stroke::new(width, stroke),
-                        ));
+    for o in products {
+        // ALL draws every product together; picking one type narrows the
+        // map to that product (the legend/discussion still follow it).
+        if !app.state.outlook_all_types && o.ty != app.state.outlook_type {
+            continue;
+        }
+        let categorical = o.ty == radar_core::outlooks::OutlookType::Categorical;
+        if fills && !categorical {
+            continue;
+        }
+        let selected = o.ty == app.state.outlook_type;
+        for f in o.sorted_features() {
+            let stroke = egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]);
+            for poly in &f.polygons {
+                let rings: Vec<Vec<egui::Pos2>> = poly
+                    .iter()
+                    .map(|ring| project_ring(ring, view, origin))
+                    .collect();
+                if fills {
+                    let fill = egui::Color32::from_rgba_unmultiplied(
+                        f.fill[0], f.fill[1], f.fill[2], fill_alpha,
+                    );
+                    if let Some(mesh) = triangulate(&rings, fill) {
+                        painter.add(egui::Shape::mesh(mesh));
+                    }
+                } else {
+                    // Only the selected product's features react to hover
+                    // (the same DN appears in every product's band set).
+                    let hovered = selected && app.state.outlook_hover == Some(f.dn);
+                    let width = if hovered {
+                        3.5
+                    } else if categorical {
+                        1.6
+                    } else {
+                        1.4
+                    };
+                    for pts in &rings {
+                        if pts.len() >= 3 {
+                            painter.add(egui::Shape::closed_line(
+                                pts.clone(),
+                                egui::Stroke::new(width, stroke),
+                            ));
+                        }
                     }
                 }
             }
@@ -2454,52 +2497,95 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
         .collect();
     let pad = egui::vec2(24.0, 12.0);
     let gap = 8.0;
-    let total_w: f32 =
-        galleys.iter().map(|g| g.size().x + pad.x).sum::<f32>() + gap * (galleys.len() - 1) as f32;
     let top = rect.min.y + 8.0;
     let row_h = galleys.iter().map(|g| g.size().y).fold(0.0_f32, f32::max) + pad.y;
-    let mut x = (rect.center().x - total_w / 2.0).max(rect.min.x + 4.0);
+    // Lay the pills out into rows that fit, then centre each row. On a phone
+    // the full set cannot fit on one line; the old code restarted wrapped
+    // rows at the left edge, which stranded the lone LIVE pill top-left.
+    let avail = (rect.width() - 8.0).max(1.0);
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut row: Vec<usize> = Vec::new();
+    let mut row_w = 0.0;
+    for (i, g) in galleys.iter().enumerate() {
+        let w = g.size().x + pad.x;
+        let extra = if row.is_empty() { w } else { w + gap };
+        if !row.is_empty() && row_w + extra > avail {
+            rows.push(std::mem::take(&mut row));
+            row_w = 0.0;
+        }
+        row_w += if row.is_empty() { w } else { w + gap };
+        row.push(i);
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+
     let mut y = top;
     let mut rects: Vec<(BadgeKind, egui::Rect)> = Vec::new();
-    for (badge, galley) in badges.iter().zip(galleys.iter()) {
-        let size = galley.size();
-        let w = size.x + pad.x;
-        // Narrow screens: wrap the badge row instead of running off the edge.
-        if x + w > rect.max.x - 4.0 && x > rect.min.x + 4.0 {
-            x = rect.min.x + 4.0;
-            y += row_h + 6.0;
-        }
-        let bg = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, size.y + pad.y));
-        let top = y;
-        let hovered = app.top_badge_hovered == Some(badge.kind);
-        painter.rect_filled(bg, 7.0, egui::Color32::from_black_alpha(200));
-        if badge.pulse {
-            // Flash: a glow ring whose width and opacity follow the phase.
-            painter.rect_stroke(
-                bg.expand(1.0 + 2.0 * flash),
-                9.0,
-                egui::Stroke::new(2.0, badge.color.gamma_multiply(0.35 + 0.5 * flash)),
-                egui::StrokeKind::Outside,
+    for row in &rows {
+        let base_total: f32 = row
+            .iter()
+            .map(|&i| galleys[i].size().x + pad.x)
+            .sum::<f32>()
+            + gap * row.len().saturating_sub(1) as f32;
+        // On the phone the chips used to sit in a centred block, leaving a
+        // wide strip of empty map at the right edge. Stretch the chips of
+        // multi-chip rows to fill the map width (text stays centred in its
+        // pill); a lone LIVE / GO LIVE pill stays centred.
+        let stretch = cfg!(target_os = "android") && row.len() > 1;
+        let share = if stretch {
+            ((avail - base_total).max(0.0)) / row.len() as f32
+        } else {
+            0.0
+        };
+        let total = base_total + share * row.len() as f32;
+        let mut x = if stretch {
+            rect.min.x + 4.0
+        } else {
+            (rect.center().x - total / 2.0).max(rect.min.x + 4.0)
+        };
+        for &i in row {
+            let badge = &badges[i];
+            let galley = &galleys[i];
+            let size = galley.size();
+            let w = size.x + pad.x + share;
+            let bg = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, size.y + pad.y));
+            let hovered = app.top_badge_hovered == Some(badge.kind);
+            painter.rect_filled(bg, 7.0, egui::Color32::from_black_alpha(230));
+            if badge.pulse {
+                // Flash: a glow ring whose width and opacity follow the phase.
+                painter.rect_stroke(
+                    bg.expand(1.0 + 2.0 * flash),
+                    9.0,
+                    egui::Stroke::new(2.0, badge.color.gamma_multiply(0.35 + 0.5 * flash)),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if !hovered {
+                painter.rect_stroke(
+                    bg,
+                    7.0,
+                    egui::Stroke::new(
+                        if badge.pulse { 1.8 } else { 1.0 },
+                        badge.color.gamma_multiply(0.5),
+                    ),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            let text_x = if stretch {
+                bg.center().x - size.x / 2.0
+            } else {
+                bg.min.x + pad.x / 2.0
+            };
+            painter.galley(
+                egui::pos2(text_x, y + pad.y / 2.0),
+                (*galley).clone(),
+                badge.color,
             );
+            rects.push((badge.kind, bg));
+            x += w + gap;
         }
-        if !hovered {
-            painter.rect_stroke(
-                bg,
-                7.0,
-                egui::Stroke::new(
-                    if badge.pulse { 1.8 } else { 1.0 },
-                    badge.color.gamma_multiply(0.5),
-                ),
-                egui::StrokeKind::Outside,
-            );
-        }
-        painter.galley(
-            egui::pos2(bg.min.x + pad.x / 2.0, top + pad.y / 2.0),
-            (*galley).clone(),
-            badge.color,
-        );
-        rects.push((badge.kind, bg));
-        x += size.x + pad.x + gap;
+        y += row_h + 6.0;
     }
 
     // Interactive pills: alerts opens the browser, forecast opens the window.
@@ -2706,7 +2792,44 @@ fn warning_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormAp
 /// How close (viewport px) the pointer must be to an SPC outline for the
 /// hover emphasis, the brief tooltip and the click target: all three share
 /// one reach, so what lights up is what a click will open.
-pub(super) const OUTLOOK_BORDER_PX: f64 = 8.0;
+pub(super) const OUTLOOK_BORDER_PX: f64 = if cfg!(target_os = "android") {
+    // A fingertip is much wider than a mouse pointer: 40 px (~18 dp on the
+    // Pixel) makes the thin SPC outlines a realistic touch target without
+    // swallowing half the map. Desktop keeps the precise 8 px reach.
+    40.0
+} else {
+    8.0
+};
+
+/// Which displayed product's outline is under a click. In ALL mode every
+/// loaded product is eligible; otherwise only the selected product.
+/// Prefers the selected product, then the others in map draw order.
+pub(super) fn outlook_hit<'a>(
+    app: &'a StormApp,
+    view: &MapView,
+    lon: f64,
+    lat: f64,
+) -> Option<(
+    &'a radar_core::outlooks::Outlook,
+    &'a radar_core::outlooks::OutlookFeature,
+)> {
+    let day = app.state.outlook_day;
+    let selected = app.state.outlook_type;
+    let mut products: Vec<&radar_core::outlooks::Outlook> = if app.state.outlooks.is_empty() {
+        app.state.outlook.iter().collect()
+    } else {
+        app.state.outlooks.iter().collect()
+    };
+    products.retain(|o| o.day == day && (app.state.outlook_all_types || o.ty == selected));
+    // Selected product first; then the rest.
+    products.sort_by_key(|o| o.ty != selected);
+    for o in products {
+        if let Some(f) = outlook_border_at(o, view, lon, lat, OUTLOOK_BORDER_PX) {
+            return Some((o, f));
+        }
+    }
+    None
+}
 
 /// Border of the SPC risk area under the pointer: a click within
 /// `tolerance_px` of an outline opens that day's discussion. Risk areas nest,
@@ -3020,6 +3143,67 @@ fn draw_bubble(
     rect
 }
 
+/// The device's GPS fix: a blue dot with a white collar and a soft halo.
+/// Drawn above the radar so "where am I" never disappears into the echoes,
+/// but below the user's pins (a marker at the same spot stays visible).
+fn draw_gps_position(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
+    let Some((lat, lon)) = app.state.gps_fix else {
+        return;
+    };
+    if !lat.is_finite() || !lon.is_finite() {
+        return;
+    }
+    let (w, h) = (view.width() as f64, view.height() as f64);
+    let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+    if vx < -40.0 || vy < -40.0 || vx > w + 40.0 || vy > h + 40.0 {
+        return;
+    }
+    let at = origin + egui::vec2(vx as f32, vy as f32);
+    let blue = egui::Color32::from_rgb(66, 148, 255);
+    let now = painter.ctx().input(|i| i.time) as f32;
+    let breath = 0.5 + 0.5 * (now * 2.4).sin();
+    // Soft breathing glow plus an outward ring that fades as it expands: the
+    // classic live-location beacon, readable over any radar color.
+    painter.circle_filled(at, 26.0, blue.gamma_multiply(0.05 + 0.05 * breath));
+    painter.circle_filled(
+        at,
+        15.0 + 3.0 * breath,
+        blue.gamma_multiply(0.12 + 0.10 * breath),
+    );
+    let phase = (now * 0.8).fract();
+    painter.circle_stroke(
+        at,
+        11.0 + 22.0 * phase,
+        egui::Stroke::new(
+            2.0,
+            blue.gamma_multiply(0.55 * (1.0 - phase) * (0.6 + 0.4 * breath)),
+        ),
+    );
+    painter.circle_filled(at, 11.0, egui::Color32::from_black_alpha(110));
+    painter.circle_stroke(at, 9.0, egui::Stroke::new(3.0, egui::Color32::WHITE));
+    painter.circle_filled(at, 5.5, blue);
+    painter
+        .ctx()
+        .request_repaint_after(std::time::Duration::from_millis(40));
+
+    let label_at = egui::pos2(at.x + 15.0, at.y - 2.0);
+    let font = egui::FontId::proportional(11.0);
+    painter.text(
+        label_at + egui::vec2(1.0, 1.0),
+        egui::Align2::LEFT_CENTER,
+        "You",
+        font.clone(),
+        egui::Color32::from_black_alpha(190),
+    );
+    painter.text(
+        label_at,
+        egui::Align2::LEFT_CENTER,
+        "You",
+        font,
+        egui::Color32::WHITE,
+    );
+}
+
 /// User-placed pins: amber dot + ring with a pill-backed label. Drawn above
 /// radar, outlooks, warnings, tracks and site labels (below only the measure
 /// tool) so dropped markers are never buried; the dark pill keeps the label
@@ -3291,7 +3475,14 @@ fn draw_attribution(painter: &egui::Painter, rect: egui::Rect, spc: bool) {
         "© OpenStreetMap contributors"
     };
     let font = egui::FontId::proportional(10.0);
-    let pos = egui::pos2(rect.right() - 6.0, rect.bottom() - 4.0);
+    // Clear the bottom chip row: on Android the GPS button stacks above the
+    // Controls chip, so lift it past both.
+    let lift = if cfg!(target_os = "android") {
+        104.0
+    } else {
+        46.0
+    };
+    let pos = egui::pos2(rect.right() - 6.0, rect.bottom() - lift);
     painter.text(
         pos,
         egui::Align2::RIGHT_BOTTOM,

@@ -29,7 +29,7 @@ pub(super) fn forecast_needs_refresh(
 }
 
 /// The window (no-op while closed).
-pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
+pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if !app.state.forecast_open {
         return;
     }
@@ -39,7 +39,8 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
     ctx.request_repaint_after(std::time::Duration::from_secs(30));
     request_forecast_if_stale(app);
 
-    let scale = app.sidebar_scale.max(1.0);
+    let fill = cfg!(target_os = "android");
+    let scale = super::big_text_scale(app);
     let screen = ctx.content_rect().size();
     let size = super::popup_size(ctx, scale, 580.0, 520.0);
     let max_h = super::popup_max_height(ctx, scale);
@@ -56,200 +57,229 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp) {
     let mut pick_from_map = false;
     let mut clear_point = false;
 
-    egui::Window::new("NWS forecast")
+    let mut window = egui::Window::new("NWS forecast")
         .id(egui::Id::new("stormscope.forecast"))
-        .open(&mut open)
-        .default_size(size)
-        .max_height(max_h)
-        .max_width((screen.x - 16.0).max(200.0))
-        .min_size(min_size)
         // Centered *by its top-left corner*, not by a pivot: egui's pivot
         // is for anchored areas, and with a center pivot every size change
         // also shifts the stored position — which fights the resize drag.
         .default_pos(super::centered_popup_pos(ctx, size))
-        .resizable(true)
-        .show(ctx, |ui| {
-            super::apply_text_scale(ui, scale);
+        .max_width((screen.x - 16.0).max(200.0))
+        .min_size(min_size);
+    #[cfg(target_os = "android")]
+    if fill {
+        window = window.title_bar(false);
+    }
+    window = if fill {
+        // Same treatment as the AI window: fill the map area edge to edge,
+        // no dragging or resizing, with the roomier phone type scale.
+        window
+            .fixed_rect(area)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(area)
+    } else {
+        window.default_size(size).max_height(max_h).resizable(true)
+    };
+    let window = window.open(&mut open);
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if fill {
+            close_requested |= super::phone_header(ui, "NWS forecast");
+        }
+        super::apply_text_scale(ui, scale);
 
-            // Which point this forecast is for.
-            ui.horizontal_wrapped(|ui| {
-                let following_station = app.state.forecast_point.is_none();
-                if ui
-                    .selectable_label(following_station, format!("{site_id} (station)"))
-                    .on_hover_text("Forecast for the selected radar site's grid point")
-                    .clicked()
-                    && !following_station
-                {
-                    clear_point = true;
-                    refetch = true;
-                }
-                let picking = app.state.forecast_pick_mode;
-                if ui
-                    .selectable_label(picking, "Pick on map…")
-                    .on_hover_text("Then click anywhere on the map to forecast that spot")
-                    .clicked()
-                {
-                    pick_from_map = !picking;
-                }
-                if let Some((lat, lon)) = app.state.forecast_point {
-                    ui.label(
-                        egui::RichText::new(format!("· pinned at {lat:.3}, {lon:.3}"))
-                            .weak()
-                            .small(),
-                    );
-                }
-                if ui
-                    .small_button("Refresh now")
-                    .on_hover_text("Fetch the latest forecast and observation")
-                    .clicked()
-                {
-                    app.state.forecast_requested = None;
-                    app.state.forecast_fetched_at = None;
-                    refetch = true;
-                }
-            });
-            if app.state.forecast_pick_mode {
+        // Which point this forecast is for.
+        ui.horizontal_wrapped(|ui| {
+            let following_station = app.state.forecast_point.is_none();
+            if ui
+                .selectable_label(following_station, format!("{site_id} (station)"))
+                .on_hover_text("Forecast for the selected radar site's grid point")
+                .clicked()
+                && !following_station
+            {
+                clear_point = true;
+                refetch = true;
+            }
+            let picking = app.state.forecast_pick_mode;
+            if ui
+                .selectable_label(picking, "Pick on map…")
+                .on_hover_text("Then click anywhere on the map to forecast that spot")
+                .clicked()
+            {
+                pick_from_map = !picking;
+            }
+            if let Some((lat, lon)) = app.state.forecast_point {
+                let source = if app.state.forecast_point_gps {
+                    "GPS"
+                } else {
+                    "pinned at"
+                };
                 ui.label(
-                    egui::RichText::new("Click anywhere on the map to forecast that point.")
-                        .strong()
+                    egui::RichText::new(format!("· {source} {lat:.3}, {lon:.3}"))
+                        .weak()
                         .small(),
                 );
             }
-            ui.separator();
-
-            // --- Current conditions -------------------------------------
-            match app.state.observation.as_ref() {
-                Some(o) => current_conditions_ui(ui, o),
-                None => {
-                    ui.label(
-                        egui::RichText::new("Current conditions: loading…")
-                            .weak()
-                            .small(),
-                    );
-                }
+            if ui
+                .small_button("Refresh now")
+                .on_hover_text("Fetch the latest forecast and observation")
+                .clicked()
+            {
+                app.state.forecast_requested = None;
+                app.state.forecast_fetched_at = None;
+                refetch = true;
             }
-            ui.separator();
+        });
+        if app.state.forecast_pick_mode {
+            ui.label(
+                egui::RichText::new("Click anywhere on the map to forecast that point.")
+                    .strong()
+                    .small(),
+            );
+        }
+        ui.separator();
 
-            match app.state.forecast.as_ref() {
-                None => {
-                    ui.label(
-                        egui::RichText::new(if app.state.forecast_requested.is_some() {
-                            "Loading forecast…"
-                        } else {
-                            "No forecast loaded yet."
-                        })
-                        .weak(),
-                    );
-                }
-                Some(fc) => {
-                    let mut meta = Vec::new();
-                    if !fc.place.is_empty() {
-                        ui.heading(&fc.place);
+        // --- Current conditions -------------------------------------
+        match app.state.observation.as_ref() {
+            Some(o) => current_conditions_ui(ui, o),
+            None => {
+                ui.label(
+                    egui::RichText::new("Current conditions: loading…")
+                        .weak()
+                        .small(),
+                );
+            }
+        }
+        ui.separator();
+
+        match app.state.forecast.as_ref() {
+            None => {
+                ui.label(
+                    egui::RichText::new(if app.state.forecast_requested.is_some() {
+                        "Loading forecast…"
                     } else {
-                        ui.heading("Forecast");
-                    }
-                    if !fc.office.is_empty() {
-                        meta.push(format!("NWS grid {}", fc.office));
-                    }
-                    if !fc.grid.is_empty() {
-                        meta.push(fc.grid.clone());
-                    }
-                    if let Some(u) = fc.updated {
-                        meta.push(format!("updated {}", crate::timefmt::fmt_central(&u)));
-                    }
-                    if !meta.is_empty() {
-                        ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
-                    }
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .max_height((ui.available_height() - 12.0 * scale).max(120.0))
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            if fc.periods.is_empty() {
-                                ui.label(
-                                    egui::RichText::new(
-                                        "The API returned no periods for this point.",
-                                    )
+                        "No forecast loaded yet."
+                    })
+                    .weak(),
+                );
+            }
+            Some(fc) => {
+                let mut meta = Vec::new();
+                if !fc.place.is_empty() {
+                    ui.heading(&fc.place);
+                } else {
+                    ui.heading("Forecast");
+                }
+                if !fc.office.is_empty() {
+                    meta.push(format!("NWS grid {}", fc.office));
+                }
+                if !fc.grid.is_empty() {
+                    meta.push(fc.grid.clone());
+                }
+                if let Some(u) = fc.updated {
+                    meta.push(format!("updated {}", crate::timefmt::fmt_central(&u)));
+                }
+                if !meta.is_empty() {
+                    ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+                }
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height((ui.available_height() - 12.0 * scale).max(120.0))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if fc.periods.is_empty() {
+                            ui.label(
+                                egui::RichText::new("The API returned no periods for this point.")
                                     .weak(),
-                                );
-                                return;
-                            }
-                            for (i, p) in fc.periods.iter().enumerate() {
-                                let temp = if p.temperature.is_finite() {
-                                    format!("{:.0}°{}", p.temperature, p.unit)
-                                } else {
-                                    "—".to_string()
-                                };
-                                let subtitle = if p.wind.is_empty() {
-                                    p.short.clone()
-                                } else if p.short.is_empty() {
-                                    p.wind.clone()
-                                } else {
-                                    format!("{} · {}", p.short, p.wind)
-                                };
-                                let title_short = format!("{} — {temp}", p.name);
-                                let title_full = if subtitle.is_empty() {
-                                    title_short.clone()
-                                } else {
-                                    format!("{title_short} · {subtitle}")
-                                };
-                                // CollapsingHeader draws its title on one line
-                                // with TextWrapMode::Extend: it does not wrap,
-                                // it just runs past the window and gets clipped
-                                // ("…Showers · S 5 mj" on a phone). Keep the
-                                // full line only when it actually fits; otherwise
-                                // use the short title and move the tail into the
-                                // body, which does wrap.
-                                let reserve = ui.spacing().indent
-                                    + ui.spacing().button_padding.x
-                                    + 6.0 * scale;
-                                let button_font = ui
-                                    .style()
-                                    .text_styles
-                                    .get(&egui::TextStyle::Button)
-                                    .cloned()
-                                    .unwrap_or(egui::FontId::proportional(14.0));
-                                let fits = ui.ctx().fonts_mut(|f| {
-                                    f.layout_no_wrap(
-                                        title_full.clone(),
-                                        button_font,
-                                        egui::Color32::WHITE,
-                                    )
-                                    .size()
-                                    .x
-                                }) <= (ui.available_width() - reserve).max(0.0);
-                                let title = if fits { title_full } else { title_short };
-                                egui::CollapsingHeader::new(title)
-                                    .id_salt(("forecast.period", i))
-                                    .default_open(i == 0)
-                                    .show(ui, |ui| {
-                                        if !fits && !subtitle.is_empty() {
-                                            ui.label(egui::RichText::new(&subtitle).weak());
-                                            ui.add_space(2.0 * scale);
-                                        }
-                                        if p.detailed.is_empty() {
-                                            ui.label(egui::RichText::new(&p.short).weak());
-                                        } else {
-                                            for para in p.detailed.split('\n') {
-                                                if !para.trim().is_empty() {
-                                                    ui.label(para);
-                                                }
+                            );
+                            return;
+                        }
+                        for (i, p) in fc.periods.iter().enumerate() {
+                            let temp = if p.temperature.is_finite() {
+                                format!("{:.0}°{}", p.temperature, p.unit)
+                            } else {
+                                "—".to_string()
+                            };
+                            let subtitle = if p.wind.is_empty() {
+                                p.short.clone()
+                            } else if p.short.is_empty() {
+                                p.wind.clone()
+                            } else {
+                                format!("{} · {}", p.short, p.wind)
+                            };
+                            let title_short = format!("{} — {temp}", p.name);
+                            let title_full = if subtitle.is_empty() {
+                                title_short.clone()
+                            } else {
+                                format!("{title_short} · {subtitle}")
+                            };
+                            // CollapsingHeader draws its title on one line
+                            // with TextWrapMode::Extend: it does not wrap,
+                            // it just runs past the window and gets clipped
+                            // ("…Showers · S 5 mj" on a phone). Keep the
+                            // full line only when it actually fits; otherwise
+                            // use the short title and move the tail into the
+                            // body, which does wrap.
+                            let reserve =
+                                ui.spacing().indent + ui.spacing().button_padding.x + 6.0 * scale;
+                            let button_font = ui
+                                .style()
+                                .text_styles
+                                .get(&egui::TextStyle::Button)
+                                .cloned()
+                                .unwrap_or(egui::FontId::proportional(14.0));
+                            let fits = ui.ctx().fonts_mut(|f| {
+                                f.layout_no_wrap(
+                                    title_full.clone(),
+                                    button_font,
+                                    egui::Color32::WHITE,
+                                )
+                                .size()
+                                .x
+                            }) <= (ui.available_width() - reserve).max(0.0);
+                            let title = if fits { title_full } else { title_short };
+                            egui::CollapsingHeader::new(title)
+                                .id_salt(("forecast.period", i))
+                                .default_open(i == 0)
+                                .show(ui, |ui| {
+                                    if !fits && !subtitle.is_empty() {
+                                        ui.label(egui::RichText::new(&subtitle).weak());
+                                        ui.add_space(2.0 * scale);
+                                    }
+                                    if p.detailed.is_empty() {
+                                        ui.label(egui::RichText::new(&p.short).weak());
+                                    } else {
+                                        for para in p.detailed.split('\n') {
+                                            if !para.trim().is_empty() {
+                                                ui.label(para);
                                             }
                                         }
-                                    });
-                            }
-                        });
-                }
+                                    }
+                                });
+                        }
+                    });
             }
-            super::fill_popup_height(ui);
-        });
+        }
+        super::fill_popup_height(ui);
+    });
 
-    app.state.forecast_open = open;
     if pick_from_map {
+        // Arm the pick and get out of the way: on a phone the window fills
+        // the map, and even on desktop the target is easier to hit with the
+        // map exposed. The map click reopens it and requests that point.
         app.state.forecast_pick_mode = true;
+        app.state.forecast_reopen_after_pick = true;
+        open = false;
     }
+    if close_requested {
+        open = false;
+    }
+    app.state.forecast_open = open;
     if clear_point {
         app.state.forecast_point = None;
+        app.state.forecast_point_gps = false;
         app.state.forecast_site.clear(); // force the refetch below
     }
     if refetch {

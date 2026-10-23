@@ -436,6 +436,15 @@ impl StormApp {
         cc.egui_ctx.all_styles_mut(|style| {
             style.interaction.resize_grab_radius_side = 14.0;
             style.interaction.resize_grab_radius_corner = 18.0;
+            // A step darker than egui's stock dark theme (27): the map and
+            // radar colors carry the screen, the chrome should recede.
+            let mut visuals = style.visuals.clone();
+            visuals.panel_fill = egui::Color32::from_gray(18);
+            visuals.window_fill = egui::Color32::from_gray(18);
+            visuals.extreme_bg_color = egui::Color32::from_gray(6);
+            visuals.widgets.noninteractive.bg_fill = egui::Color32::from_gray(18);
+            visuals.widgets.noninteractive.weak_bg_fill = egui::Color32::from_gray(18);
+            style.visuals = visuals;
             // Android: a window's ✕ is sized from the Heading font's row
             // height — 18 pt is a ~24 dp target, far too small for a finger.
             // A bigger Heading grows the tap square (and titles) to ~35 dp.
@@ -795,9 +804,26 @@ impl StormApp {
                         .issue
                         .map(|t| crate::timefmt::fmt_central(&t))
                         .unwrap_or_else(|| "?".into());
-                    log::debug!("outlook day {} loaded (issued {label})", o.day);
-                    self.state.outlook = Some(o);
-                    self.pump_ai_data();
+                    log::debug!(
+                        "outlook day {} {} loaded (issued {label})",
+                        o.day,
+                        o.ty.label()
+                    );
+                    if o.day == self.state.outlook_day {
+                        // One slot per product; a refresh replaces its own
+                        // type without dropping the other three.
+                        self.state
+                            .outlooks
+                            .retain(|x| !(x.day == o.day && x.ty == o.ty));
+                        self.state.outlooks.push(o);
+                        self.state.outlook = self
+                            .state
+                            .outlooks
+                            .iter()
+                            .find(|x| x.ty == self.state.outlook_type)
+                            .cloned();
+                        self.pump_ai_data();
+                    }
                 }
                 DataMsg::Status(s) => self.state.status_text = s,
                 DataMsg::Error(e) => {
@@ -1113,22 +1139,24 @@ impl StormApp {
     /// Build a fresh snapshot and ask the AI. `question` = None writes the
     /// marker brief; Some(_) answers the spotter's question against the same
     /// data. One request chain at a time (a LOOK round may add one more call).
+    /// What "Write brief" asks for: the GPS fix is a sample, so a brief is
+    /// valid (and useful) on a phone with no pins at all.
+    fn brief_ask(&self) -> String {
+        let markers = self.state.markers.len();
+        let pins = format!("{} marker{}", markers, if markers == 1 { "" } else { "s" });
+        match (self.state.gps_fix.is_some(), markers) {
+            (true, 0) => "Write a brief for my current GPS location.".into(),
+            (true, _) => format!("Write a brief for my current GPS location and my {pins}."),
+            (false, _) => format!("Write a brief for my {pins}."),
+        }
+    }
+
     pub fn ai_request(&mut self, question: Option<String>) {
         if self.state.ai_pending {
             return;
         }
         let asked = question.filter(|q| !q.trim().is_empty());
-        let shown = asked.clone().unwrap_or_else(|| {
-            format!(
-                "Write a brief for my {} marker{}.",
-                self.state.markers.len(),
-                if self.state.markers.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            )
-        });
+        let shown = asked.clone().unwrap_or_else(|| self.brief_ask());
         self.ai_push(AiRole::User, shown);
         self.state.ai_question_ctx = asked.clone();
         self.state.ai_look_depth = 0;
@@ -1310,6 +1338,7 @@ impl StormApp {
             self.state.forecast = None;
             self.state.observation = None;
             self.state.forecast_point = Some((point.lat, point.lon));
+            self.state.forecast_point_gps = false;
             self.state.forecast_requested = Some((point.lat, point.lon));
             let _ = self.tx.send(DataCmd::LoadForecast(point.lat, point.lon));
             waiting.push("forecast".into());
@@ -1537,9 +1566,13 @@ impl StormApp {
     /// Build the snapshot (optionally with the LOOK samples), compose the
     /// prompts and send the request. Callers own the pending flags.
     fn send_ai(&mut self, question: Option<String>, look: Vec<LookPointSample>) {
-        if self.state.markers.is_empty() {
+        // A GPS fix is a sample too: the brief always covers where the
+        // spotter is, so no pin is needed on a phone.
+        if self.state.markers.is_empty() && self.state.gps_fix.is_none() {
             self.state.ai_pending = false;
-            self.ai_note("Place at least one marker on the map first.".into());
+            self.ai_note(
+                "Still waiting for a GPS fix — place a marker, or try the GPS button.".into(),
+            );
             return;
         }
         let Some(site) = radar_core::sites::site(&self.state.site_id) else {
@@ -1609,6 +1642,7 @@ impl StormApp {
             lsrs: &self.state.lsrs,
             forecast: self.state.forecast.as_ref(),
             forecast_point: self.state.forecast_point,
+            gps_fix: self.state.gps_fix,
             forecast_age_min: self
                 .state
                 .forecast_fetched_at
@@ -1678,15 +1712,12 @@ impl StormApp {
             .map(str::trim)
             .filter(|q| !q.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| {
-                format!(
-                    "Write a brief for my {} marker(s).",
-                    self.state.markers.len()
-                )
-            });
+            .unwrap_or_else(|| self.brief_ask());
         user.push_str(&format!(
             "\n\nThe Spotter's latest message: {asked_text}\n\
-             Answer it from this snapshot. Above all, SHOW it: include a MAP directive that puts \
+             Answer it from this snapshot. Write in plain English for a general audience: no \
+             radar acronyms, no data dumps; say what the weather means and when it matters. \
+             Above all, SHOW it: include a MAP directive that puts \
              the evidence on screen (focus the cell/couplet/hail core, switch product or tilt, \
              open the 3D pane or a cross-section, show the melting layer, mark what matters). \
              Keep it under 150 words unless the data demands more, keep the units, and still end \

@@ -77,6 +77,32 @@ pub fn set_system_bars_hidden(hidden: bool) {
     }));
 }
 
+/// Height of the soft keyboard in physical pixels (0 when it is closed).
+/// GameActivity receives the IME insets; MainActivity records the latest one
+/// and this reads it back for the AI window's bottom inset.
+pub fn ime_height_px() -> i32 {
+    let Some(app) = ANDROID_APP.get() else {
+        return 0;
+    };
+    let vm_ptr = app.vm_as_ptr() as usize;
+    let activity_ptr = app.activity_as_ptr() as usize;
+    let vm = unsafe { jni::JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) };
+    let res = vm.attach_current_thread(|env| {
+        // SAFETY: an unowned global reference to the Activity, valid for the
+        // lifetime of the AndroidApp (same pattern as `set_system_bars_hidden`).
+        let activity =
+            unsafe { jni::objects::JObject::from_raw(env, activity_ptr as jni::sys::jobject) };
+        let value = env.call_method(
+            &activity,
+            jni::jni_str!("stormscopeImeInset"),
+            jni::jni_sig!("()I"),
+            &[],
+        )?;
+        value.i()
+    });
+    res.unwrap_or(0)
+}
+
 /// Replay what Gboard committed since the previous frame into egui's event
 /// queue, and keep the IME visible exactly while a widget has focus.
 pub fn pump(ctx: &egui::Context, state: &mut AppState) {

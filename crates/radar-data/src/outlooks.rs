@@ -12,6 +12,7 @@ use radar_core::outlooks::{Outlook, OutlookFeature};
 
 const BASE: &str = "https://www.spc.noaa.gov/products/outlook";
 
+#[derive(Clone)]
 pub struct OutlookSource {
     client: reqwest::blocking::Client,
 }

@@ -26,7 +26,7 @@ const TOT_HIT_PX: f64 = 14.0;
 ///
 /// The request gate runs first and independently: the map overlay needs the
 /// data even while the window stays shut.
-pub fn totals_window(ctx: &egui::Context, app: &mut StormApp) {
+pub fn totals_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if app.state.show_totals || app.state.totals_open {
         // Keep the staleness timer alive while nothing else animates.
         ctx.request_repaint_after(std::time::Duration::from_secs(30));
@@ -35,62 +35,94 @@ pub fn totals_window(ctx: &egui::Context, app: &mut StormApp) {
     if !app.state.totals_open {
         return;
     }
+    // The window fills the pane; the floating map-controls popup would sit
+    // on top of it (windows paint in call order) and hide the table.
+    app.state.map_controls_open = false;
 
-    let scale = app.sidebar_scale.max(1.0);
+    let fill = cfg!(target_os = "android");
+    let scale = super::big_text_scale(app);
+    let screen = ctx.content_rect().size();
     let size = super::popup_size(ctx, scale, 560.0, 500.0);
     let max_h = super::popup_max_height(ctx, scale);
+    // A phone is narrower than the 420 pt desktop minimum; clamping keeps the
+    // window (and its table) on screen instead of running off the right edge.
+    let min_size = egui::vec2(
+        (420.0 * scale).min((screen.x - 24.0).max(200.0)),
+        (220.0 * scale).min((screen.y - 90.0).max(160.0)),
+    );
     let mut open = app.state.totals_open;
     let site_id = app.state.site_id.clone();
 
-    egui::Window::new("Rain & snow totals")
+    let mut window = egui::Window::new("Rain & snow totals")
         .id(egui::Id::new("stormscope.totals"))
-        .open(&mut open)
-        .default_size(size)
-        .max_height(max_h)
-        .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
-        // Centered by its top-left corner (a pivot fights the resize drag).
+        // Centered *by its top-left corner*, not by a pivot: egui's pivot
+        // is for anchored areas, and with a center pivot every size change
+        // also shifts the stored position — which fights the resize drag.
         .default_pos(super::centered_popup_pos(ctx, size))
-        .resizable(true)
-        .show(ctx, |ui| {
-            super::apply_text_scale(ui, scale);
-            ui.label(
-                egui::RichText::new(format!("NWS station observations around {site_id}"))
-                    .weak()
-                    .small(),
-            );
-
-            if app.state.totals.is_empty() {
-                let msg = if app.state.totals_fetched_at.is_none() {
-                    "loading station totals…"
-                } else {
-                    "no observation series available in this station's area"
-                };
-                ui.label(egui::RichText::new(msg).weak());
-            } else {
-                let scroll_h = (ui.available_height() - 34.0 * scale).max(120.0);
-                egui::ScrollArea::vertical()
-                    .max_height(scroll_h)
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                    .show(ui, |ui| {
-                        for t in &app.state.totals {
-                            station_header(ui, t);
-                            station_rows(ui, t);
-                            ui.add_space(4.0 * scale);
-                            ui.separator();
-                        }
-                    });
-            }
-            ui.label(
-                egui::RichText::new(
-                    "source: api.weather.gov — NWS station observations (public data)",
-                )
+        .max_width((screen.x - 16.0).max(200.0))
+        .min_size(min_size);
+    #[cfg(target_os = "android")]
+    if fill {
+        window = window.title_bar(false);
+    }
+    window = if fill {
+        // Same treatment as the AI and forecast windows: fill the map area
+        // edge to edge, no dragging or resizing, with the phone type scale.
+        window
+            .fixed_rect(area)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(area)
+    } else {
+        window.default_size(size).max_height(max_h).resizable(true)
+    };
+    let window = window.open(&mut open);
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if fill {
+            close_requested |= super::phone_header(ui, "Rain & snow totals");
+        }
+        super::apply_text_scale(ui, scale);
+        ui.label(
+            egui::RichText::new(format!("NWS station observations around {site_id}"))
                 .weak()
                 .small(),
-            );
+        );
+
+        if app.state.totals.is_empty() {
+            let msg = if app.state.totals_fetched_at.is_none() {
+                "loading station totals…"
+            } else {
+                "no observation series available in this station's area"
+            };
+            ui.label(egui::RichText::new(msg).weak());
+        } else {
+            let scroll_h = (ui.available_height() - 34.0 * scale).max(120.0);
+            egui::ScrollArea::vertical()
+                .max_height(scroll_h)
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .show(ui, |ui| {
+                    for t in &app.state.totals {
+                        station_header(ui, t);
+                        station_rows(ui, t);
+                        ui.add_space(4.0 * scale);
+                        ui.separator();
+                    }
+                });
+        }
+        ui.label(
+            egui::RichText::new("source: api.weather.gov — NWS station observations (public data)")
+                .weak()
+                .small(),
+        );
+        if !fill {
             super::fill_popup_height(ui);
-        });
-    app.state.totals_open = open;
+        }
+    });
+    app.state.totals_open = open && !close_requested;
 }
 
 /// Station name/id and when its series was observed.

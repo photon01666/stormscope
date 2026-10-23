@@ -440,6 +440,22 @@ pub struct AppState {
     pub mcd_hover_at: f64,
     pub mcd_detail: Option<u32>,
 
+    // Device location (Android). The first fix selects the nearest radar
+    // and points the forecast at the user; the map chip can ask for a fresh
+    // one at any time.
+    pub gps_fix: Option<(f64, f64)>,
+    /// egui-clock time of the last JNI poll (throttles to once every couple
+    /// of seconds while a fix is outstanding).
+    pub gps_polled_at: f64,
+    /// The first fix has been applied (polling can stop).
+    pub gps_applied: bool,
+    /// A locate request is in flight (drives the chip's busy state).
+    pub gps_waiting: bool,
+    /// Soft-keyboard height in points (Android IME inset), polled while the
+    /// AI windows are open so the chat box can stay above the keyboard.
+    pub ime_inset_pt: f32,
+    pub ime_polled_at: f64,
+
     // NWS forecast (station by default, or a point picked on the map).
     pub forecast: Option<radar_core::forecast::Forecast>,
     /// Current conditions from the nearest reporting station (same point as
@@ -449,8 +465,14 @@ pub struct AppState {
     /// Armed by the window's "select on map" control: the next map click
     /// becomes the forecast point.
     pub forecast_pick_mode: bool,
+    /// The window was minimized to let a map pick happen; reopen it as soon
+    /// as the point lands.
+    pub forecast_reopen_after_pick: bool,
     /// Manually picked forecast point; `None` = follow the selected station.
     pub forecast_point: Option<(f64, f64)>,
+    /// The current point came from the device's GPS fix (not a manual pin),
+    /// so a fresh fix may move it.
+    pub forecast_point_gps: bool,
     /// Station id the request/result corresponds to, so the window can tell
     /// when a site switch needs a refetch.
     pub forecast_site: String,
@@ -525,8 +547,8 @@ pub struct AppState {
     /// pointer, with its beam height and distance from the radar.
     pub map_probe: bool,
     /// Draw the 0 °C level overlay: isohypses of the melting-layer product
-    /// (the CC bright band) every 2 kft. On by default — winter's answer to
-    /// "is that rain or snow where I live?".
+    /// (the CC bright band) every 2 kft. Off by default; one tap in the
+    /// layers menu when the rain/snow line matters.
     pub show_melting_layer: bool,
     /// Draw the MRMS multi-radar composite under the radar layer.
     pub show_mrms: bool,
@@ -587,12 +609,17 @@ pub struct AppState {
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
 
-    // SPC convective outlook overlay (Day 1/2/3 categorical risk areas).
+    // SPC convective outlook overlay. The map draws every product loaded for
+    // the selected day (categorical + tornado/wind/hail probabilities);
+    // `outlook` is the selected one used by the legend and discussion popup.
     pub outlook: Option<radar_core::outlooks::Outlook>,
+    pub outlooks: Vec<radar_core::outlooks::Outlook>,
     pub show_outlook: bool,
     pub outlook_day: u8,
-    /// Which outlook product the layer shows (categorical or probabilities).
+    /// Which outlook product the legend/discussion follows.
     pub outlook_type: radar_core::outlooks::OutlookType,
+    /// Draw all four products together (the selector's ALL, the default).
+    pub outlook_all_types: bool,
     /// Fill opacity of the outlook polygons (0..=1).
     pub outlook_opacity: f32,
     /// Open state of the SPC discussion popup, which risk area was clicked
@@ -663,6 +690,10 @@ pub struct AppState {
     /// Unpinned (default) the sidebar slides away and reappears when the
     /// pointer touches the left edge.
     pub sidebar_pinned: bool,
+    /// Set by the sidebar's Close button on touch: suppress the hover/wide-zone
+    /// reopen until the finger leaves the panel (otherwise the tap that closes
+    /// it also counts as a pointer still inside the panel).
+    pub sidebar_dismissed: bool,
 
     // Measure tool (RadarScope-style distance line + blue bubble).
     /// When true, map drags draw a measurement instead of panning.
@@ -819,7 +850,7 @@ impl Default for AppState {
             // setting) hid everything but the heaviest winter cores, so the
             // default sits at 10. Raise it from the map's Controls window
             // when summer clutter needs thinning.
-            min_dbz: 10.0,
+            min_dbz: 20.0,
             view: MapView {
                 center_lat: site.latitude,
                 center_lon: site.longitude,
@@ -862,10 +893,18 @@ impl Default for AppState {
             mcd_detail: None,
             forecast_open: false,
             forecast_pick_mode: false,
+            forecast_reopen_after_pick: false,
             forecast_point: None,
+            forecast_point_gps: false,
             forecast_site: String::new(),
             forecast_requested: None,
             forecast_fetched_at: None,
+            gps_fix: None,
+            gps_polled_at: f64::NEG_INFINITY,
+            gps_applied: false,
+            gps_waiting: false,
+            ime_inset_pt: 0.0,
+            ime_polled_at: f64::NEG_INFINITY,
             totals_open: false,
             totals: Vec::new(),
             totals_target: None,
@@ -906,12 +945,14 @@ impl Default for AppState {
             view3d_shell_preset: ShellPreset::Convective,
             view3d_probe: true,
             map_probe: true,
-            show_melting_layer: true,
+            show_melting_layer: false,
             show_mrms: layers.contains("mrms"),
             mrms_opacity: 0.55,
             mrms: None,
             mrms_requested_at: None,
-            show_lightning: layers.contains("lightning"),
+            // Lightning is on by default; STORMSCOPE_LAYERS still acts as an
+            // explicit layer whitelist when set.
+            show_lightning: layers.is_empty() || layers.contains("lightning"),
             lightning: Vec::new(),
             lightning_pending: false,
             lightning_requested_at: None,
@@ -934,11 +975,13 @@ impl Default for AppState {
             srm_shown_key: None,
             show_tracks: true,
             outlook: None,
+            outlooks: Vec::new(),
             // On by default with the outline-only look (fill 0.0): the risk
             // boundaries show over the radar without tinting the echoes.
             show_outlook: true,
             outlook_day: 1,
             outlook_type: radar_core::outlooks::OutlookType::Categorical,
+            outlook_all_types: true,
             outlook_opacity: 0.0,
             outlook_detail_open: false,
             outlook_detail_dn: None,
@@ -970,6 +1013,7 @@ impl Default for AppState {
             ime_last_text: None,
             add_marker_mode: false,
             sidebar_pinned: false,
+            sidebar_dismissed: false,
             measure_mode: false,
             measure_a: None,
             measure_b: None,

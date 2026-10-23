@@ -3,7 +3,7 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
-## Unreleased
+## v1.5.1 — 2026-10-23
 
 **Alerts**
 - The Alerts browser separates polygon alerts from zone/county alerts: the
@@ -17,8 +17,10 @@ log; entries start at the first public release.
   (SAPI on Windows; speech-dispatcher or espeak-ng on Linux), but only when
   the alert overlaps the current 2D map viewport around the selected station.
   The first sweep after launch or a station change is silent, speech is
-  serialized so a burst cannot talk over itself, and Settings has a
-  **Voice alerts** toggle plus a test button.
+  serialized so a burst cannot talk over itself, and Settings has a master
+  **Voice alerts** switch, separate **Tornado warnings**, **Severe
+  thunderstorm warnings**, **Watches** and **Other warnings** switches, and
+  a test button.
 
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,

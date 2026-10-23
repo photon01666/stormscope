@@ -2485,9 +2485,10 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             ui.separator();
             ui.label(egui::RichText::new("Voice alerts").strong());
             ui.add_space(4.0);
+            let mut changed = false;
             let mut enabled = app.state.voice_alerts;
             if ui
-                .checkbox(&mut enabled, "Read new warnings and watches aloud")
+                .checkbox(&mut enabled, "Read new alerts aloud")
                 .on_hover_text(
                     "Only alerts whose polygon overlaps the current map view \
                      around the selected station are read.",
@@ -2495,6 +2496,53 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                 .changed()
             {
                 app.state.voice_alerts = enabled;
+                changed = true;
+            }
+            ui.add_enabled_ui(app.state.voice_alerts, |ui| {
+                ui.indent("voice-alert-families", |ui| {
+                    let mut tornado = app.state.voice_tornado;
+                    if ui
+                        .checkbox(&mut tornado, "Tornado warnings")
+                        .on_hover_text("Tornado warnings; tornado watches use the Watches switch")
+                        .changed()
+                    {
+                        app.state.voice_tornado = tornado;
+                        changed = true;
+                    }
+                    let mut severe = app.state.voice_severe_thunderstorm;
+                    if ui
+                        .checkbox(&mut severe, "Severe thunderstorm warnings")
+                        .on_hover_text(
+                            "Severe thunderstorm warnings; watches use the Watches switch",
+                        )
+                        .changed()
+                    {
+                        app.state.voice_severe_thunderstorm = severe;
+                        changed = true;
+                    }
+                    let mut watches = app.state.voice_watches;
+                    if ui
+                        .checkbox(&mut watches, "Watches")
+                        .on_hover_text(
+                            "Tornado, severe thunderstorm, flash flood and other watches",
+                        )
+                        .changed()
+                    {
+                        app.state.voice_watches = watches;
+                        changed = true;
+                    }
+                    let mut other = app.state.voice_other_warnings;
+                    if ui
+                        .checkbox(&mut other, "Other warnings")
+                        .on_hover_text("Flash flood, winter storm, extreme wind and other warnings")
+                        .changed()
+                    {
+                        app.state.voice_other_warnings = other;
+                        changed = true;
+                    }
+                });
+            });
+            if changed {
                 app.state.persist_voice_alerts();
             }
             if ui

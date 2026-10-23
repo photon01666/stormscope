@@ -387,9 +387,13 @@ pub struct AppState {
     pub alerts_fast: Vec<radar_core::warnings::Warning>,
     /// Every active alert nationwide, for the alerts browser.
     pub all_alerts: Vec<radar_core::warnings::Warning>,
-    /// Read newly issued warnings and watches aloud (desktop builds only).
-    /// Persisted as `voice-alerts` in the config directory.
+    /// Master switch for spoken alerts (desktop builds only). Persisted in
+    /// `voice-alerts.json`; the per-family switches narrow it.
     pub voice_alerts: bool,
+    pub voice_tornado: bool,
+    pub voice_severe_thunderstorm: bool,
+    pub voice_watches: bool,
+    pub voice_other_warnings: bool,
     pub show_alerts: bool,
     /// Alerts browser visibility and which tab is showing.
     pub alerts_popup_open: bool,
@@ -812,6 +816,7 @@ impl Default for AppState {
             .or_else(|| std::env::var("STORMSCOPE_AI_KEY").ok())
             .or(ai.api_key.clone())
             .unwrap_or_default();
+        let voice = load_voice_alert_prefs();
         let site = radar_core::sites::site(radar_core::DEFAULT_SITE)
             .unwrap_or_else(|| radar_core::sites::SITES.first().expect("site catalog"));
         Self {
@@ -873,7 +878,11 @@ impl Default for AppState {
             alerts_popup_open: false,
             alerts_tab: AlertsTab::Station,
             alerts_filter: String::new(),
-            voice_alerts: load_voice_alerts(),
+            voice_alerts: voice.enabled,
+            voice_tornado: voice.tornado,
+            voice_severe_thunderstorm: voice.severe_thunderstorm,
+            voice_watches: voice.watches,
+            voice_other_warnings: voice.other_warnings,
             alerts_hover: None,
             alerts_map_stack: Vec::new(),
             alerts_fill: 0.45,
@@ -1100,16 +1109,60 @@ fn markers_path() -> std::path::PathBuf {
     config_dir().join("markers.json")
 }
 
-/// `~/.config/stormscope/voice-alerts`: "on" (the default) or "off". Kept as
-/// a tiny plain file rather than JSON because it is one switch.
+/// `~/.config/stormscope/voice-alerts.json`: the master switch plus one
+/// switch per alert family. The previous single-switch `voice-alerts` file is
+/// still read once for migration.
 fn voice_alerts_path() -> std::path::PathBuf {
+    config_dir().join("voice-alerts.json")
+}
+
+fn legacy_voice_alerts_path() -> std::path::PathBuf {
     config_dir().join("voice-alerts")
 }
 
-fn load_voice_alerts() -> bool {
-    match std::fs::read_to_string(voice_alerts_path()) {
-        Ok(text) => !matches!(text.trim(), "off" | "false" | "0"),
-        Err(_) => true,
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct VoiceAlertPrefs {
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default = "default_true")]
+    tornado: bool,
+    #[serde(default = "default_true")]
+    severe_thunderstorm: bool,
+    #[serde(default = "default_true")]
+    watches: bool,
+    #[serde(default = "default_true")]
+    other_warnings: bool,
+}
+
+impl Default for VoiceAlertPrefs {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tornado: true,
+            severe_thunderstorm: true,
+            watches: true,
+            other_warnings: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn load_voice_alert_prefs() -> VoiceAlertPrefs {
+    if let Ok(text) = std::fs::read_to_string(voice_alerts_path())
+        && let Ok(prefs) = serde_json::from_str(&text)
+    {
+        return prefs;
+    }
+    // Migrate the old plain on/off file, if the user had used it.
+    let enabled = std::fs::read_to_string(legacy_voice_alerts_path())
+        .map(|text| !matches!(text.trim(), "off" | "false" | "0"))
+        .unwrap_or(true);
+    VoiceAlertPrefs {
+        enabled,
+        ..Default::default()
     }
 }
 
@@ -1166,7 +1219,7 @@ fn load_markers() -> Vec<MapMarker> {
 }
 
 impl AppState {
-    /// Persist the spoken-alert switch (best-effort).
+    /// Persist the spoken-alert switches (best-effort).
     pub fn persist_voice_alerts(&self) {
         let path = voice_alerts_path();
         if let Some(parent) = path.parent()
@@ -1175,7 +1228,17 @@ impl AppState {
             log::warn!("voice alerts dir: {e}");
             return;
         }
-        let text = if self.voice_alerts { "on\n" } else { "off\n" };
+        let prefs = VoiceAlertPrefs {
+            enabled: self.voice_alerts,
+            tornado: self.voice_tornado,
+            severe_thunderstorm: self.voice_severe_thunderstorm,
+            watches: self.voice_watches,
+            other_warnings: self.voice_other_warnings,
+        };
+        let Ok(text) = serde_json::to_string_pretty(&prefs) else {
+            log::warn!("voice alerts serialize failed");
+            return;
+        };
         if let Err(e) = std::fs::write(&path, text) {
             log::warn!("voice alerts write: {e}");
         }

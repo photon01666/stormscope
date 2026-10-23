@@ -15,6 +15,15 @@ use std::sync::{OnceLock, mpsc};
 /// would talk for minutes.
 pub const MAX_BURST: usize = 3;
 
+/// The independent switches in Settings → Voice alerts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Category {
+    Tornado,
+    SevereThunderstorm,
+    Watch,
+    OtherWarning,
+}
+
 /// Products worth interrupting for: warnings, watches, and flash-flood
 /// emergencies. Advisories and statements are skipped.
 pub fn announceable(w: &Warning) -> bool {
@@ -22,6 +31,25 @@ pub fn announceable(w: &Warning) -> bool {
     (event.contains("Warning") || event.contains("Watch") || event.contains("Emergency"))
         && !event.contains("Advisory")
         && !event.contains("Statement")
+}
+
+/// Which Settings switch controls this alert. Watches win over their hazard
+/// family, so a Tornado Watch follows the Watches switch rather than the
+/// Tornado warnings switch.
+pub fn category(w: &Warning) -> Option<Category> {
+    if !announceable(w) {
+        return None;
+    }
+    let event = w.event.as_str();
+    Some(if event.contains("Watch") {
+        Category::Watch
+    } else if event.contains("Tornado") {
+        Category::Tornado
+    } else if event.contains("Severe Thunderstorm") {
+        Category::SevereThunderstorm
+    } else {
+        Category::OtherWarning
+    })
 }
 
 /// Whether the alert is in the current 2D map viewport.
@@ -295,6 +323,31 @@ mod tests {
         assert!(announceable(&warning("Flash Flood Emergency", "", "")));
         assert!(!announceable(&warning("Wind Advisory", "", "")));
         assert!(!announceable(&warning("Special Weather Statement", "", "")));
+    }
+
+    #[test]
+    fn categories_follow_the_settings_families() {
+        assert_eq!(
+            category(&warning("Tornado Warning", "", "")),
+            Some(Category::Tornado)
+        );
+        assert_eq!(
+            category(&warning("Tornado Watch", "", "")),
+            Some(Category::Watch)
+        );
+        assert_eq!(
+            category(&warning("Severe Thunderstorm Warning", "", "")),
+            Some(Category::SevereThunderstorm)
+        );
+        assert_eq!(
+            category(&warning("Severe Thunderstorm Watch", "", "")),
+            Some(Category::Watch)
+        );
+        assert_eq!(
+            category(&warning("Flash Flood Warning", "", "")),
+            Some(Category::OtherWarning)
+        );
+        assert_eq!(category(&warning("Wind Advisory", "", "")), None);
     }
 
     #[test]

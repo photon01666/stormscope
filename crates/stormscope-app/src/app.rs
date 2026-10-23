@@ -626,15 +626,25 @@ impl StormApp {
             .map(|site| (site.latitude, site.longitude));
         let mut fresh = Vec::new();
         for warning in &self.state.alerts {
-            if !crate::voice::announceable(warning) {
+            let Some(category) = crate::voice::category(warning) else {
                 continue;
-            }
-            // Seen ids are remembered even while muted, so turning voice
-            // alerts back on does not replay everything already on the map.
+            };
+            // Seen ids are remembered even while muted or for a disabled
+            // family, so turning a switch back on does not replay everything
+            // already on the map.
             if !self.voice_seen.insert(warning.id.clone()) {
                 continue;
             }
             if now < armed {
+                continue;
+            }
+            let enabled = match category {
+                crate::voice::Category::Tornado => self.state.voice_tornado,
+                crate::voice::Category::SevereThunderstorm => self.state.voice_severe_thunderstorm,
+                crate::voice::Category::Watch => self.state.voice_watches,
+                crate::voice::Category::OtherWarning => self.state.voice_other_warnings,
+            };
+            if !enabled {
                 continue;
             }
             if !crate::voice::in_view(warning, &view, station) {

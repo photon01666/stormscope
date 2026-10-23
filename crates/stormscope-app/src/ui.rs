@@ -27,6 +27,51 @@ const SIDEBAR_CLOSE_SLOP: f32 = 32.0;
 /// Slide animation time (seconds).
 const SIDEBAR_ANIM_SECS: f32 = 0.18;
 
+/// Toggle the chrome-free fullscreen mode (map only; the status bar, timeline,
+/// chips, badges and windows all hide). On Android the system status bar is
+/// hidden too, so the radar truly fills the screen.
+pub(crate) fn set_fullscreen(ctx: &egui::Context, app: &mut StormApp) {
+    app.state.fullscreen = !app.state.fullscreen;
+    if app.state.fullscreen {
+        // The windows disappear with the chrome: drop text focus so Gboard
+        // does not stay up over an invisible field.
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+    }
+    #[cfg(target_os = "android")]
+    crate::android_ime::set_system_bars_hidden(app.state.fullscreen);
+}
+
+/// Long-press the map (or the 3D pane) to enter/leave fullscreen. A touch
+/// held still (egui's `long_touched`) or a mouse held still ~0.6 s both
+/// count; the toggle is edge-triggered — one per press, re-armed on release.
+pub(crate) fn long_press_toggle_fullscreen(
+    ctx: &egui::Context,
+    app: &mut StormApp,
+    resp: &egui::Response,
+) {
+    let down = ctx.input(|i| i.pointer.any_down());
+    if !down {
+        app.state.fullscreen_press_handled = false;
+        return;
+    }
+    if app.state.fullscreen_press_handled {
+        return;
+    }
+    let held_long = resp.long_touched()
+        || ctx.input(|i| {
+            let p = &i.pointer;
+            resp.is_pointer_button_down_on()
+                && !p.is_decidedly_dragging()
+                && p.press_start_time().is_some_and(|t| i.time - t > 0.6)
+        });
+    if held_long {
+        app.state.fullscreen_press_handled = true;
+        set_fullscreen(ctx, app);
+    }
+}
+
 pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     #[cfg(target_os = "android")]
     {
@@ -39,6 +84,20 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // Reset each frame; text fields below set it when they hold focus.
     app.state.text_focus = false;
+
+    // True fullscreen: nothing but the radar map — no status bar, timeline,
+    // chips, badges or windows. Long-press again (or Esc on a desktop)
+    // brings the chrome back.
+    if app.state.fullscreen {
+        if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+            set_fullscreen(ui.ctx(), app);
+        }
+        egui::CentralPanel::default().show(ui, |ui| {
+            crate::ui::map::map(ui, app);
+            app.map_rect_at = Some(ui.available_rect_before_wrap());
+        });
+        return;
+    }
 
     // Android: the app window is full-screen and the system status bar is
     // drawn on top of it (black, ~24-26 dp). Reserve just that much: the old

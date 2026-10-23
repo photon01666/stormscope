@@ -70,6 +70,17 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     }
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::BLACK);
+
+    // The pane's interaction widget is registered up front (it is re-used for
+    // orbit/zoom below) so long-press fullscreen toggling also works before
+    // the first volume has arrived.
+    let resp = ui.interact(
+        rect,
+        egui::Id::new("stormscope.volume3d.pane"),
+        Sense::click_and_drag(),
+    );
+    // Long-press toggles the chrome-free fullscreen (map) view.
+    crate::ui::long_press_toggle_fullscreen(ui.ctx(), app, &resp);
     let scale = app.sidebar_scale.max(1.0);
     let center_text = |msg: &str| {
         ui.painter_at(rect).text(
@@ -386,11 +397,6 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
     );
 
     // --- Input: orbit / zoom / re-fit -------------------------------------
-    let resp = ui.interact(
-        rect,
-        egui::Id::new("stormscope.volume3d.pane"),
-        Sense::click_and_drag(),
-    );
     if resp.dragged() {
         let d = resp.drag_delta();
         // Two fingers (touch) pan, like a right/middle-drag on the desktop.

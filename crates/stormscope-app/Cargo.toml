@@ -71,3 +71,4 @@ png = "0.17"
 # land there even though winit never forwards IME text to egui).
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
+jni = "0.22"

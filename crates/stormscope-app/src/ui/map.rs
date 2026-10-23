@@ -34,6 +34,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // panning (`drag_delta()` is always zero on a hover-only widget).
     let (rect, response) =
         ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+    // Long-press the map to toggle the chrome-free fullscreen mode.
+    crate::ui::long_press_toggle_fullscreen(ui.ctx(), app, &response);
     app.state.view.width_px = rect.width();
     app.state.view.height_px = rect.height();
     let view = app.state.view;
@@ -786,7 +788,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     draw_attribution(&painter, tile_resp.rect, show_spc);
 
     // --- Top-center badge row: scan mode, scan age, alerts ---------------
-    draw_top_badges(ui, &painter, tile_resp.rect, app);
+    if !app.state.fullscreen {
+        draw_top_badges(ui, &painter, tile_resp.rect, app);
+    }
 
     // Brief "what is this" tooltips after resting for a second: warnings
     // anywhere inside, SPC risk areas only when the pointer is on the outline

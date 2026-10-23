@@ -22,6 +22,10 @@ log; entries start at the first public release.
   (egui's collapsing headers never wrap).
 
 **Android**
+- **Long-press the map (or the 3D pane) for a true fullscreen view**: all
+  chrome disappears — status bar, timeline, chips, badges and windows — and
+  only the radar fills the screen. On Android the system status bar is hidden
+  as well; long-press again (or press Esc on desktop) to bring it all back.
 - **The system keyboard (Gboard) now types into the app.** winit's Android
   backend only shows/hides the IME and never forwards its text, so Stormscope
   polls GameActivity's editor state once per frame and replays the commits

@@ -3806,6 +3806,7 @@ dependencies = [
  "env_logger",
  "image",
  "jiff",
+ "jni",
  "libc",
  "log",
  "png 0.17.16",

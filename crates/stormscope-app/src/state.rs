@@ -639,6 +639,12 @@ pub struct AppState {
     /// A new pin was just dropped, so the name popup should take text focus
     /// (once). Requesting it every frame makes the Android IME flicker.
     pub marker_focus_pending: bool,
+    /// Chrome-free fullscreen: only the radar map is drawn (no status bar,
+    /// timeline, chips, badges or windows). Toggled by a long press.
+    pub fullscreen: bool,
+    /// Long-press edge tracking: one fullscreen toggle per press, re-armed on
+    /// release (kept across frames).
+    pub fullscreen_press_handled: bool,
     /// Any text field had focus this frame. On Android this also means the
     /// IME bridge mirrors `text_focus_text` into Gboard's editor.
     pub text_focus: bool,
@@ -955,6 +961,8 @@ impl Default for AppState {
             markers: load_markers(),
             pending_marker: None,
             pending_marker_label: String::new(),
+            fullscreen: false,
+            fullscreen_press_handled: false,
             marker_focus_pending: false,
             text_focus: false,
             text_focus_text: String::new(),

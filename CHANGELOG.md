@@ -11,6 +11,15 @@ log; entries start at the first public release.
   can click to center on the map), and a new **Zones** tab holds the
   no-polygon alerts. Clicking a zone row opens its full NOAA text.
 
+**Desktop**
+- **New warnings and watches are read aloud on Windows and Linux.** Desktop
+  Stormscope speaks newly issued warning/watch products with the system voice
+  (SAPI on Windows; speech-dispatcher or espeak-ng on Linux), but only when
+  the alert overlaps the current 2D map viewport around the selected station.
+  The first sweep after launch or a station change is silent, speech is
+  serialized so a burst cannot talk over itself, and Settings has a
+  **Voice alerts** toggle plus a test button.
+
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,
   window titles, the Android app label and the docs (crate/package names,

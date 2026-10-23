@@ -2479,6 +2479,39 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                 .weak()
                 .small(),
         );
+
+        #[cfg(not(target_os = "android"))]
+        {
+            ui.separator();
+            ui.label(egui::RichText::new("Voice alerts").strong());
+            ui.add_space(4.0);
+            let mut enabled = app.state.voice_alerts;
+            if ui
+                .checkbox(&mut enabled, "Read new warnings and watches aloud")
+                .on_hover_text(
+                    "Only alerts whose polygon overlaps the current map view \
+                     around the selected station are read.",
+                )
+                .changed()
+            {
+                app.state.voice_alerts = enabled;
+                app.state.persist_voice_alerts();
+            }
+            if ui
+                .button("Test voice")
+                .on_hover_text("Speak a short test phrase with the system voice")
+                .clicked()
+            {
+                crate::voice::announce("Stormscope voice alerts are working.");
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Linux: speech-dispatcher (spd-say) or espeak-ng. Windows: SAPI.",
+                )
+                .weak()
+                .small(),
+            );
+        }
     }
 }
 

@@ -369,6 +369,13 @@ pub struct StormApp {
     /// Recomputed each frame from the monitor's physical height in
     /// `sidebar_overlay`; shown as a footer note while active.
     pub sidebar_scale: f32,
+    /// Alert ids already considered for spoken announcements. Seeded during
+    /// the startup/site-change warm-up so an app launch does not read every
+    /// active warning aloud.
+    pub voice_seen: std::collections::HashSet<String>,
+    /// Spoken alerts stay quiet until this instant, letting the initial
+    /// sweep (or a newly selected station) populate `voice_seen` first.
+    pub voice_armed_at: Option<std::time::Instant>,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -510,6 +517,8 @@ impl StormApp {
             last_trim: std::time::Instant::now(),
             sidebar_open: false,
             sidebar_scale: 1.0,
+            voice_seen: std::collections::HashSet::new(),
+            voice_armed_at: None,
         }
     }
 
@@ -585,6 +594,13 @@ impl StormApp {
             return;
         }
         self.state.site_id = id.to_string();
+        // Do not read the new station's already-active alerts aloud just
+        // because the site changed; seed them during a short warm-up.
+        #[cfg(not(target_os = "android"))]
+        {
+            self.voice_armed_at =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+        }
         // Tracks from the old site must not smooth into the new site's.
         self.prev_tracks.clear();
         self.tracks_cache = None;
@@ -593,6 +609,58 @@ impl StormApp {
         self.refresh_cached_days();
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
     }
+
+    /// Read newly arrived warnings/watches aloud, but only those whose
+    /// polygon overlaps the current map viewport around the selected
+    /// station. The first batch after launch or a site change is a silent
+    /// baseline: it seeds `voice_seen` so already-active alerts are not read
+    /// just because the app opened.
+    #[cfg(not(target_os = "android"))]
+    fn announce_viewport_alerts(&mut self) {
+        let now = std::time::Instant::now();
+        let armed = *self
+            .voice_armed_at
+            .get_or_insert(now + std::time::Duration::from_secs(10));
+        let view = self.state.view;
+        let station = radar_core::sites::site(&self.state.site_id)
+            .map(|site| (site.latitude, site.longitude));
+        let mut fresh = Vec::new();
+        for warning in &self.state.alerts {
+            if !crate::voice::announceable(warning) {
+                continue;
+            }
+            // Seen ids are remembered even while muted, so turning voice
+            // alerts back on does not replay everything already on the map.
+            if !self.voice_seen.insert(warning.id.clone()) {
+                continue;
+            }
+            if now < armed {
+                continue;
+            }
+            if !crate::voice::in_view(warning, &view, station) {
+                continue;
+            }
+            fresh.push(warning.clone());
+        }
+        if !self.state.voice_alerts || fresh.is_empty() {
+            return;
+        }
+        fresh.sort_by_key(|warning| std::cmp::Reverse(crate::voice::rank(warning)));
+        for warning in fresh.iter().take(crate::voice::MAX_BURST) {
+            crate::voice::announce(crate::voice::announcement(warning));
+        }
+        if fresh.len() > crate::voice::MAX_BURST {
+            crate::voice::announce(format!(
+                "And {} more new alerts in the view.",
+                fresh.len() - crate::voice::MAX_BURST
+            ));
+        }
+    }
+
+    /// Android has no desktop TTS bridge; the setting and calls are compiled
+    /// out of that build.
+    #[cfg(target_os = "android")]
+    fn announce_viewport_alerts(&mut self) {}
 
     /// Feed the frame-cadence counters and emit the periodic stats line.
     ///
@@ -744,6 +812,7 @@ impl StormApp {
                         &self.state.alerts_fast,
                     );
                     self.inject_debug_warning();
+                    self.announce_viewport_alerts();
                 }
                 DataMsg::Reports(v) => self.state.lsrs = v,
                 DataMsg::Mcds(v) => self.state.mcds = v,
@@ -753,6 +822,7 @@ impl StormApp {
                         &self.state.alerts_slow,
                         &self.state.alerts_fast,
                     );
+                    self.announce_viewport_alerts();
                 }
                 DataMsg::AllAlerts(a) => self.state.all_alerts = a,
                 DataMsg::Observation(o) => {

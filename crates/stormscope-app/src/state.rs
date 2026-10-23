@@ -387,6 +387,9 @@ pub struct AppState {
     pub alerts_fast: Vec<radar_core::warnings::Warning>,
     /// Every active alert nationwide, for the alerts browser.
     pub all_alerts: Vec<radar_core::warnings::Warning>,
+    /// Read newly issued warnings and watches aloud (desktop builds only).
+    /// Persisted as `voice-alerts` in the config directory.
+    pub voice_alerts: bool,
     pub show_alerts: bool,
     /// Alerts browser visibility and which tab is showing.
     pub alerts_popup_open: bool,
@@ -870,6 +873,7 @@ impl Default for AppState {
             alerts_popup_open: false,
             alerts_tab: AlertsTab::Station,
             alerts_filter: String::new(),
+            voice_alerts: load_voice_alerts(),
             alerts_hover: None,
             alerts_map_stack: Vec::new(),
             alerts_fill: 0.45,
@@ -1096,6 +1100,19 @@ fn markers_path() -> std::path::PathBuf {
     config_dir().join("markers.json")
 }
 
+/// `~/.config/stormscope/voice-alerts`: "on" (the default) or "off". Kept as
+/// a tiny plain file rather than JSON because it is one switch.
+fn voice_alerts_path() -> std::path::PathBuf {
+    config_dir().join("voice-alerts")
+}
+
+fn load_voice_alerts() -> bool {
+    match std::fs::read_to_string(voice_alerts_path()) {
+        Ok(text) => !matches!(text.trim(), "off" | "false" | "0"),
+        Err(_) => true,
+    }
+}
+
 /// `~/.config/stormscope/ai.json`: endpoint, model and (only with the
 /// "remember" box ticked) the API key.
 fn ai_path() -> std::path::PathBuf {
@@ -1149,6 +1166,21 @@ fn load_markers() -> Vec<MapMarker> {
 }
 
 impl AppState {
+    /// Persist the spoken-alert switch (best-effort).
+    pub fn persist_voice_alerts(&self) {
+        let path = voice_alerts_path();
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            log::warn!("voice alerts dir: {e}");
+            return;
+        }
+        let text = if self.voice_alerts { "on\n" } else { "off\n" };
+        if let Err(e) = std::fs::write(&path, text) {
+            log::warn!("voice alerts write: {e}");
+        }
+    }
+
     /// Write markers to disk (best-effort; a failed write is logged, not
     /// fatal — losing pins shouldn't lose the session).
     pub fn persist_markers(&self) {

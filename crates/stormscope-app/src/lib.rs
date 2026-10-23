@@ -21,5 +21,7 @@ mod state;
 mod timefmt;
 mod timeline;
 mod ui;
+#[cfg(not(target_os = "android"))]
+mod voice;
 
 pub use app::StormApp;

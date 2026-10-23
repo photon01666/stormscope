@@ -48,23 +48,26 @@ fn phone_header(ui: &mut egui::Ui, title: &str) -> bool {
     let mut close = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(title).strong().size(20.0));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::click());
-            let visuals = ui.style().interact(&resp);
-            if resp.hovered() || resp.is_pointer_button_down_on() {
-                ui.painter()
-                    .rect_filled(rect.shrink(4.0), 6.0, visuals.weak_bg_fill);
-            }
-            // Painted arms, not a glyph: the bundled fonts have no "✕"
-            // (it rendered as a missing-glyph square).
-            let arm = rect.shrink(14.0);
-            let stroke = egui::Stroke::new(2.5, visuals.fg_stroke.color);
+        // Put the close box at the real right edge of the row. The old
+        // nested right-to-left layout painted the box beside the title but
+        // hit-tested it at the far right, so tapping the painted ✕ missed.
+        let gap = (ui.available_width() - 44.0).max(0.0);
+        ui.add_space(gap);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::click());
+        let visuals = ui.style().interact(&resp);
+        if resp.hovered() || resp.is_pointer_button_down_on() {
             ui.painter()
-                .line_segment([arm.left_top(), arm.right_bottom()], stroke);
-            ui.painter()
-                .line_segment([arm.right_top(), arm.left_bottom()], stroke);
-            close = resp.clicked();
-        });
+                .rect_filled(rect.shrink(4.0), 6.0, visuals.weak_bg_fill);
+        }
+        // Painted arms, not a glyph: the bundled fonts have no "✕"
+        // (it rendered as a missing-glyph square).
+        let arm = rect.shrink(14.0);
+        let stroke = egui::Stroke::new(2.5, visuals.fg_stroke.color);
+        ui.painter()
+            .line_segment([arm.left_top(), arm.right_bottom()], stroke);
+        ui.painter()
+            .line_segment([arm.right_top(), arm.left_bottom()], stroke);
+        close = resp.clicked();
     });
     ui.separator();
     close
@@ -153,6 +156,10 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.forecast_open = false;
         } else if app.state.totals_open {
             app.state.totals_open = false;
+        } else if app.state.alert_detail.is_some() {
+            app.state.alert_detail = None;
+        } else if app.state.alerts_popup_open {
+            app.state.alerts_popup_open = false;
         }
     }
 
@@ -227,12 +234,10 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Downloaded radar history (from the timeline's "Downloaded…" button).
     crate::timeline::downloads_window(ui.ctx(), app);
 
-    // Alerts browser (its own floating window).
-    alerts::alerts_popup(ui.ctx(), app);
-
-    // NOAA detail popup for one alert (browser "Details", or a map click on a
-    // warning polygon).
-    alerts::alert_detail_popup(ui.ctx(), app);
+    // Alerts browser and NOAA detail: both fill the map pane on a phone,
+    // like the AI/forecast/totals windows.
+    alerts::alerts_popup(ui.ctx(), app, pane_area);
+    alerts::alert_detail_popup(ui.ctx(), app, pane_area);
 
     // AI meteorologist: the optional brief / question window and its settings.
     ai::ai_windows(ui.ctx(), app, pane_area);

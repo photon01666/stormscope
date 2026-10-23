@@ -46,6 +46,13 @@ log; entries start at the first public release.
 - **Rain & snow totals opens as a full-pane phone window**: same treatment
   as the AI and forecast windows (painted ✕, phone type scale, back gesture
   closes it), with the table scrolling inside it.
+- **Alerts and NOAA alert details fill the app screen** like the forecast
+  and totals windows: full pane, phone type scale, a painted ✕ and the back
+  gesture to close. The five alert-view tabs wrap instead of running off
+  the phone's right edge.
+- Phone-window ✕ buttons now sit where they are hit: the old header painted
+  the close box beside the title but hit-tested it at the far right, so a
+  tap on the visible ✕ missed.
 - **GPS fixes are now part of the app**: a fix is requested on launch, the
   map centres on it, the nearest radar station is selected and the forecast
   is pointed at the fix. The fix is drawn as a pulsing blue **You** dot on

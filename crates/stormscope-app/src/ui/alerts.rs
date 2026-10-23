@@ -525,11 +525,13 @@ fn site_of(app: &StormApp) -> (f64, f64) {
 }
 
 /// The popup window itself (no-op while closed).
-pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
+pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if !app.state.alerts_popup_open {
         return;
     }
     let (site_lat, site_lon) = site_of(app);
+    // Read the phone type scale before taking the split state borrow below.
+    let scale = super::big_text_scale(app);
 
     // Split borrows: the window mutates open/filter/tab while reading the
     // alert list, and nothing here needs to clone it.
@@ -586,31 +588,59 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
     // Match the sidebar's high-res scaling: on a 4K panel the window is
     // otherwise unreadable. The size is clamped to the screen so a long
     // alert list cannot push the window off the bottom edge.
-    let scale = app.sidebar_scale.max(1.0);
+    let full_pane = cfg!(target_os = "android");
+    let screen = ctx.content_rect().size();
     let size = super::popup_size(ctx, scale, 620.0, 520.0);
     let max_h = super::popup_max_height(ctx, scale);
+    let min_size = egui::vec2(
+        (420.0 * scale).min((screen.x - 24.0).max(200.0)),
+        (220.0 * scale).min((screen.y - 90.0).max(160.0)),
+    );
 
     let mut center_on: Option<(f64, f64)> = None;
     let mut hover: Option<String> = None;
     let mut clicked: Option<String> = None;
     let mut detail: Option<String> = None;
     let mut switch_to: Option<String> = None;
-    egui::Window::new("Alerts")
-        .open(open)
-        .default_size(size)
-        .max_height(max_h)
-        .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
+    let mut window = egui::Window::new("Alerts")
         // Centered *by its top-left corner*, not by a pivot: egui's pivot
         // is for anchored areas, and with a center pivot every size change
         // also shifts the stored position — which fights the resize drag.
-        .default_pos(super::centered_popup_pos(ctx, size))
-        .resizable(true)
-        .show(ctx, |ui| {
-            super::apply_text_scale(ui, scale);
+        .default_pos(super::centered_popup_pos(ctx, size));
+    #[cfg(target_os = "android")]
+    if full_pane {
+        window = window.title_bar(false);
+    }
+    window = if full_pane {
+        // Same treatment as the AI, forecast and totals windows: fill the
+        // map area edge to edge with the phone type scale, no dragging or
+        // resizing, and a painted close button in the header. Do not apply
+        // default/min sizes here: they fight fixed_rect and leave the
+        // window's hit-testing offset from its painted content.
+        // No constrain_to here: the window is already exactly the pane, and
+        // constraining a content-taller-than-pane window shifted its hit
+        // testing down while the painted content stayed put.
+        window.fixed_rect(area).movable(false).resizable(false)
+    } else {
+        window
+            .default_size(size)
+            .max_height(max_h)
+            .min_size(min_size)
+            .resizable(true)
+    };
+    let window = window.open(open);
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if full_pane {
+            close_requested |= super::phone_header(ui, "Alerts");
+        }
+        super::apply_text_scale(ui, scale);
             let site_city = radar_core::sites::site(site_id)
                 .map(|s| s.name.split(',').next().unwrap_or("").trim().to_string())
                 .unwrap_or_default();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(tab, AlertsTab::All, format!("All US ({})", all_poly.len()));
                 ui.selectable_value(
                     tab,
@@ -819,6 +849,10 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp) {
                 });
             super::fill_popup_height(ui);
         });
+
+    if close_requested {
+        *open = false;
+    }
 
     if let Some((lat, lon)) = center_on {
         // Pan only — keep the user's zoom, they are hunting one warning.
@@ -1291,7 +1325,7 @@ pub(super) fn jump_to_warning(app: &mut StormApp, idx: usize) {
 
 /// The NOAA detail popup: the full CAP text for one alert. Opened by the
 /// browser's "Details" button or by clicking a warning polygon on the map.
-pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
+pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     let Some(id) = app.state.alert_detail.clone() else {
         return;
     };
@@ -1309,23 +1343,48 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
         return;
     };
 
-    let scale = app.sidebar_scale.max(1.0);
+    let fill = cfg!(target_os = "android");
+    let scale = super::big_text_scale(app);
+    let screen = ctx.content_rect().size();
     let size = super::popup_size(ctx, scale, 620.0, 500.0);
     let max_h = super::popup_max_height(ctx, scale);
+    let min_size = egui::vec2(
+        (420.0 * scale).min((screen.x - 24.0).max(200.0)),
+        (220.0 * scale).min((screen.y - 90.0).max(160.0)),
+    );
     let mut open = true;
-    egui::Window::new("NOAA alert details")
+    let mut window = egui::Window::new("NOAA alert details")
         .id(egui::Id::new("stormscope.alert.detail"))
-        .open(&mut open)
-        .default_size(size)
-        .max_height(max_h)
-        .min_size(egui::vec2(420.0 * scale, 220.0 * scale))
         // Centered *by its top-left corner*, not by a pivot: egui's pivot
         // is for anchored areas, and with a center pivot every size change
         // also shifts the stored position — which fights the resize drag.
-        .default_pos(super::centered_popup_pos(ctx, size))
-        .resizable(true)
-        .show(ctx, |ui| {
-            super::apply_text_scale(ui, scale);
+        .default_pos(super::centered_popup_pos(ctx, size));
+    #[cfg(target_os = "android")]
+    if fill {
+        window = window.title_bar(false);
+    }
+    window = if fill {
+        // The browser fills the pane too; the detail replaces it so the whole
+        // NOAA text is readable without a tiny floating window over the list.
+        // Keep the fixed rect free of default/min sizes and constrain_to,
+        // like the browser.
+        window.fixed_rect(area).movable(false).resizable(false)
+    } else {
+        window
+            .default_size(size)
+            .max_height(max_h)
+            .min_size(min_size)
+            .resizable(true)
+    };
+    let window = window.open(&mut open);
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if fill {
+            close_requested |= super::phone_header(ui, "Alert details");
+        }
+        super::apply_text_scale(ui, scale);
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(
                     warning_color(&w),
@@ -1396,7 +1455,7 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp) {
             super::fill_popup_height(ui);
         });
 
-    if !open {
+    if !open || close_requested {
         app.state.alert_detail = None;
     }
 }

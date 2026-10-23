@@ -13,11 +13,14 @@ log; entries start at the first public release.
 
 **Desktop**
 - **New warnings and watches are read aloud on Windows and Linux.** Desktop
-  Stormscope speaks newly issued warning/watch products with the system voice
-  (SAPI on Windows; speech-dispatcher or espeak-ng on Linux), but only when
-  the alert overlaps the current 2D map viewport around the selected station.
-  The first sweep after launch or a station change is silent, speech is
-  serialized so a burst cannot talk over itself, and Settings has a master
+  Stormscope uses the neural **Piper** voices when installed (the female
+  `en_US-lessac-high` voice by default, with a voice picker in Settings), and
+  falls back to SAPI on Windows or speech-dispatcher/espeak-ng on Linux. The
+  Windows CI artifact bundles Piper and the lessac high voice next to the
+  executable. Only alerts whose polygon is within **50 miles of the GPS fix
+  or a manual map marker** are read; zone-only alerts have no polygon and stay
+  silent. The first sweep after launch or a station change is silent, speech
+  is serialized so a burst cannot talk over itself, and Settings has a master
   **Voice alerts** switch, separate **Tornado warnings**, **Severe
   thunderstorm warnings**, **Watches** and **Other warnings** switches, and
   a test button.
@@ -33,6 +36,10 @@ log; entries start at the first public release.
   (egui's collapsing headers never wrap).
 
 **Android**
+- **Voice alerts are available on Android too**: new warnings and watches are
+  read through the system text-to-speech engine, using the same master and
+  per-family switches and the same 50-mile GPS/marker rule as the desktop
+  build.
 - **The AI meteorologist window fills the app screen** on a phone: it opens
   edge to edge between the app's status bar and timeline (which stay visible
   and usable — this is not the chrome-free fullscreen mode), with the whole

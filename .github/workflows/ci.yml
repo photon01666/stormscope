@@ -59,11 +59,43 @@ jobs:
       - name: Build (release)
         run: cargo build --release -p stormscope-app
 
-      - name: Upload the Windows binary
+      # The Windows build has no system neural voice. Bundle the MIT-licensed
+      # Piper runtime next to stormscope.exe; the app discovers
+      # piper/piper.exe and piper/voices automatically.
+      - name: Bundle Piper and the female neural voice
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force dist/windows | Out-Null
+          Copy-Item target/release/stormscope.exe dist/windows/
+          curl.exe -L --fail --retry 3 -o piper.zip `
+            https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip
+          if ($LASTEXITCODE -ne 0) { throw "Piper download failed" }
+          Expand-Archive -Path piper.zip -DestinationPath dist/windows -Force
+          $voiceDir = "dist/windows/piper/voices/en/en_US/lessac/high"
+          New-Item -ItemType Directory -Force $voiceDir | Out-Null
+          $base = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/high"
+          foreach ($file in @("en_US-lessac-high.onnx", "en_US-lessac-high.onnx.json", "MODEL_CARD")) {
+            curl.exe -L --fail --retry 3 -o "$voiceDir/$file" "$base/$file"
+            if ($LASTEXITCODE -ne 0) { throw "Voice download failed: $file" }
+          }
+          @"
+          Stormscope's Windows bundle includes the Piper runtime and the
+          lessac high English voice.
+
+          Piper: https://github.com/rhasspy/piper (MIT)
+          Voice: https://huggingface.co/rhasspy/piper-voices
+          Lessac dataset/license:
+          https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html
+          "@ | Set-Content -Encoding UTF8 dist/windows/VOICE-LICENSE.txt
+          Get-Item dist/windows/piper/piper.exe, "$voiceDir/en_US-lessac-high.onnx" |
+            Format-Table Name, Length
+
+      - name: Upload the Windows bundle
         uses: actions/upload-artifact@v4
         with:
           name: stormscope-windows-x86_64
-          path: target/release/stormscope.exe
+          path: dist/windows
           if-no-files-found: error
 
   # Android builds are still maturing; keep the job informational so a

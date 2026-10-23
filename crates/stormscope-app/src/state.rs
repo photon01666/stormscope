@@ -394,6 +394,9 @@ pub struct AppState {
     pub voice_severe_thunderstorm: bool,
     pub voice_watches: bool,
     pub voice_other_warnings: bool,
+    /// Piper voice id selected in Settings (`None` = best installed voice,
+    /// currently the female lessac high model). Android uses system TTS.
+    pub voice_model: Option<String>,
     pub show_alerts: bool,
     /// Alerts browser visibility and which tab is showing.
     pub alerts_popup_open: bool,
@@ -883,6 +886,7 @@ impl Default for AppState {
             voice_severe_thunderstorm: voice.severe_thunderstorm,
             voice_watches: voice.watches,
             voice_other_warnings: voice.other_warnings,
+            voice_model: voice.model,
             alerts_hover: None,
             alerts_map_stack: Vec::new(),
             alerts_fill: 0.45,
@@ -1132,6 +1136,9 @@ struct VoiceAlertPrefs {
     watches: bool,
     #[serde(default = "default_true")]
     other_warnings: bool,
+    /// Piper voice id; `None` follows the best installed voice.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 impl Default for VoiceAlertPrefs {
@@ -1142,6 +1149,7 @@ impl Default for VoiceAlertPrefs {
             severe_thunderstorm: true,
             watches: true,
             other_warnings: true,
+            model: None,
         }
     }
 }
@@ -1234,6 +1242,7 @@ impl AppState {
             severe_thunderstorm: self.voice_severe_thunderstorm,
             watches: self.voice_watches,
             other_warnings: self.voice_other_warnings,
+            model: self.voice_model.clone(),
         };
         let Ok(text) = serde_json::to_string_pretty(&prefs) else {
             log::warn!("voice alerts serialize failed");

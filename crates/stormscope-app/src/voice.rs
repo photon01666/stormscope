@@ -1,14 +1,26 @@
-//! Spoken warnings/watches for the desktop builds.
+//! Spoken warnings/watches for the desktop and Android builds.
 //!
 //! Triggering is deliberately narrow: only products that are warnings or
-//! watches, and only when the alert overlaps the current 2D map viewport
-//! around the selected radar. Speech is serialized on one worker thread;
-//! command-line TTS on Linux and SAPI on Windows would otherwise overlap when
-//! a burst of alerts arrives at once.
+//! watches, and only when the alert polygon is within 50 miles of the device
+//! GPS fix or one of the map's manual markers. Speech is serialized on one
+//! worker thread.
+//!
+//! On Linux/Windows, Stormscope prefers the neural Piper voices (the female
+//! `en_US-lessac-high` voice by default) and falls back to the system voice
+//! when Piper or a voice model is unavailable. Android uses its system TTS
+//! engine through [`crate::android_tts`].
 
 use radar_core::warnings::Warning;
-use radar_render::MapView;
+#[cfg(not(target_os = "android"))]
+use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "android"))]
+use std::sync::Mutex;
 use std::sync::{OnceLock, mpsc};
+
+/// 50 statute miles in kilometres. NWS polygons are WGS84 lon/lat, so the
+/// proximity check works in kilometres and formats the radius as miles in the
+/// UI.
+pub const ALERT_RADIUS_KM: f64 = 50.0 * 1.609_344;
 
 /// The most alerts read from one batch before summarizing the rest. Two or
 /// three warnings are already a long interruption; reading a whole outbreak
@@ -23,6 +35,21 @@ pub enum Category {
     Watch,
     OtherWarning,
 }
+
+/// One installed Piper model. `id` is the path relative to the voice root,
+/// without the `.onnx` suffix (e.g. `en/en_US/lessac/high/en_US-lessac-high`).
+#[cfg(not(target_os = "android"))]
+#[derive(Clone, Debug)]
+pub struct Voice {
+    pub id: String,
+    pub path: PathBuf,
+    pub label: String,
+}
+
+#[cfg(not(target_os = "android"))]
+static VOICES: OnceLock<Vec<Voice>> = OnceLock::new();
+#[cfg(not(target_os = "android"))]
+static SELECTED_VOICE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 /// Products worth interrupting for: warnings, watches, and flash-flood
 /// emergencies. Advisories and statements are skipped.
@@ -52,46 +79,75 @@ pub fn category(w: &Warning) -> Option<Category> {
     })
 }
 
-/// Whether the alert is in the current 2D map viewport.
+/// Is this alert polygon within 50 miles of any GPS fix or manual marker?
 ///
-/// Polygon alerts are checked by projecting their rings. Zone-only alerts have
-/// no geometry, so they are in view only when they apply to the selected
-/// station and the station itself is on screen.
-pub fn in_view(w: &Warning, view: &MapView, station: Option<(f64, f64)>) -> bool {
-    match w.polygon.as_deref() {
-        Some(rings) if !rings.is_empty() => rings.iter().any(|ring| ring_in_view(ring, view)),
-        _ => station.is_some_and(|(lat, lon)| point_in_view(lon, lat, view)),
-    }
-}
-
-fn point_in_view(lon: f64, lat: f64, view: &MapView) -> bool {
-    let (x, y) = view.lonlat_to_view_px(lon, lat);
-    x >= 0.0 && x <= f64::from(view.width_px) && y >= 0.0 && y <= f64::from(view.height_px)
-}
-
-fn ring_in_view(ring: &[(f64, f64)], view: &MapView) -> bool {
-    if ring.is_empty() {
+/// Zone-only alerts have no geometry to measure, so they are not spoken.
+/// Checking the polygon (not just its centroid) matters for large warnings:
+/// a centroid can be dozens of miles from the marker even when the marker is
+/// inside the warned area.
+pub fn near_points(w: &Warning, points: &[(f64, f64)]) -> bool {
+    let Some(rings) = w.polygon.as_deref() else {
+        return false;
+    };
+    if rings.is_empty() || points.is_empty() {
         return false;
     }
-    let width = f64::from(view.width_px);
-    let height = f64::from(view.height_px);
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for &(lon, lat) in ring {
-        let (x, y) = view.lonlat_to_view_px(lon, lat);
-        if x >= 0.0 && x <= width && y >= 0.0 && y <= height {
-            return true;
-        }
-        min_x = min_x.min(x);
-        max_x = max_x.max(x);
-        min_y = min_y.min(y);
-        max_y = max_y.max(y);
+    points.iter().any(|&(lat, lon)| {
+        rings
+            .iter()
+            .any(|ring| distance_to_ring_km(ring, lat, lon) <= ALERT_RADIUS_KM)
+    })
+}
+
+/// Approximate distance from a point to a warning ring, in kilometres.
+///
+/// A local equirectangular projection is accurate to well under a mile at the
+/// 50-mile scale and avoids great-circle edge-distance trigonometry. If the
+/// point is inside the ring, the distance is zero.
+fn distance_to_ring_km(ring: &[(f64, f64)], lat0: f64, lon0: f64) -> f64 {
+    if ring.is_empty() {
+        return f64::INFINITY;
     }
-    // The viewport can be entirely inside a large warning polygon, in which
-    // case no vertex is on screen but the bounding boxes still overlap.
-    min_x <= width && max_x >= 0.0 && min_y <= height && max_y >= 0.0
+    let km_per_deg_lat = 110.574;
+    let km_per_deg_lon = 111.320 * lat0.to_radians().cos().abs().max(0.01);
+    let projected: Vec<(f64, f64)> = ring
+        .iter()
+        .map(|&(lon, lat)| ((lon - lon0) * km_per_deg_lon, (lat - lat0) * km_per_deg_lat))
+        .collect();
+
+    // Ray-cast from the query point (0, 0). Any ring containing the point is
+    // an immediate hit.
+    let mut inside = false;
+    for i in 0..projected.len() {
+        let (x1, y1) = projected[i];
+        let (x2, y2) = projected[(i + 1) % projected.len()];
+        if (y1 > 0.0) != (y2 > 0.0) {
+            let x = x1 + (0.0 - y1) * (x2 - x1) / (y2 - y1);
+            if x > 0.0 {
+                inside = !inside;
+            }
+        }
+    }
+    if inside {
+        return 0.0;
+    }
+
+    let mut best = f64::INFINITY;
+    for i in 0..projected.len() {
+        let (x1, y1) = projected[i];
+        let (x2, y2) = projected[(i + 1) % projected.len()];
+        let (dx, dy) = (x2 - x1, y2 - y1);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (-(x1 * dx + y1 * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let x = x1 + t * dx;
+        let y = y1 + t * dy;
+        best = best.min((x * x + y * y).sqrt());
+    }
+    best
 }
 
 /// Priority for ordering a burst: tornado warning first, then emergencies,
@@ -183,6 +239,205 @@ fn clip(text: &str, max_chars: usize) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Installed Piper voices
+
+/// Every installed English Piper voice, best candidates first.
+#[cfg(not(target_os = "android"))]
+pub fn voices() -> &'static [Voice] {
+    VOICES.get_or_init(scan_voices)
+}
+
+/// The voice used when the user has not picked one. Lessac high is a female
+/// neural voice and the default requested for Stormscope.
+#[cfg(not(target_os = "android"))]
+pub fn default_voice() -> Option<&'static Voice> {
+    let list = voices();
+    list.iter()
+        .find(|voice| voice.id.ends_with("en_US-lessac-high"))
+        .or_else(|| list.iter().find(|voice| voice.label.contains("lessac")))
+        .or_else(|| list.iter().find(|voice| voice.label.contains("female")))
+        .or_else(|| list.first())
+}
+
+/// Change the selected Piper voice. `None` means "use the best installed
+/// voice" (currently lessac high). Android uses the system TTS engine instead.
+#[cfg(not(target_os = "android"))]
+pub fn set_voice(id: Option<String>) {
+    if let Ok(mut selected) = SELECTED_VOICE.get_or_init(|| Mutex::new(None)).lock() {
+        *selected = id;
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn selected_voice() -> Option<&'static Voice> {
+    let list = voices();
+    let selected = SELECTED_VOICE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|selected| selected.clone());
+    if let Some(id) = selected
+        && let Some(voice) = list.iter().find(|voice| voice.id == id)
+    {
+        return Some(voice);
+    }
+    default_voice()
+}
+
+#[cfg(not(target_os = "android"))]
+fn scan_voices() -> Vec<Voice> {
+    let mut found = Vec::new();
+    for dir in voice_dirs() {
+        scan_dir(&dir, &dir, &mut found);
+    }
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|voice| seen.insert(voice.id.clone()));
+    found.sort_by(|a, b| voice_sort_key(a).cmp(&voice_sort_key(b)));
+    found
+}
+
+#[cfg(not(target_os = "android"))]
+fn voice_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "linux")]
+    {
+        dirs.push(PathBuf::from("/usr/share/piper-voices"));
+        dirs.push(PathBuf::from("/usr/local/share/piper-voices"));
+        if let Some(data) = data_home() {
+            dirs.push(data.join("piper-voices"));
+            dirs.push(data.join("stormscope").join("piper"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join("stormscope").join("piper"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(local).join("stormscope").join("piper"));
+        }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(parent) = exe.parent()
+        {
+            dirs.push(parent.join("piper"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/usr/local/share/piper-voices"));
+        dirs.push(PathBuf::from("/opt/homebrew/share/piper-voices"));
+        if let Some(data) = data_home() {
+            dirs.push(data.join("piper-voices"));
+            dirs.push(data.join("stormscope").join("piper"));
+        }
+    }
+    dirs
+}
+
+#[cfg(not(target_os = "android"))]
+fn data_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
+        })
+}
+
+#[cfg(not(target_os = "android"))]
+fn scan_dir(root: &Path, dir: &Path, out: &mut Vec<Voice>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_dir(root, &path, out);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("onnx") {
+            continue;
+        }
+        if !path.with_extension("onnx.json").is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !stem.starts_with("en_") && !stem.starts_with("en-") {
+            continue;
+        }
+        // Low-quality models are noticeably synthetic; keep high/medium only.
+        if !stem.ends_with("-high") && !stem.ends_with("-medium") {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let id = relative
+            .with_extension("")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let label = voice_label(stem);
+        out.push(Voice { id, path, label });
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn voice_sort_key(voice: &Voice) -> (u8, u8, String) {
+    let stem = voice.id.rsplit('/').next().unwrap_or(&voice.id);
+    let quality = if stem.ends_with("-high") { 0 } else { 1 };
+    let preference = if stem.starts_with("en_US-lessac-high") {
+        0
+    } else if stem.starts_with("en_US-hfc_female") {
+        1
+    } else if stem.starts_with("en_US-ljspeech") {
+        2
+    } else if stem.starts_with("en_US-amy") {
+        3
+    } else if stem.starts_with("en_US-kristin") {
+        4
+    } else {
+        5
+    };
+    (quality, preference, voice.label.clone())
+}
+
+#[cfg(not(target_os = "android"))]
+fn voice_label(stem: &str) -> String {
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() < 3 {
+        return stem.to_string();
+    }
+    let quality = parts.last().copied().unwrap_or("");
+    let name = parts[1..parts.len() - 1].join("-");
+    let gender = if name.contains("lessac")
+        || name.contains("hfc_female")
+        || name.contains("ljspeech")
+        || name.contains("amy")
+        || name.contains("kristin")
+        || name.contains("kathleen")
+    {
+        " · female"
+    } else if name.contains("ryan")
+        || name.contains("joe")
+        || name.contains("john")
+        || name.contains("norman")
+        || name.contains("danny")
+        || name.contains("bryce")
+        || name.contains("mike")
+        || name == "sam"
+    {
+        " · male"
+    } else {
+        ""
+    };
+    format!("{} · {} · {}{}", parts[0], name, quality, gender)
+}
+
+// ---------------------------------------------------------------------------
+// Speech output
+
 /// Queue text for spoken delivery. The first call starts one worker thread;
 /// later calls are serialized behind it, so a burst of alerts does not become
 /// an unintelligible overlap.
@@ -208,24 +463,231 @@ pub fn announce(text: impl Into<String>) {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "android")]
 fn speak_blocking(text: &str) {
-    // speech-dispatcher is the desktop-standard path (PipeWire/Pulse knows
-    // where to send it); espeak-ng is the dependency-free fallback.
-    if run("spd-say", &["-w", "-l", "en", text]) {
-        return;
+    crate::android_tts::speak(text);
+}
+
+#[cfg(not(target_os = "android"))]
+fn speak_blocking(text: &str) {
+    if let Some(voice) = selected_voice() {
+        log::info!("voice: Piper selected {}", voice.label);
+        if speak_piper(text, voice) {
+            return;
+        }
+        log::warn!(
+            "voice: Piper voice {} failed; falling back to the system voice",
+            voice.label
+        );
+    } else {
+        log::warn!("voice: no Piper voice discovered; using the system voice");
     }
+    speak_system(text);
+}
+
+#[cfg(not(target_os = "android"))]
+fn speak_piper(text: &str, voice: &Voice) -> bool {
+    let wav = temp_wav_path();
+    if !synthesize_piper(text, voice, &wav) {
+        let _ = std::fs::remove_file(&wav);
+        return false;
+    }
+    let bytes = wav.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let played = play_wav(&wav);
+    log::info!(
+        "voice: Piper {} wav {} bytes, playback {}",
+        voice.label,
+        bytes,
+        played
+    );
+    let _ = std::fs::remove_file(&wav);
+    played
+}
+
+#[cfg(not(target_os = "android"))]
+fn temp_wav_path() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "stormscope-voice-{}-{nanos}.wav",
+        std::process::id()
+    ))
+}
+
+#[cfg(not(target_os = "android"))]
+fn synthesize_piper(text: &str, voice: &Voice, wav: &Path) -> bool {
+    if !voice.path.is_file() {
+        return false;
+    }
+    for program in piper_binaries() {
+        let mut command = std::process::Command::new(&program);
+        // piper-tts/python and the Unix builds accept -q; the Windows
+        // piper.exe build does not list it.
+        if !cfg!(windows) {
+            command.arg("-q");
+        }
+        // Pass the text as an argument, not on stdin: the Python piper-tts
+        // wrapper only synthesizes a short fragment when text arrives on a
+        // pipe (heard as a "pew"), while an argument produces the whole
+        // sentence. Announcements are well below the Windows command line
+        // limit.
+        command
+            .arg("-m")
+            .arg(&voice.path)
+            .arg("-f")
+            .arg(wav)
+            .arg(text)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // A packaged Windows Piper needs its own directory as the working
+        // directory so it finds espeak-ng-data and its DLLs.
+        if let Some(parent) = Path::new(&program).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            command.current_dir(parent);
+        }
+        match command.status() {
+            Ok(status) if status.success() && wav.is_file() => return true,
+            Ok(status) => log::debug!("voice: {program:?} exited with {status}"),
+            Err(e) => log::debug!("voice: {program:?}: {e}"),
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "android"))]
+fn piper_binaries() -> Vec<std::ffi::OsString> {
+    let mut binaries = Vec::new();
+    #[cfg(target_os = "linux")]
+    {
+        binaries.push("piper-tts".into());
+        binaries.push("piper".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        binaries.push("piper".into());
+    }
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            binaries.push(
+                PathBuf::from(appdata)
+                    .join("stormscope")
+                    .join("piper")
+                    .join("piper.exe")
+                    .into_os_string(),
+            );
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            binaries.push(
+                PathBuf::from(local)
+                    .join("stormscope")
+                    .join("piper")
+                    .join("piper.exe")
+                    .into_os_string(),
+            );
+        }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(parent) = exe.parent()
+        {
+            binaries.push(parent.join("piper").join("piper.exe").into_os_string());
+        }
+        binaries.push("piper.exe".into());
+    }
+    binaries
+}
+
+#[cfg(target_os = "linux")]
+fn play_wav(path: &Path) -> bool {
+    for program in ["pw-play", "paplay", "aplay"] {
+        let mut command = std::process::Command::new(program);
+        if program == "aplay" {
+            command.arg("-q");
+        }
+        command.arg(path);
+        if run_command(command) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+fn play_wav(path: &Path) -> bool {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = "$p = New-Object Media.SoundPlayer($env:STORMSCOPE_TTS_WAV); $p.PlaySync()";
+    for exe in ["powershell.exe", "pwsh.exe"] {
+        let mut command = std::process::Command::new(exe);
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
+            .env("STORMSCOPE_TTS_WAV", path)
+            .creation_flags(CREATE_NO_WINDOW);
+        if run_command(command) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn play_wav(path: &Path) -> bool {
+    let mut command = std::process::Command::new("afplay");
+    command.arg(path);
+    run_command(command)
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    windows
+)))]
+fn play_wav(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(not(target_os = "android"))]
+fn run_command(mut command: std::process::Command) -> bool {
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn speak_system(text: &str) {
+    // espeak-ng and espeak block until the audio is done; speech-dispatcher's
+    // "success" can be silent if its configured output module is broken, so
+    // it is the last fallback.
     if run("espeak-ng", &["-s", "160", text]) {
         return;
     }
     if run("espeak", &["-s", "160", text]) {
         return;
     }
+    if run("spd-say", &["-w", "-l", "en", text]) {
+        return;
+    }
     log::warn!("voice: no working TTS engine; install speech-dispatcher or espeak-ng");
 }
 
 #[cfg(windows)]
-fn speak_blocking(text: &str) {
+fn speak_system(text: &str) {
     use std::os::windows::process::CommandExt;
 
     // CREATE_NO_WINDOW: Stormscope is a GUI-subsystem binary on Windows;
@@ -235,7 +697,8 @@ fn speak_blocking(text: &str) {
                   $s.Rate = 0; $s.Volume = 100; \
                   [void]$s.Speak($env:STORMSCOPE_TTS_TEXT)";
     for exe in ["powershell.exe", "pwsh.exe"] {
-        let result = std::process::Command::new(exe)
+        let mut command = std::process::Command::new(exe);
+        command
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -245,54 +708,37 @@ fn speak_blocking(text: &str) {
                 script,
             ])
             .env("STORMSCOPE_TTS_TEXT", text)
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        match result {
-            Ok(status) if status.success() => return,
-            Ok(status) => log::debug!("voice: {exe} exited with {status}"),
-            Err(e) => log::debug!("voice: {exe}: {e}"),
+            .creation_flags(CREATE_NO_WINDOW);
+        if run_command(command) {
+            return;
         }
     }
     log::warn!("voice: PowerShell SAPI voice unavailable");
 }
 
 #[cfg(target_os = "macos")]
-fn speak_blocking(text: &str) {
+fn speak_system(text: &str) {
     if !run("say", &[text]) {
         log::warn!("voice: macOS say command failed");
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn speak_blocking(text: &str) {
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    windows
+)))]
+fn speak_system(text: &str) {
     let _ = text;
-    log::warn!("voice: TTS is not implemented on this platform");
+    log::warn!("voice: system TTS is not implemented on this platform");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run(program: &str, args: &[&str]) -> bool {
-    use std::process::Stdio;
-    match std::process::Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        Ok(status) if status.success() => true,
-        Ok(status) => {
-            log::debug!("voice: {program} exited with {status}");
-            false
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => {
-            log::warn!("voice: {program}: {e}");
-            false
-        }
-    }
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    run_command(command)
 }
 
 #[cfg(test)]
@@ -314,6 +760,17 @@ mod tests {
             area: area.to_string(),
             polygon: None,
         }
+    }
+
+    fn polygon_warning(lat: f64, lon: f64) -> Warning {
+        let mut w = warning("Tornado Warning", "", "");
+        w.polygon = Some(vec![vec![
+            (lon - 0.02, lat - 0.02),
+            (lon + 0.02, lat - 0.02),
+            (lon + 0.02, lat + 0.02),
+            (lon - 0.02, lat + 0.02),
+        ]]);
+        w
     }
 
     #[test]
@@ -351,25 +808,78 @@ mod tests {
     }
 
     #[test]
-    fn view_check_uses_the_visible_map() {
-        let view = MapView {
-            center_lat: 35.0,
-            center_lon: -97.0,
-            zoom: 7.0,
-            width_px: 800.0,
-            height_px: 600.0,
-        };
-        let mut inside = warning("Tornado Warning", "", "");
-        inside.polygon = Some(vec![vec![(-97.1, 35.0), (-96.9, 35.0), (-96.9, 35.1)]]);
-        assert!(in_view(&inside, &view, None));
+    fn proximity_is_a_polygon_distance_not_a_centroid() {
+        // The point is inside the warning.
+        assert!(near_points(&polygon_warning(35.0, -97.0), &[(35.0, -97.0)]));
+        // Roughly 34 miles north: inside the 50-mile radius.
+        assert!(near_points(&polygon_warning(35.5, -97.0), &[(35.0, -97.0)]));
+        // Roughly 55 miles north: outside.
+        assert!(!near_points(
+            &polygon_warning(35.8, -97.0),
+            &[(35.0, -97.0)]
+        ));
+        // Zone-only alerts cannot be measured.
+        assert!(!near_points(
+            &warning("Tornado Warning", "", ""),
+            &[(35.0, -97.0)]
+        ));
+        // A second marker can make the difference.
+        assert!(near_points(
+            &polygon_warning(35.8, -97.0),
+            &[(35.0, -97.0), (35.8, -97.0)]
+        ));
+    }
 
-        let mut outside = warning("Tornado Warning", "", "");
-        outside.polygon = Some(vec![vec![(-90.0, 40.0), (-89.9, 40.0), (-89.9, 40.1)]]);
-        assert!(!in_view(&outside, &view, None));
+    #[test]
+    fn voice_labels_name_the_family_and_quality() {
+        assert_eq!(
+            voice_label("en_US-lessac-high"),
+            "en_US · lessac · high · female"
+        );
+        assert_eq!(
+            voice_label("en_US-ryan-medium"),
+            "en_US · ryan · medium · male"
+        );
+    }
 
-        let zone = warning("Tornado Warning", "", "");
-        assert!(in_view(&zone, &view, Some((35.0, -97.0))));
-        assert!(!in_view(&zone, &view, Some((40.0, -90.0))));
+    #[test]
+    #[ignore = "requires Piper and an installed English voice"]
+    fn local_piper_synthesizes_a_wav() {
+        let voice = default_voice().expect("at least one Piper voice is installed");
+        assert!(voice.id.ends_with("en_US-lessac-high"));
+        assert!(voice.label.contains("female"));
+        let wav = temp_wav_path();
+        assert!(synthesize_piper(
+            "Stormscope voice alerts are working.",
+            voice,
+            &wav
+        ));
+        // A full sentence is ~100 KB at 22.05 kHz/16-bit; the old stdin path
+        // produced a ~20 KB fragment.
+        assert!(
+            wav.metadata()
+                .map(|meta| meta.len() > 50_000)
+                .unwrap_or(false)
+        );
+        let _ = std::fs::remove_file(&wav);
+    }
+
+    #[test]
+    #[ignore = "plays the local Piper voice through the system audio"]
+    fn local_piper_plays_audio() {
+        let voice = default_voice().expect("at least one Piper voice is installed");
+        assert!(speak_piper(
+            "Stormscope voice test. This is lessac high.",
+            voice
+        ));
+    }
+
+    #[test]
+    #[ignore = "plays the queued announcement path used by Test voice"]
+    fn local_announce_queue_plays() {
+        set_voice(Some("en/en_US/lessac/high/en_US-lessac-high".into()));
+        announce("Stormscope voice alerts are working.");
+        std::thread::sleep(std::time::Duration::from_secs(6));
     }
 
     #[test]

@@ -376,6 +376,10 @@ pub struct StormApp {
     /// Spoken alerts stay quiet until this instant, letting the initial
     /// sweep (or a newly selected station) populate `voice_seen` first.
     pub voice_armed_at: Option<std::time::Instant>,
+    /// The first nationwide feed is also a silent baseline: it can arrive
+    /// after the station feeds' warm-up and would otherwise read every
+    /// already-active warning near a marker.
+    pub voice_all_seeded: bool,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -465,6 +469,8 @@ impl StormApp {
         });
 
         let state = AppState::default();
+        #[cfg(not(target_os = "android"))]
+        crate::voice::set_voice(state.voice_model.clone());
         if let Some(fonts) = Self::configure_fonts(&cc.egui_ctx) {
             cc.egui_ctx.set_fonts(fonts);
         }
@@ -519,6 +525,7 @@ impl StormApp {
             sidebar_scale: 1.0,
             voice_seen: std::collections::HashSet::new(),
             voice_armed_at: None,
+            voice_all_seeded: false,
         }
     }
 
@@ -596,11 +603,7 @@ impl StormApp {
         self.state.site_id = id.to_string();
         // Do not read the new station's already-active alerts aloud just
         // because the site changed; seed them during a short warm-up.
-        #[cfg(not(target_os = "android"))]
-        {
-            self.voice_armed_at =
-                Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
-        }
+        self.voice_armed_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
         // Tracks from the old site must not smooth into the new site's.
         self.prev_tracks.clear();
         self.tracks_cache = None;
@@ -611,27 +614,44 @@ impl StormApp {
     }
 
     /// Read newly arrived warnings/watches aloud, but only those whose
-    /// polygon overlaps the current map viewport around the selected
-    /// station. The first batch after launch or a site change is a silent
-    /// baseline: it seeds `voice_seen` so already-active alerts are not read
-    /// just because the app opened.
-    #[cfg(not(target_os = "android"))]
-    fn announce_viewport_alerts(&mut self) {
+    /// polygon is within 50 miles of the GPS fix or a manual marker. The
+    /// first batch after launch or a site change is a silent baseline: it
+    /// seeds `voice_seen` so already-active alerts are not read just because
+    /// the app opened.
+    fn announce_nearby_alerts(&mut self) {
         let now = std::time::Instant::now();
         let armed = *self
             .voice_armed_at
             .get_or_insert(now + std::time::Duration::from_secs(10));
-        let view = self.state.view;
-        let station = radar_core::sites::site(&self.state.site_id)
-            .map(|site| (site.latitude, site.longitude));
+
+        // The fast/slow station feeds cover the selected radar; the
+        // nationwide feed covers markers/GPS anywhere else. Merge by id.
+        let mut ids = std::collections::HashSet::new();
+        let mut candidates: Vec<&radar_core::warnings::Warning> = Vec::new();
+        for warning in self.state.alerts.iter().chain(self.state.all_alerts.iter()) {
+            if ids.insert(warning.id.as_str()) {
+                candidates.push(warning);
+            }
+        }
+
+        let mut points: Vec<(f64, f64)> = self
+            .state
+            .markers
+            .iter()
+            .map(|marker| (marker.lat, marker.lon))
+            .collect();
+        if let Some(fix) = self.state.gps_fix {
+            points.push(fix);
+        }
+
         let mut fresh = Vec::new();
-        for warning in &self.state.alerts {
+        for warning in candidates {
             let Some(category) = crate::voice::category(warning) else {
                 continue;
             };
             // Seen ids are remembered even while muted or for a disabled
             // family, so turning a switch back on does not replay everything
-            // already on the map.
+            // already nearby.
             if !self.voice_seen.insert(warning.id.clone()) {
                 continue;
             }
@@ -647,7 +667,7 @@ impl StormApp {
             if !enabled {
                 continue;
             }
-            if !crate::voice::in_view(warning, &view, station) {
+            if !crate::voice::near_points(warning, &points) {
                 continue;
             }
             fresh.push(warning.clone());
@@ -661,16 +681,11 @@ impl StormApp {
         }
         if fresh.len() > crate::voice::MAX_BURST {
             crate::voice::announce(format!(
-                "And {} more new alerts in the view.",
+                "And {} more new alerts within 50 miles.",
                 fresh.len() - crate::voice::MAX_BURST
             ));
         }
     }
-
-    /// Android has no desktop TTS bridge; the setting and calls are compiled
-    /// out of that build.
-    #[cfg(target_os = "android")]
-    fn announce_viewport_alerts(&mut self) {}
 
     /// Feed the frame-cadence counters and emit the periodic stats line.
     ///
@@ -822,7 +837,7 @@ impl StormApp {
                         &self.state.alerts_fast,
                     );
                     self.inject_debug_warning();
-                    self.announce_viewport_alerts();
+                    self.announce_nearby_alerts();
                 }
                 DataMsg::Reports(v) => self.state.lsrs = v,
                 DataMsg::Mcds(v) => self.state.mcds = v,
@@ -832,9 +847,17 @@ impl StormApp {
                         &self.state.alerts_slow,
                         &self.state.alerts_fast,
                     );
-                    self.announce_viewport_alerts();
+                    self.announce_nearby_alerts();
                 }
-                DataMsg::AllAlerts(a) => self.state.all_alerts = a,
+                DataMsg::AllAlerts(a) => {
+                    self.state.all_alerts = a;
+                    if !self.voice_all_seeded {
+                        self.voice_all_seeded = true;
+                        self.voice_armed_at =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+                    }
+                    self.announce_nearby_alerts();
+                }
                 DataMsg::Observation(o) => {
                     // Freshness is stamped by the forecast message that shares
                     // the same request; keep the older stamp if one is set.

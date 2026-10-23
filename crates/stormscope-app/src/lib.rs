@@ -13,6 +13,8 @@ mod ai_actions;
 pub mod android_ime;
 #[cfg(target_os = "android")]
 pub mod android_location;
+#[cfg(target_os = "android")]
+pub mod android_tts;
 mod app;
 mod background;
 mod brief;
@@ -21,7 +23,6 @@ mod state;
 mod timefmt;
 mod timeline;
 mod ui;
-#[cfg(not(target_os = "android"))]
 mod voice;
 
 pub use app::StormApp;

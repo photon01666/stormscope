@@ -65,6 +65,14 @@ No accounts, API keys or telemetry.
   and alerts.
 - Keyboard: Space play/pause, L live, ←/→ step, Esc cancels measuring.
 
+**Voice alerts**
+- New warnings and watches are read aloud when their polygon is within
+  **50 miles of the GPS fix or a manual map marker**.
+- Linux/Windows use the neural **Piper** voice (female lessac high by default,
+  with a voice picker in Settings); Android uses the system text-to-speech
+  engine. Settings has a master switch and separate tornado, severe
+  thunderstorm, watch and other-warning switches.
+
 ## Install
 
 Prebuilt Linux x86_64 binary from the
@@ -85,11 +93,17 @@ From source (Rust stable ≥ 1.85, edition 2024):
 cargo install --path crates/stormscope-app
 ```
 
-Linux needs working Vulkan drivers and a Wayland or X11 session; no other
-system packages. On Windows the renderer uses DX12: install the MSVC build
-tools (Desktop development with C++) plus CMake and NASM (the TLS crates need
-them), then `cargo build --release -p stormscope-app` writes
-`target\release\stormscope.exe`.
+Linux needs working Vulkan drivers and a Wayland or X11 session. For the
+neural spoken alerts, install Piper and an English voice (for example
+`piper-tts` and `piper-voices`, or `pip install piper-tts` and a voice from
+[the Piper voices collection](https://huggingface.co/rhasspy/piper-voices));
+without Piper, Stormscope falls back to the system TTS. On Windows the
+renderer uses DX12: install the MSVC build tools (Desktop development with
+C++) plus CMake and NASM (the TLS crates need them), then
+`cargo build --release -p stormscope-app` writes
+`target\release\stormscope.exe`. The CI Windows artifact bundles `piper.exe`
+and the lessac high voice next to the executable; a local build uses the
+system SAPI voice unless Piper is placed in `%APPDATA%\stormscope\piper`.
 
 ## Data sources
 

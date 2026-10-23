@@ -2480,7 +2480,6 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                 .small(),
         );
 
-        #[cfg(not(target_os = "android"))]
         {
             ui.separator();
             ui.label(egui::RichText::new("Voice alerts").strong());
@@ -2490,8 +2489,9 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             if ui
                 .checkbox(&mut enabled, "Read new alerts aloud")
                 .on_hover_text(
-                    "Only alerts whose polygon overlaps the current map view \
-                     around the selected station are read.",
+                    "Only alerts within 50 miles of the GPS fix or a manual \
+                     marker are read. Zone-only alerts have no polygon to \
+                     measure, so they are not spoken.",
                 )
                 .changed()
             {
@@ -2545,20 +2545,76 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             if changed {
                 app.state.persist_voice_alerts();
             }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let voices = crate::voice::voices();
+                if voices.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "Piper neural voice not found; using the system voice.",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                } else {
+                    ui.add_space(4.0);
+                    ui.label("Voice");
+                    let selected = app
+                        .state
+                        .voice_model
+                        .as_deref()
+                        .and_then(|id| voices.iter().find(|voice| voice.id == id))
+                        .or_else(|| crate::voice::default_voice());
+                    let selected_label = selected
+                        .map(|voice| voice.label.as_str())
+                        .unwrap_or("System voice");
+                    egui::ComboBox::from_id_salt("voice-model")
+                        .selected_text(selected_label)
+                        .show_ui(ui, |ui| {
+                            for voice in voices {
+                                let is_selected = selected
+                                    .map(|selected| selected.id == voice.id)
+                                    .unwrap_or(false);
+                                if ui.selectable_label(is_selected, &voice.label).clicked() {
+                                    app.state.voice_model = Some(voice.id.clone());
+                                    crate::voice::set_voice(Some(voice.id.clone()));
+                                    app.state.persist_voice_alerts();
+                                }
+                            }
+                        });
+                    ui.label(
+                        egui::RichText::new(
+                            "Piper neural voice; lessac high is the female default.",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                }
+            }
+
+            if app.state.markers.is_empty() && app.state.gps_fix.is_none() {
+                ui.label(
+                    egui::RichText::new(
+                        "Add a map marker (or get a GPS fix on Android) to enable spoken alerts.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            }
             if ui
                 .button("Test voice")
-                .on_hover_text("Speak a short test phrase with the system voice")
+                .on_hover_text("Speak a short test phrase with the selected voice")
                 .clicked()
             {
                 crate::voice::announce("Stormscope voice alerts are working.");
             }
-            ui.label(
-                egui::RichText::new(
-                    "Linux: speech-dispatcher (spd-say) or espeak-ng. Windows: SAPI.",
-                )
-                .weak()
-                .small(),
-            );
+            let engine_note = if cfg!(target_os = "android") {
+                "Android system text-to-speech."
+            } else {
+                "Piper neural voices, or the system voice if Piper is unavailable."
+            };
+            ui.label(egui::RichText::new(engine_note).weak().small());
         }
     }
 }

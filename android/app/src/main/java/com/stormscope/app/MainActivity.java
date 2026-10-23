@@ -6,8 +6,14 @@ import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.media.AudioAttributes;
 import android.os.Bundle;
+import android.speech.tts.TextToSpeech;
+import android.util.Log;
 import android.view.View;
+
+import java.util.ArrayDeque;
+import java.util.Locale;
 
 import androidx.core.view.WindowInsetsCompat;
 
@@ -40,10 +46,33 @@ public class MainActivity extends GameActivity {
     /** Soft-keyboard height in px, straight from GameActivity's IME insets. */
     private static volatile int sImeInset;
 
+    private static final String TAG = "stormscope";
+    private static final int TTS_PENDING_MAX = 8;
+    /** Android's system TTS engine; announcements are queued until it is ready. */
+    private static volatile TextToSpeech sTts;
+    private static volatile boolean sTtsReady;
+    private static final ArrayDeque<String> sTtsPending = new ArrayDeque<>();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         startLocation(false);
+        initTts();
+    }
+
+    @Override
+    protected void onDestroy() {
+        TextToSpeech tts = sTts;
+        sTts = null;
+        sTtsReady = false;
+        if (tts != null) {
+            try {
+                tts.stop();
+                tts.shutdown();
+            } catch (Exception ignored) {
+            }
+        }
+        super.onDestroy();
     }
 
     @Override
@@ -55,6 +84,83 @@ public class MainActivity extends GameActivity {
     /** Called from Rust (JNI, UI thread): soft-keyboard height in px. */
     public int stormscopeImeInset() {
         return sImeInset;
+    }
+
+    /** Set up the system TTS engine once; Rust queues announcements until ready. */
+    private void initTts() {
+        if (sTts != null) {
+            return;
+        }
+        sTtsReady = false;
+        try {
+            sTts = new TextToSpeech(this, status -> {
+                if (status != TextToSpeech.SUCCESS) {
+                    Log.w(TAG, "text-to-speech init failed: " + status);
+                    return;
+                }
+                TextToSpeech tts = sTts;
+                if (tts == null) {
+                    return;
+                }
+                int language = tts.setLanguage(Locale.US);
+                if (language == TextToSpeech.LANG_MISSING_DATA
+                        || language == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.w(TAG, "US English TTS voice unavailable; using engine default");
+                }
+                tts.setSpeechRate(1.0f);
+                tts.setPitch(1.0f);
+                tts.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build());
+                synchronized (sTtsPending) {
+                    sTtsReady = true;
+                    while (!sTtsPending.isEmpty()) {
+                        speakNow(sTtsPending.removeFirst());
+                    }
+                }
+                Log.i(TAG, "text-to-speech ready");
+            });
+        } catch (Exception e) {
+            sTts = null;
+            Log.w(TAG, "text-to-speech unavailable: " + e);
+        }
+    }
+
+    /**
+     * Called from Rust (JNI, Java main thread): queue an announcement. Text
+     * arriving before the engine finishes initializing is held in a short
+     * bounded queue and flushed on init.
+     */
+    public void stormscopeSpeak(String text) {
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+        synchronized (sTtsPending) {
+            if (!sTtsReady || sTts == null) {
+                if (sTtsPending.size() >= TTS_PENDING_MAX) {
+                    sTtsPending.removeFirst();
+                }
+                sTtsPending.addLast(text);
+                return;
+            }
+            speakNow(text);
+        }
+    }
+
+    private static void speakNow(String text) {
+        TextToSpeech tts = sTts;
+        if (tts == null) {
+            return;
+        }
+        int result = tts.speak(
+                text,
+                TextToSpeech.QUEUE_ADD,
+                null,
+                "stormscope-" + System.nanoTime());
+        if (result != TextToSpeech.SUCCESS) {
+            Log.w(TAG, "text-to-speech speak failed: " + result);
+        }
     }
 
     @Override

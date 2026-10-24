@@ -190,10 +190,9 @@ public class StormWatchService extends Service {
         PendingIntent content = PendingIntent.getActivity(
                 this, 0, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        Intent stop = new Intent(this, StormWatchService.class).setAction(ACTION_STOP);
-        PendingIntent stopIntent = PendingIntent.getService(
-                this, 1, stop,
-                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        // No Stop action: the watcher is turned off from Settings -> Voice
+        // alerts ("Storm Watch in the background"), and an ongoing
+        // foreground-service notification is not dismissible anyway.
         return new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setContentTitle("Stormscope Storm Watch")
@@ -201,10 +200,6 @@ public class StormWatchService extends Service {
                 .setContentIntent(content)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .addAction(new Notification.Action.Builder(
-                        android.R.drawable.ic_menu_close_clear_cancel,
-                        "Stop",
-                        stopIntent).build())
                 .build();
     }
 

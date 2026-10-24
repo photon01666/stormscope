@@ -111,7 +111,8 @@ log; entries start at the first public release.
   foreground service with a persistent notification and its own TTS engine.
   It polls the last GPS fix every 60 seconds and speaks new warnings while
   Stormscope is closed (Android 15 caps `dataSync` foreground services at
-  about 6 hours per day); a Stop action on the notification turns it off.
+  about 6 hours per day). The notification itself carries no buttons — the
+  watcher is switched off from Settings -> Voice alerts.
 - New warnings/watches **within 50 miles of the GPS fix** (polygon distance —
   zone-only alerts with no geometry never notify) now also **pop up as a text
   notification**: a high-importance channel (sound, vibration, red light)

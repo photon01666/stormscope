@@ -14,6 +14,8 @@ pub mod android_ime;
 #[cfg(target_os = "android")]
 pub mod android_location;
 #[cfg(target_os = "android")]
+pub mod android_storm_watch;
+#[cfg(target_os = "android")]
 pub mod android_tts;
 mod app;
 mod background;

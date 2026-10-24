@@ -75,6 +75,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     // the activity handle for the bridge before eframe takes `app`.
     stormscope_app::android_ime::register(app.clone());
     stormscope_app::android_location::register(app.clone());
+    stormscope_app::android_storm_watch::register(app.clone());
     stormscope_app::android_tts::register(app.clone());
 
     let mut options = eframe::NativeOptions {

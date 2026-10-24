@@ -1366,6 +1366,11 @@ fn refresh_alerts_at_station(alerts: &Option<AlertSource>, site: &str, out: &Sen
     match a.active_at_point(site.latitude, site.longitude) {
         Ok(w) => {
             log::debug!("{} alerts apply to {}", w.len(), site.id);
+            // Desktop speech must not depend on the UI frame loop (a hidden
+            // Wayland workspace may not receive frame callbacks). Android's
+            // background service handles the closed-app case instead.
+            #[cfg(not(target_os = "android"))]
+            crate::voice::notify_near(&w);
             let _ = out.send(DataMsg::AlertsFast(w));
         }
         Err(e) => log::debug!("station alert check failed: {e:#}"),
@@ -1431,6 +1436,8 @@ fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg
     match a.active_near(lat, lon, crate::state::STATION_ALERT_RADIUS_KM) {
         Ok(w) => {
             let n = w.len();
+            #[cfg(not(target_os = "android"))]
+            crate::voice::notify_near(&w);
             let _ = out.send(DataMsg::Alerts(w));
             let _ = out.send(DataMsg::Status(format!("{n} active alerts")));
         }
@@ -1444,6 +1451,8 @@ fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg
     match a.active_all() {
         Ok(w) => {
             log::debug!("{} active alerts nationwide", w.len());
+            #[cfg(not(target_os = "android"))]
+            crate::voice::notify_near(&w);
             let _ = out.send(DataMsg::AllAlerts(w));
         }
         Err(e) => log::warn!("nationwide alerts fetch failed: {e:#}"),

@@ -2546,6 +2546,31 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                 app.state.persist_voice_alerts();
             }
 
+            #[cfg(target_os = "android")]
+            {
+                ui.add_space(6.0);
+                let mut storm = app.state.storm_watch_enabled;
+                if ui
+                    .checkbox(&mut storm, "Storm Watch in the background")
+                    .on_hover_text(
+                        "Keeps a persistent notification and speaks new warnings while \
+                         Stormscope is closed. Uses the last GPS fix.",
+                    )
+                    .changed()
+                {
+                    app.state.storm_watch_enabled = storm;
+                    app.state.storm_watch_polled_at = ui.input(|input| input.time);
+                    crate::android_storm_watch::set_enabled(storm);
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Persistent notification; new alerts within 50 miles of the last GPS fix.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            }
+
             #[cfg(not(target_os = "android"))]
             {
                 let voices = crate::voice::voices();

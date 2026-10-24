@@ -13,9 +13,7 @@
 use radar_core::warnings::Warning;
 #[cfg(not(target_os = "android"))]
 use std::path::{Path, PathBuf};
-#[cfg(not(target_os = "android"))]
-use std::sync::Mutex;
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Mutex, OnceLock, mpsc};
 
 /// 50 statute miles in kilometres. NWS polygons are WGS84 lon/lat, so the
 /// proximity check works in kilometres and formats the radius as miles in the
@@ -34,6 +32,117 @@ pub enum Category {
     SevereThunderstorm,
     Watch,
     OtherWarning,
+}
+
+/// Snapshot of the Settings switches, markers and GPS fix used by the voice
+/// path. The UI updates this each frame; the data thread reads it so alerts
+/// can be spoken even when the window is on another Wayland workspace and
+/// stops receiving frame callbacks.
+#[derive(Clone, Debug)]
+pub struct VoiceFilter {
+    pub enabled: bool,
+    pub tornado: bool,
+    pub severe_thunderstorm: bool,
+    pub watches: bool,
+    pub other_warnings: bool,
+    pub points: Vec<(f64, f64)>,
+}
+
+impl Default for VoiceFilter {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            tornado: true,
+            severe_thunderstorm: true,
+            watches: true,
+            other_warnings: true,
+            points: Vec::new(),
+        }
+    }
+}
+
+impl VoiceFilter {
+    fn category_enabled(&self, category: Category) -> bool {
+        match category {
+            Category::Tornado => self.tornado,
+            Category::SevereThunderstorm => self.severe_thunderstorm,
+            Category::Watch => self.watches,
+            Category::OtherWarning => self.other_warnings,
+        }
+    }
+}
+
+#[derive(Default)]
+struct SeenAlerts {
+    ids: std::collections::HashSet<String>,
+    armed_at: Option<std::time::Instant>,
+}
+
+static FILTER: OnceLock<Mutex<VoiceFilter>> = OnceLock::new();
+static SEEN: OnceLock<Mutex<SeenAlerts>> = OnceLock::new();
+
+/// Update the filter used by both the UI-triggered and background-triggered
+/// voice paths.
+pub fn set_filter(filter: VoiceFilter) {
+    if let Ok(mut current) = FILTER
+        .get_or_init(|| Mutex::new(VoiceFilter::default()))
+        .lock()
+    {
+        *current = filter;
+    }
+}
+
+/// Speak any new warning/watch in `alerts` that is near a GPS fix or manual
+/// marker. Safe to call from both the UI and the background data thread; the
+/// seen set is shared so an alert is announced once.
+pub fn notify_near(alerts: &[Warning]) {
+    let filter = FILTER
+        .get_or_init(|| Mutex::new(VoiceFilter::default()))
+        .lock()
+        .map(|filter| filter.clone())
+        .unwrap_or_default();
+    let now = std::time::Instant::now();
+    let Ok(mut seen) = SEEN
+        .get_or_init(|| Mutex::new(SeenAlerts::default()))
+        .lock()
+    else {
+        return;
+    };
+    let armed = *seen
+        .armed_at
+        .get_or_insert(now + std::time::Duration::from_secs(10));
+    let mut fresh = Vec::new();
+    for warning in alerts {
+        let Some(category) = category(warning) else {
+            continue;
+        };
+        // Seen ids are remembered even while muted or for a disabled family,
+        // so turning a switch back on does not replay everything already
+        // nearby.
+        if !seen.ids.insert(warning.id.clone()) {
+            continue;
+        }
+        if now < armed || !filter.category_enabled(category) {
+            continue;
+        }
+        if !near_points(warning, &filter.points) {
+            continue;
+        }
+        fresh.push(warning.clone());
+    }
+    if !filter.enabled || fresh.is_empty() {
+        return;
+    }
+    fresh.sort_by_key(|warning| std::cmp::Reverse(rank(warning)));
+    for warning in fresh.iter().take(MAX_BURST) {
+        announce(announcement(warning));
+    }
+    if fresh.len() > MAX_BURST {
+        announce(format!(
+            "And {} more new alerts within 50 miles.",
+            fresh.len() - MAX_BURST
+        ));
+    }
 }
 
 /// One installed Piper model. `id` is the path relative to the voice root,

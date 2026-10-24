@@ -2,11 +2,13 @@ package com.stormscope.app;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.media.AudioAttributes;
+import android.os.Build;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
@@ -35,6 +37,7 @@ public class MainActivity extends GameActivity {
     }
 
     private static final int LOCATION_REQUEST = 0x4750; // "GP"
+    private static final int NOTIFICATION_REQUEST = 0x4751; // "GP" + 1
 
     /** Latest fix as {lat, lon}; volatile because Rust reads it on its own thread. */
     private static volatile double[] sLocation;
@@ -42,6 +45,8 @@ public class MainActivity extends GameActivity {
     private static LocationManager sManager;
     private static LocationListener sListener;
     private static boolean sPermissionAsked;
+    private static SharedPreferences sPrefs;
+    private static volatile boolean sForeground;
 
     /** Soft-keyboard height in px, straight from GameActivity's IME insets. */
     private static volatile int sImeInset;
@@ -56,8 +61,33 @@ public class MainActivity extends GameActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        sPrefs = getSharedPreferences("stormscope", MODE_PRIVATE);
         startLocation(false);
         initTts();
+        if (sPrefs.getBoolean("storm_watch_enabled", false)) {
+            try {
+                StormWatchService.start(this);
+            } catch (Exception e) {
+                Log.w(TAG, "Storm Watch could not start: " + e);
+            }
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        sForeground = true;
+    }
+
+    @Override
+    protected void onPause() {
+        sForeground = false;
+        super.onPause();
+    }
+
+    /** True while the game window is resumed; the service stays silent then. */
+    public static boolean isAppForeground() {
+        return sForeground;
     }
 
     @Override
@@ -168,7 +198,51 @@ public class MainActivity extends GameActivity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == LOCATION_REQUEST) {
             startLocation(false);
+        } else if (requestCode == NOTIFICATION_REQUEST
+                && sPrefs != null
+                && sPrefs.getBoolean("storm_watch_enabled", false)) {
+            try {
+                StormWatchService.start(this);
+            } catch (Exception e) {
+                Log.w(TAG, "Storm Watch could not start after notification grant: " + e);
+            }
         }
+    }
+
+    /**
+     * Called from Rust (JNI, Java main thread): turn the opt-in background
+     * watcher on or off. The service itself keeps the persistent notification
+     * and owns a separate TTS engine, so it survives the Activity closing.
+     */
+    public void stormscopeSetStormWatch(boolean enabled) {
+        if (sPrefs == null) {
+            sPrefs = getSharedPreferences("stormscope", MODE_PRIVATE);
+        }
+        sPrefs.edit().putBoolean("storm_watch_enabled", enabled).apply();
+        if (enabled) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                        NOTIFICATION_REQUEST);
+            }
+            try {
+                StormWatchService.start(this);
+            } catch (Exception e) {
+                Log.w(TAG, "Storm Watch could not start: " + e);
+            }
+        } else {
+            StormWatchService.stop(this);
+        }
+    }
+
+    /** Called from Rust (JNI, UI thread): the persisted Storm Watch toggle. */
+    public boolean stormscopeStormWatchEnabled() {
+        if (sPrefs == null) {
+            sPrefs = getSharedPreferences("stormscope", MODE_PRIVATE);
+        }
+        return sPrefs.getBoolean("storm_watch_enabled", false);
     }
 
     private boolean hasLocationPermission() {
@@ -259,6 +333,16 @@ public class MainActivity extends GameActivity {
             return;
         }
         sLocation = new double[]{location.getLatitude(), location.getLongitude()};
+        SharedPreferences prefs = sPrefs;
+        if (prefs != null) {
+            prefs.edit()
+                    .putLong("last_lat_bits",
+                            Double.doubleToRawLongBits(location.getLatitude()))
+                    .putLong("last_lon_bits",
+                            Double.doubleToRawLongBits(location.getLongitude()))
+                    .putLong("last_fix_ms", System.currentTimeMillis())
+                    .apply();
+        }
     }
 
     /**

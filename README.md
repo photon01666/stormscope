@@ -75,6 +75,12 @@ No accounts, API keys or telemetry.
   `%LOCALAPPDATA%\stormscope\piper` on first launch. Settings has a master
   switch and separate tornado, severe thunderstorm, watch and other-warning
   switches.
+- Spoken desktop alerts are triggered from the background data thread, so a
+  window on another Wayland workspace (which may stop receiving frame
+  callbacks) still announces warnings out loud.
+- Android: an opt-in **Storm Watch** foreground service keeps a persistent
+  notification and speaks new warnings with its own TTS while Stormscope is
+  closed, polling the last GPS fix every 60 seconds. Toggle it from Settings -> Voice alerts.
 
 ## Install
 

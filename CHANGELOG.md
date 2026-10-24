@@ -26,6 +26,10 @@ log; entries start at the first public release.
   **Voice alerts** switch, separate **Tornado warnings**, **Severe
   thunderstorm warnings**, **Watches** and **Other warnings** switches, and
   a test button.
+- Spoken desktop alerts are now triggered from the background data thread as
+  well as the UI, so a hidden Wayland window on another workspace keeps
+  announcing warnings — Wayland does not suspend the process, and the trigger
+  no longer depends on frame callbacks.
 - **Windows no longer crashes when the slide-out menu first draws monospace
   text.** The system font path (Consolas in `C:\Windows\Fonts`) was inserted
   as a font-family entry without its bytes ever being loaded, so epaint
@@ -53,6 +57,11 @@ log; entries start at the first public release.
   read through the system text-to-speech engine, using the same master and
   per-family switches and the same 50-mile GPS/marker rule as the desktop
   build.
+- **Android Storm Watch (opt-in)**: a Settings -> Voice alerts toggle starts a
+  foreground service with a persistent notification and its own TTS engine.
+  It polls the last GPS fix every 60 seconds and speaks new warnings while
+  Stormscope is closed (Android 15 caps `dataSync` foreground services at
+  about 6 hours per day); a Stop action on the notification turns it off.
 - **The AI meteorologist window fills the app screen** on a phone: it opens
   edge to edge between the app's status bar and timeline (which stay visible
   and usable — this is not the chrome-free fullscreen mode), with the whole

@@ -397,6 +397,11 @@ pub struct AppState {
     /// Piper voice id selected in Settings (`None` = best installed voice,
     /// currently the female lessac high model). Android uses system TTS.
     pub voice_model: Option<String>,
+    /// Android opt-in background Storm Watch service. The Android
+    /// SharedPreferences value is the source of truth; this is synced from
+    /// Java for the Settings checkbox.
+    pub storm_watch_enabled: bool,
+    pub storm_watch_polled_at: f64,
     pub show_alerts: bool,
     /// Alerts browser visibility and which tab is showing.
     pub alerts_popup_open: bool,
@@ -887,6 +892,8 @@ impl Default for AppState {
             voice_watches: voice.watches,
             voice_other_warnings: voice.other_warnings,
             voice_model: voice.model,
+            storm_watch_enabled: false,
+            storm_watch_polled_at: f64::NEG_INFINITY,
             alerts_hover: None,
             alerts_map_stack: Vec::new(),
             alerts_fill: 0.45,

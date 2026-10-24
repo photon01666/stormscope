@@ -369,17 +369,6 @@ pub struct StormApp {
     /// Recomputed each frame from the monitor's physical height in
     /// `sidebar_overlay`; shown as a footer note while active.
     pub sidebar_scale: f32,
-    /// Alert ids already considered for spoken announcements. Seeded during
-    /// the startup/site-change warm-up so an app launch does not read every
-    /// active warning aloud.
-    pub voice_seen: std::collections::HashSet<String>,
-    /// Spoken alerts stay quiet until this instant, letting the initial
-    /// sweep (or a newly selected station) populate `voice_seen` first.
-    pub voice_armed_at: Option<std::time::Instant>,
-    /// The first nationwide feed is also a silent baseline: it can arrive
-    /// after the station feeds' warm-up and would otherwise read every
-    /// already-active warning near a marker.
-    pub voice_all_seeded: bool,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -525,9 +514,6 @@ impl StormApp {
             last_trim: std::time::Instant::now(),
             sidebar_open: false,
             sidebar_scale: 1.0,
-            voice_seen: std::collections::HashSet::new(),
-            voice_armed_at: None,
-            voice_all_seeded: false,
         }
     }
 
@@ -603,9 +589,6 @@ impl StormApp {
             return;
         }
         self.state.site_id = id.to_string();
-        // Do not read the new station's already-active alerts aloud just
-        // because the site changed; seed them during a short warm-up.
-        self.voice_armed_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
         // Tracks from the old site must not smooth into the new site's.
         self.prev_tracks.clear();
         self.tracks_cache = None;
@@ -615,78 +598,13 @@ impl StormApp {
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
     }
 
-    /// Read newly arrived warnings/watches aloud, but only those whose
-    /// polygon is within 50 miles of the GPS fix or a manual marker. The
-    /// first batch after launch or a site change is a silent baseline: it
-    /// seeds `voice_seen` so already-active alerts are not read just because
-    /// the app opened.
-    fn announce_nearby_alerts(&mut self) {
-        let now = std::time::Instant::now();
-        let armed = *self
-            .voice_armed_at
-            .get_or_insert(now + std::time::Duration::from_secs(10));
-
-        // The fast/slow station feeds cover the selected radar; the
-        // nationwide feed covers markers/GPS anywhere else. Merge by id.
-        let mut ids = std::collections::HashSet::new();
-        let mut candidates: Vec<&radar_core::warnings::Warning> = Vec::new();
-        for warning in self.state.alerts.iter().chain(self.state.all_alerts.iter()) {
-            if ids.insert(warning.id.as_str()) {
-                candidates.push(warning);
-            }
-        }
-
-        let mut points: Vec<(f64, f64)> = self
-            .state
-            .markers
-            .iter()
-            .map(|marker| (marker.lat, marker.lon))
-            .collect();
-        if let Some(fix) = self.state.gps_fix {
-            points.push(fix);
-        }
-
-        let mut fresh = Vec::new();
-        for warning in candidates {
-            let Some(category) = crate::voice::category(warning) else {
-                continue;
-            };
-            // Seen ids are remembered even while muted or for a disabled
-            // family, so turning a switch back on does not replay everything
-            // already nearby.
-            if !self.voice_seen.insert(warning.id.clone()) {
-                continue;
-            }
-            if now < armed {
-                continue;
-            }
-            let enabled = match category {
-                crate::voice::Category::Tornado => self.state.voice_tornado,
-                crate::voice::Category::SevereThunderstorm => self.state.voice_severe_thunderstorm,
-                crate::voice::Category::Watch => self.state.voice_watches,
-                crate::voice::Category::OtherWarning => self.state.voice_other_warnings,
-            };
-            if !enabled {
-                continue;
-            }
-            if !crate::voice::near_points(warning, &points) {
-                continue;
-            }
-            fresh.push(warning.clone());
-        }
-        if !self.state.voice_alerts || fresh.is_empty() {
-            return;
-        }
-        fresh.sort_by_key(|warning| std::cmp::Reverse(crate::voice::rank(warning)));
-        for warning in fresh.iter().take(crate::voice::MAX_BURST) {
-            crate::voice::announce(crate::voice::announcement(warning));
-        }
-        if fresh.len() > crate::voice::MAX_BURST {
-            crate::voice::announce(format!(
-                "And {} more new alerts within 50 miles.",
-                fresh.len() - crate::voice::MAX_BURST
-            ));
-        }
+    /// Send the app's alert lists through the shared voice notifier. The
+    /// data thread calls the same notifier, so desktop speech does not depend
+    /// on UI frames (e.g. a hidden Wayland workspace); the shared seen set
+    /// prevents duplicate announcements.
+    fn announce_nearby_alerts(&self) {
+        crate::voice::notify_near(&self.state.alerts);
+        crate::voice::notify_near(&self.state.all_alerts);
     }
 
     /// Feed the frame-cadence counters and emit the periodic stats line.
@@ -866,11 +784,6 @@ impl StormApp {
                 }
                 DataMsg::AllAlerts(a) => {
                     self.state.all_alerts = a;
-                    if !self.voice_all_seeded {
-                        self.voice_all_seeded = true;
-                        self.voice_armed_at =
-                            Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
-                    }
                     self.announce_nearby_alerts();
                 }
                 DataMsg::Observation(o) => {
@@ -2063,6 +1976,23 @@ impl StormApp {
             self.view3d_section_key = None;
             log::debug!("3D pane off: released its GPU resources and mesh worker");
         }
+        let mut voice_points: Vec<(f64, f64)> = self
+            .state
+            .markers
+            .iter()
+            .map(|marker| (marker.lat, marker.lon))
+            .collect();
+        if let Some(fix) = self.state.gps_fix {
+            voice_points.push(fix);
+        }
+        crate::voice::set_filter(crate::voice::VoiceFilter {
+            enabled: self.state.voice_alerts,
+            tornado: self.state.voice_tornado,
+            severe_thunderstorm: self.state.voice_severe_thunderstorm,
+            watches: self.state.voice_watches,
+            other_warnings: self.state.voice_other_warnings,
+            points: voice_points,
+        });
         self.pump();
         self.pump_srm();
         self.pump_mrms();
@@ -2070,6 +2000,17 @@ impl StormApp {
         self.pump_lightning();
         self.pump_ai_site();
         self.pump_ai_data();
+        // The foreground service writes the Storm Watch toggle when its
+        // notification Stop action is used; keep the Settings checkbox in
+        // sync without polling Java every frame.
+        #[cfg(target_os = "android")]
+        {
+            let now = ui.ctx().input(|input| input.time);
+            if now - self.state.storm_watch_polled_at > 1.0 {
+                self.state.storm_watch_polled_at = now;
+                self.state.storm_watch_enabled = crate::android_storm_watch::enabled();
+            }
+        }
         self.handle_input(ui.ctx());
 
         // Texture accounting (debug): the app's GPU-side footprint, and the

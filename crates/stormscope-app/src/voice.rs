@@ -414,8 +414,17 @@ fn scan_voices() -> Vec<Voice> {
             PathBuf::from("/usr/share/piper-voices"),
             PathBuf::from("/usr/local/share/piper-voices"),
         ];
+        // The release tarball keeps its bundled Piper tree next to the
+        // executable; the installed app uses the same tree under
+        // ~/.local/share/stormscope/piper.
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(parent) = exe.parent()
+        {
+            roots.push(parent.join("piper").join("voices"));
+        }
         if let Some(data) = data_home() {
             roots.push(data.join("piper-voices"));
+            roots.push(data.join("stormscope").join("piper").join("voices"));
         }
         for root in roots {
             add(
@@ -706,13 +715,33 @@ fn synthesize_piper(text: &str, voice: &Voice, wav: &Path) -> bool {
 
         #[cfg(not(windows))]
         {
-            // Python piper-tts only renders a short fragment from a pipe
-            // (heard as a "pew"); an argument produces the whole sentence.
-            command.arg(text).stdin(std::process::Stdio::null());
-            match command.status() {
-                Ok(status) if status.success() && wav.is_file() => return true,
-                Ok(status) => log::debug!("voice: {program:?} exited with {status}"),
-                Err(e) => log::debug!("voice: {program:?}: {e}"),
+            // The bundled C++ Piper reads text from stdin (like the Windows
+            // build); the Python piper-tts wrapper only renders a short
+            // fragment from a pipe and takes the text as an argument. Our
+            // bundled programs are absolute paths.
+            if Path::new(&program).is_absolute() {
+                use std::io::Write;
+
+                command.stdin(std::process::Stdio::piped());
+                let Ok(mut child) = command.spawn() else {
+                    continue;
+                };
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                    let _ = stdin.write_all(b"\n");
+                }
+                match child.wait() {
+                    Ok(status) if status.success() && wav.is_file() => return true,
+                    Ok(status) => log::debug!("voice: {program:?} exited with {status}"),
+                    Err(e) => log::debug!("voice: {program:?}: {e}"),
+                }
+            } else {
+                command.arg(text).stdin(std::process::Stdio::null());
+                match command.status() {
+                    Ok(status) if status.success() && wav.is_file() => return true,
+                    Ok(status) => log::debug!("voice: {program:?} exited with {status}"),
+                    Err(e) => log::debug!("voice: {program:?}: {e}"),
+                }
             }
         }
     }
@@ -724,6 +753,21 @@ fn piper_binaries() -> Vec<std::ffi::OsString> {
     let mut binaries = Vec::new();
     #[cfg(target_os = "linux")]
     {
+        // Prefer the bundled C++ Piper (release tarball next to the binary,
+        // or the installed copy under the data home) before system versions.
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(parent) = exe.parent()
+        {
+            binaries.push(parent.join("piper").join("piper").into_os_string());
+        }
+        if let Some(data) = data_home() {
+            binaries.push(
+                data.join("stormscope")
+                    .join("piper")
+                    .join("piper")
+                    .into_os_string(),
+            );
+        }
         binaries.push("piper-tts".into());
         binaries.push("piper".into());
     }

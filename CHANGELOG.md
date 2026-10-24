@@ -3,6 +3,25 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.4 — 2026-10-24
+
+**Linux**
+- The Linux release is now a tarball that bundles the Piper runtime and the
+  **`en_US-lessac-high`** neural voice, so spoken alerts work without a
+  separate Piper install. Extract the archive and run `./stormscope`; the app
+  finds the adjacent `piper/` tree. The installed app can also use
+  `~/.local/share/stormscope/piper`.
+- The bundled C++ Piper now receives its text on stdin (the input mode it
+  supports); the Python `piper-tts` fallback still takes the text as an
+  argument.
+
+**Android**
+- Includes the v1.5.3 60-second silence timeout and clean session-ending
+  message. versionCode 5.
+
+**Windows**
+- Unchanged from v1.5.2, which still ships the single-file Piper embed.
+
 ## v1.5.3 — 2026-10-24
 
 **Android**

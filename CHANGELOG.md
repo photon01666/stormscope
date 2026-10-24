@@ -50,6 +50,11 @@ log; entries start at the first public release.
   device clock. The temperature/wind/pressure/UV numbers tween when new data
   arrives, forecast temperatures animate, and the moon disc has a slow glow.
 - The Android AI chat composer is taller with a larger Ask button.
+- The Android Map controls window now uses the phone header (title left,
+  painted ✕ at the right edge of a row that spans the box) instead of the
+  stock title bar whose background stopped short of the window edge, and its
+  height hugs the content — no empty band under the last row. Content past
+  the cap scrolls.
 - The Android AI window drops the "Show me" quick-prompt row and the
   data-sharing note under the composer, and the filled window is inset a few
   points so its title header is never flush with (or cut by) the pane edge.

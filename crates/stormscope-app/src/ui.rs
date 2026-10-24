@@ -1049,14 +1049,32 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         .default_size(size)
         .default_pos(anchored_pos(ctx, app.map_rect_at, size, scale));
     if cfg!(target_os = "android") {
-        window = window.fixed_size(size);
+        // The stock title bar's background stopped short of the window's
+        // right edge; the phone header row spans the full width instead.
+        // Without a fixed size the box kept its full 238 pt height with an
+        // empty band under the last row (MRMS/GOES off) — now it hugs its
+        // content up to size.y and scrolls past that.
+        window = window
+            .title_bar(false)
+            .min_size(egui::vec2(size.x, 40.0 * scale))
+            .max_size(size);
     }
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
     window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        {
+            close_requested |= phone_header(ui, "Map controls");
+        }
         apply_text_scale(ui, scale);
-        egui::ScrollArea::vertical()
-            .id_salt("stormscope.map_controls.scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
+        let scroll = egui::ScrollArea::vertical().id_salt("stormscope.map_controls.scroll");
+        #[cfg(target_os = "android")]
+        let scroll = scroll
+            .max_height((size.y - 44.0 * scale).max(120.0))
+            .auto_shrink([false, true]);
+        #[cfg(not(target_os = "android"))]
+        let scroll = scroll.auto_shrink([false, false]);
+        scroll.show(ui, |ui| {
             let mut sliders: Vec<(u8, egui::Rect)> = Vec::new();
             let ref_moment = matches!(
                 app.state.moment,
@@ -1185,6 +1203,9 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             });
             });
         });
+    if close_requested {
+        open = false;
+    }
     if !open {
         app.state.map_controls_open = false;
     }

@@ -3,7 +3,7 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
-## v1.5.1 — 2026-10-23
+## v1.5.1 — 2026-10-24
 
 **Alerts**
 - The Alerts browser separates polygon alerts from zone/county alerts: the

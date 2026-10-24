@@ -90,10 +90,17 @@ No accounts, API keys or telemetry.
 
 ## Install
 
-Prebuilt Linux x86_64 binary from the
-[latest release](https://github.com/photon01666/stormscope/releases). Windows
-builds are produced by CI: download the `stormscope-windows-x86_64` artifact
-from the latest green run of the CI workflow (Windows 10/11, x86_64).
+All three builds ship with the
+[latest release](https://github.com/photon01666/stormscope/releases):
+
+- `stormscope-<version>-linux-x86_64` — x86_64 Linux binary
+- `stormscope-<version>-windows-x86_64.exe` — Windows 10/11, a single file
+  with the Piper neural voice embedded (first launch extracts it to
+  `%LOCALAPPDATA%\stormscope\piper`)
+- `stormscope-<version>-android.apk` — Android 8+, arm64-v8a (sideload;
+  versionCode 2)
+
+CI also uploads a `stormscope-windows-x86_64` artifact on every green run.
 
 Linux:
 

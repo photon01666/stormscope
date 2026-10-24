@@ -3,6 +3,18 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.3 — 2026-10-24
+
+**Android**
+- The Gemini Live voice session now ends after **60 seconds of silence**,
+  closing the microphone and the WebSocket. Speech from either side restarts
+  the timer, so an active conversation is never cut off.
+- Mid-session connection drops now show **“Live AI session ended. Tap Talk to
+  start a new one.”** instead of the raw WebSocket/OS error. The technical
+  detail stays in logcat.
+
+Linux and Windows are unchanged from v1.5.2.
+
 ## v1.5.2 — 2026-10-24
 
 **Android**

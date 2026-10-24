@@ -832,6 +832,10 @@ pub struct AppState {
     pub voice_user_text: String,
     /// Current turn's spoken reply transcript, pushed on turn complete.
     pub voice_reply_text: String,
+    /// Last time either side said anything; a listening session with no
+    /// activity for 60 seconds ends so the mic and Live session do not stay
+    /// open indefinitely.
+    pub voice_last_activity: Option<std::time::Instant>,
     /// Talk was tapped and the fresh forecast/observation fetch is in flight.
     pub voice_pending_start: bool,
     /// When that fetch began (used for the fallback timeout).
@@ -1156,6 +1160,7 @@ impl Default for AppState {
             voice_polled_at: None,
             voice_user_text: String::new(),
             voice_reply_text: String::new(),
+            voice_last_activity: None,
             voice_pending_start: false,
             voice_pending_at: None,
             voice_totals_wanted: false,

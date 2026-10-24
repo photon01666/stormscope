@@ -265,7 +265,15 @@ async fn run(config: LiveConfig, tx: &Sender<LiveEvent>, stop: &AtomicBool) -> R
             incoming = socket.next() => {
                 match incoming {
                     None => break,
-                    Some(Err(error)) => return Err(format!("Gemini Live connection lost: {error}")),
+                    Some(Err(error)) => {
+                        // Mid-session transport errors are not actionable for
+                        // the user (TCP reset, VPN hand-off, server recycle).
+                        // Keep the detail in logcat and show a plain ending.
+                        log::warn!("Gemini Live connection lost: {error}");
+                        return Err(
+                            "Live AI session ended. Tap Talk to start a new one.".into()
+                        );
+                    }
                     Some(Ok(Message::Close(_))) => break,
                     Some(Ok(message)) => {
                         if let Some(text) = text_of(message) {

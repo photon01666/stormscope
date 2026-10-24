@@ -1514,6 +1514,7 @@ impl StormApp {
         self.state.voice_polled_at = None;
         self.state.voice_listening = false;
         self.state.voice_speaking = false;
+        self.state.voice_last_activity = Some(std::time::Instant::now());
         Ok(())
     }
 
@@ -1561,6 +1562,7 @@ impl StormApp {
         }
         self.state.voice_pending_start = true;
         self.state.voice_pending_at = Some(std::time::Instant::now());
+        self.state.voice_last_activity = Some(std::time::Instant::now());
         self.state.voice_status = Some("Loading the forecast and rain/snow totals…".into());
         // A voice brief must know the forecast, current conditions and
         // precipitation totals, not just the radar. The Live model cannot
@@ -1598,6 +1600,7 @@ impl StormApp {
         self.state.voice_pending_start = false;
         self.state.voice_pending_at = None;
         self.state.voice_totals_wanted = false;
+        self.state.voice_last_activity = None;
         self.live_rx = None;
         if let Some(mut live) = self.live.take() {
             live.stop();
@@ -1666,12 +1669,15 @@ impl StormApp {
                 LiveEvent::Listening => {
                     self.state.voice_listening = true;
                     self.state.voice_speaking = false;
+                    self.state.voice_last_activity = Some(std::time::Instant::now());
                     self.state.voice_status = Some("Listening — just talk".into());
                 }
                 LiveEvent::UserPartial(text) => {
+                    self.state.voice_last_activity = Some(std::time::Instant::now());
                     self.state.voice_partial = text;
                 }
                 LiveEvent::UserFinal(text) => {
+                    self.state.voice_last_activity = Some(std::time::Instant::now());
                     let text = text.trim();
                     if !text.is_empty() {
                         // The Live transcription can repeat a cumulative
@@ -1689,6 +1695,7 @@ impl StormApp {
                 }
                 LiveEvent::AssistantPartial(text) => {
                     self.state.voice_speaking = true;
+                    self.state.voice_last_activity = Some(std::time::Instant::now());
                     let text = text.trim();
                     if !text.is_empty() {
                         if self.state.voice_reply_text.is_empty()
@@ -1704,10 +1711,12 @@ impl StormApp {
                 }
                 LiveEvent::Interrupted => {
                     self.state.voice_speaking = false;
+                    self.state.voice_last_activity = Some(std::time::Instant::now());
                     self.state.voice_status = Some("Listening — just talk".into());
                 }
                 LiveEvent::TurnComplete => {
                     self.state.voice_speaking = false;
+                    self.state.voice_last_activity = Some(std::time::Instant::now());
                     self.state.voice_status = Some("Listening — just talk".into());
                     self.voice_push_turn();
                     self.state.voice_partial.clear();
@@ -1730,6 +1739,20 @@ impl StormApp {
         }
         if self.state.voice_convo {
             let now = std::time::Instant::now();
+            if self.state.voice_listening
+                && !self.state.voice_speaking
+                && self.state.voice_last_activity.is_some_and(|last| {
+                    now.duration_since(last) > std::time::Duration::from_secs(60)
+                })
+            {
+                log::info!("Gemini Live: 60 s of silence — ending the voice session");
+                self.ai_note(
+                    "Live AI session ended after 60 seconds of silence. Tap Talk to start a new one."
+                        .into(),
+                );
+                self.end_voice_convo();
+                return;
+            }
             if self
                 .state
                 .voice_polled_at

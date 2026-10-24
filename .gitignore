@@ -38,3 +38,6 @@ markers.json
 prefs.json
 site.json
 *.persist
+
+# Release staging artifacts (attached to GitHub releases, never committed)
+/dist/

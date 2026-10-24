@@ -1096,13 +1096,13 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             close_requested |= phone_header(ui, "Map controls");
         }
         apply_text_scale(ui, scale);
-        let scroll = egui::ScrollArea::vertical().id_salt("stormscope.map_controls.scroll");
-        #[cfg(target_os = "android")]
-        let scroll = scroll
+        // Shrink to the content up to the size cap on every platform: the
+        // desktop used auto_shrink([false, false]), which pinned the box to
+        // its default height and left an empty band under the last row.
+        let scroll = egui::ScrollArea::vertical()
+            .id_salt("stormscope.map_controls.scroll")
             .max_height((size.y - 44.0 * scale).max(120.0))
             .auto_shrink([false, true]);
-        #[cfg(not(target_os = "android"))]
-        let scroll = scroll.auto_shrink([false, false]);
         scroll.show(ui, |ui| {
             let mut sliders: Vec<(u8, egui::Rect)> = Vec::new();
             let ref_moment = matches!(

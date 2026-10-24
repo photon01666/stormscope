@@ -59,7 +59,9 @@ log; entries start at the first public release.
   painted ✕ at the right edge of a row that spans the box) instead of the
   stock title bar whose background stopped short of the window edge, and its
   height hugs the content — no empty band under the last row. Content past
-  the cap scrolls.
+  the cap scrolls. The desktop Map controls window had the same empty band
+  (its scroll area pinned the box to the default height); it now hugs its
+  content on Linux and Windows too.
 - The Android AI window drops the "Show me" quick-prompt row and the
   data-sharing note under the composer, and the filled window is inset a few
   points so its title header is never flush with (or cut by) the pane edge.

@@ -2,6 +2,7 @@ package com.stormscope.app;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.location.Location;
@@ -38,6 +39,11 @@ public class MainActivity extends GameActivity {
 
     private static final int LOCATION_REQUEST = 0x4750; // "GP"
     private static final int NOTIFICATION_REQUEST = 0x4751; // "GP" + 1
+    /** Intent extra: the Storm Watch notification was tapped. */
+    public static final String EXTRA_AI_BRIEF = "stormscope_ai_brief";
+
+    /** One-shot flag parked by the notification, consumed by Rust's UI loop. */
+    private static volatile boolean sPendingAiBrief;
 
     /** Latest fix as {lat, lon}; volatile because Rust reads it on its own thread. */
     private static volatile double[] sLocation;
@@ -61,6 +67,8 @@ public class MainActivity extends GameActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        sPendingAiBrief = getIntent() != null
+                && getIntent().getBooleanExtra(EXTRA_AI_BRIEF, false);
         sPrefs = getSharedPreferences("stormscope", MODE_PRIVATE);
         startLocation(false);
         initTts();
@@ -83,6 +91,26 @@ public class MainActivity extends GameActivity {
     protected void onPause() {
         sForeground = false;
         super.onPause();
+    }
+
+    /** singleTask: notification taps arrive here when the app is alive. */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent != null && intent.getBooleanExtra(EXTRA_AI_BRIEF, false)) {
+            sPendingAiBrief = true;
+        }
+    }
+
+    /**
+     * Called from Rust (JNI, UI thread): consume the notification's "write a
+     * brief" request exactly once and return whether it was pending.
+     */
+    public boolean stormscopeTakeAiBriefRequest() {
+        boolean pending = sPendingAiBrief;
+        sPendingAiBrief = false;
+        return pending;
     }
 
     /** True while the game window is resumed; the service stays silent then. */

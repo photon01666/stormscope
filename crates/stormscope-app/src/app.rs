@@ -2014,6 +2014,15 @@ impl StormApp {
                 self.state.storm_watch_polled_at = now;
                 self.state.storm_watch_enabled = crate::android_storm_watch::enabled();
             }
+            // The persistent notification's content intent: open the AI
+            // window and ask for a brief, exactly like pressing "Write brief".
+            if crate::android_storm_watch::take_brief_request() {
+                self.state.ai_open = true;
+                let no_markers = self.state.markers.is_empty() && self.state.gps_fix.is_none();
+                if self.state.ai_config().is_configured() && !no_markers && !self.state.ai_pending {
+                    self.ai_request(None);
+                }
+            }
         }
         self.handle_input(ui.ctx());
 

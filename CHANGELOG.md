@@ -81,6 +81,9 @@ log; entries start at the first public release.
   It polls the last GPS fix every 60 seconds and speaks new warnings while
   Stormscope is closed (Android 15 caps `dataSync` foreground services at
   about 6 hours per day); a Stop action on the notification turns it off.
+  The persistent notification also doubles as a current-conditions readout
+  (Open-Meteo: temperature, sky, wind, refreshed each poll), and tapping it
+  opens the AI meteorologist and automatically asks it for a brief.
 - **The AI meteorologist window fills the app screen** on a phone: it opens
   edge to edge between the app's status bar and timeline (which stay visible
   and usable — this is not the chrome-free fullscreen mode), with the whole

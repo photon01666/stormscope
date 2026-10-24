@@ -39,6 +39,29 @@ pub fn enabled() -> bool {
     res.unwrap_or(false)
 }
 
+/// One-shot: did the Storm Watch notification ask for an AI brief? Reads and
+/// clears the flag Java parked when the notification's content intent fired.
+pub fn take_brief_request() -> bool {
+    let Some(app) = ANDROID_APP.get() else {
+        return false;
+    };
+    let vm_ptr = app.vm_as_ptr() as usize;
+    let activity_ptr = app.activity_as_ptr() as usize;
+    let vm = unsafe { jni::JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) };
+    let res = vm.attach_current_thread(|env| {
+        let activity =
+            unsafe { jni::objects::JObject::from_raw(env, activity_ptr as jni::sys::jobject) };
+        let value = env.call_method(
+            &activity,
+            jni::jni_str!("stormscopeTakeAiBriefRequest"),
+            jni::jni_sig!("()Z"),
+            &[],
+        )?;
+        value.z()
+    });
+    res.unwrap_or(false)
+}
+
 /// Start or stop the background service; persists the preference in Java.
 pub fn set_enabled(enabled: bool) {
     let Some(app) = ANDROID_APP.get() else {

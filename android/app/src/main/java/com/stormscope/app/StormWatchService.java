@@ -59,6 +59,8 @@ public class StormWatchService extends Service {
     private final DateTimeFormatter timeFmt =
             DateTimeFormatter.ofPattern("h:mm a", Locale.US);
     private final ArrayDeque<String> pendingSpeech = new ArrayDeque<>();
+    /** Last successful current-weather line, shown in the notification. */
+    private volatile String weatherLine;
 
     private SharedPreferences prefs;
     private Handler main;
@@ -82,7 +84,7 @@ public class StormWatchService extends Service {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         main = new Handler(Looper.getMainLooper());
         createChannel();
-        startForeground(NOTIFICATION_ID, notification());
+        startForeground(NOTIFICATION_ID, notification("Watching for severe warnings in the background"));
         initTts();
         poller = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "storm-watch");
@@ -161,9 +163,12 @@ public class StormWatchService extends Service {
         nm.createNotificationChannel(channel);
     }
 
-    private Notification notification() {
+    private Notification notification(String line) {
+        // Tapping the persistent notification opens the app's AI window and
+        // asks it for a brief.
         Intent open = new Intent(this, MainActivity.class)
-                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(MainActivity.EXTRA_AI_BRIEF, true);
         PendingIntent content = PendingIntent.getActivity(
                 this, 0, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
@@ -174,7 +179,7 @@ public class StormWatchService extends Service {
         return new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setContentTitle("Stormscope Storm Watch")
-                .setContentText("Watching for severe warnings in the background")
+                .setContentText(line)
                 .setContentIntent(content)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
@@ -183,6 +188,14 @@ public class StormWatchService extends Service {
                         "Stop",
                         stopIntent).build())
                 .build();
+    }
+
+    /** Refresh the persistent notification's line (current weather…). */
+    private void updateNotification(String line) {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm != null) {
+            nm.notify(NOTIFICATION_ID, notification(line));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -258,16 +271,27 @@ public class StormWatchService extends Service {
             stopSelf();
             return;
         }
-        if (MainActivity.isAppForeground()) {
-            // The in-app voice path handles foreground announcements.
-            return;
-        }
         double lat = Double.longBitsToDouble(
                 prefs.getLong("last_lat_bits", Double.doubleToRawLongBits(Double.NaN)));
         double lon = Double.longBitsToDouble(
                 prefs.getLong("last_lon_bits", Double.doubleToRawLongBits(Double.NaN)));
         if (Double.isNaN(lat) || Double.isNaN(lon)) {
             Log.i(TAG, "Storm Watch waiting for a GPS fix");
+            updateNotification("Waiting for a GPS fix · watching for warnings");
+            return;
+        }
+        // The persistent notification doubles as a current-conditions readout;
+        // refresh it even while the app is foreground.
+        String weather = weatherSummary(lat, lon);
+        if (weather != null) {
+            weatherLine = weather;
+        }
+        String line = (weatherLine != null ? weatherLine : "Current weather unavailable")
+                + " · watching for warnings";
+        updateNotification(line);
+
+        if (MainActivity.isAppForeground()) {
+            // The in-app voice path handles foreground announcements.
             return;
         }
 
@@ -354,12 +378,16 @@ public class StormWatchService extends Service {
 
     private String fetch(double lat, double lon) throws Exception {
         String point = String.format(Locale.US, "%.4f,%.4f", lat, lon);
-        URL url = new URL("https://api.weather.gov/alerts/active?status=actual&point=" + point);
+        return getJson("https://api.weather.gov/alerts/active?status=actual&point=" + point);
+    }
+
+    /** One GET returning the full body; both alerts and weather use it. */
+    private String getJson(String spec) throws Exception {
+        URL url = new URL(spec);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setRequestProperty(
                 "User-Agent",
                 "stormscope/1.5.1 (+https://github.com/photon01666/stormscope)");
-        connection.setRequestProperty("Accept", "application/geo+json");
         connection.setConnectTimeout(10_000);
         connection.setReadTimeout(15_000);
         try {
@@ -379,6 +407,79 @@ public class StormWatchService extends Service {
         } finally {
             connection.disconnect();
         }
+    }
+
+    /**
+     * Current conditions for the notification line from Open-Meteo (NWS has
+     * no single current-weather endpoint as cheap as this): a compact
+     * "63°F · Clear · wind ESE 6 mph" string, or null when unavailable.
+     */
+    private String weatherSummary(double lat, double lon) {
+        try {
+            String url = String.format(Locale.US,
+                    "https://api.open-meteo.com/v1/forecast"
+                            + "?latitude=%.4f&longitude=%.4f"
+                            + "&current=temperature_2m,weather_code,wind_speed_10m,"
+                            + "wind_direction_10m&temperature_unit=fahrenheit"
+                            + "&wind_speed_unit=mph",
+                    lat, lon);
+            JSONObject current = new JSONObject(getJson(url)).optJSONObject("current");
+            if (current == null) {
+                return null;
+            }
+            double temp = current.optDouble("temperature_2m", Double.NaN);
+            double wind = current.optDouble("wind_speed_10m", Double.NaN);
+            double dir = current.optDouble("wind_direction_10m", Double.NaN);
+            int code = current.optInt("weather_code", -1);
+            StringBuilder line = new StringBuilder();
+            if (!Double.isNaN(temp)) {
+                line.append(String.format(Locale.US, "%.0f°F", temp));
+            }
+            String word = weatherWord(code);
+            if (!word.isEmpty()) {
+                if (line.length() > 0) {
+                    line.append(" · ");
+                }
+                line.append(word);
+            }
+            if (!Double.isNaN(wind) && !Double.isNaN(dir)) {
+                if (line.length() > 0) {
+                    line.append(" · ");
+                }
+                line.append("wind ").append(compass16(dir))
+                        .append(String.format(Locale.US, " %.0f mph", wind));
+            }
+            return line.length() == 0 ? null : line.toString();
+        } catch (Exception e) {
+            Log.w(TAG, "current weather fetch failed: " + e);
+            return null;
+        }
+    }
+
+    private static String weatherWord(int code) {
+        if (code < 0) {
+            return "";
+        }
+        if (code == 0) return "Clear";
+        if (code <= 2) return "Mostly clear";
+        if (code == 3) return "Overcast";
+        if (code <= 48) return "Fog";
+        if (code <= 57) return "Drizzle";
+        if (code <= 67) return "Rain";
+        if (code <= 77) return "Snow";
+        if (code <= 82) return "Showers";
+        if (code <= 86) return "Snow showers";
+        if (code >= 95) return "Thunderstorms";
+        return "Cloudy";
+    }
+
+    private static String compass16(double degrees) {
+        String[] names = {
+                "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"
+        };
+        int idx = (int) Math.floor((((degrees % 360.0) + 360.0) % 360.0) / 22.5 + 0.5) % 16;
+        return names[idx];
     }
 
     private VoicePrefs readVoicePrefs() {

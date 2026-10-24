@@ -65,6 +65,17 @@ log; entries start at the first public release.
   crisp rim, faint craters, correct waxing/waning side. Current conditions
   now read "Temp" instead of "Air".
 
+**AI meteorologist**
+- The AI snapshot now carries **every** forecast period in the list, not just
+  the first four — the model no longer claims the forecast "only goes to
+  Sunday" when the window shows next Friday. Each period also includes its
+  start time (UTC) and day/night flag.
+- Asking a question when the cached surface observation is older than two
+  minutes now refreshes current conditions first: the question is parked for
+  the duration of the refresh (bounded by a 6-second deadline) and the answer
+  is built from the fresh snapshot, so a repeat question never reuses stale
+  weather.
+
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,
   window titles, the Android app label and the docs (crate/package names,

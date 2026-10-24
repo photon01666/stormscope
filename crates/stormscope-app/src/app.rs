@@ -246,6 +246,10 @@ pub enum DataCmd {
 /// Id of the synthetic test polygon `STORMSCOPE_DEBUG_WARNING` injects.
 const DEBUG_WARNING_ID: &str = "DEBUG-TEST-OVERLAY";
 
+/// A surface observation older than this makes the next AI question wait for
+/// a refresh, so asking twice never reuses a stale current-weather snapshot.
+const AI_OBS_FRESH_SECS: f64 = 120.0;
+
 /// Which cache section a pending "clear" is asking to delete.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ClearTarget {
@@ -371,6 +375,12 @@ pub struct StormApp {
     /// Recomputed each frame from the monitor's physical height in
     /// `sidebar_overlay`; shown as a footer note while active.
     pub sidebar_scale: f32,
+    /// A question asked while the surface observation was stale, parked here
+    /// until the forced refresh lands (or a deadline passes), then sent so
+    /// the answer is built from fresh current-weather data.
+    pub ai_fresh_queue: Option<Option<String>>,
+    pub ai_fresh_started: Option<std::time::Instant>,
+    pub ai_fresh_deadline: Option<std::time::Instant>,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -516,6 +526,9 @@ impl StormApp {
             last_trim: std::time::Instant::now(),
             sidebar_open: false,
             sidebar_scale: 1.0,
+            ai_fresh_queue: None,
+            ai_fresh_started: None,
+            ai_fresh_deadline: None,
         }
     }
 
@@ -795,6 +808,7 @@ impl StormApp {
                     self.state
                         .forecast_fetched_at
                         .get_or_insert_with(std::time::Instant::now);
+                    self.state.observation_fetched_at = Some(std::time::Instant::now());
                     log::debug!(
                         "observation {} ({}) at {:?}: {:.1}C {}",
                         o.station_id,
@@ -1064,6 +1078,8 @@ impl StormApp {
             }
         }
 
+        self.drain_ai_fresh_queue();
+
         // Pending archive jump (set by clicking a historical warning): once
         // the ring holds a frame near the warning's time, park the playhead
         // there — alongside it the archive date/time it was loaded for.
@@ -1190,6 +1206,32 @@ impl StormApp {
             return;
         }
         let asked = question.filter(|q| !q.trim().is_empty());
+        // Answer from fresh current weather: when a surface observation is on
+        // screen but older than the freshness window, force a refresh and park
+        // the question until the new observation lands (or a deadline passes,
+        // so a slow NWS reply can never hang the request).
+        let stale = self.state.observation.is_some()
+            && self
+                .state
+                .observation_age_secs()
+                .is_none_or(|age| age > AI_OBS_FRESH_SECS);
+        if stale {
+            let now = std::time::Instant::now();
+            self.state.ai_pending = true;
+            self.ai_fresh_queue = Some(asked);
+            self.ai_fresh_started = Some(now);
+            self.ai_fresh_deadline = Some(now + std::time::Duration::from_secs(6));
+            log::info!(
+                "AI: observation {:?} old — refreshing current conditions first",
+                self.state.observation_age_secs().map(|a| a as i64)
+            );
+            crate::ui::forecast::request_forecast_now(self);
+            return;
+        }
+        self.finish_ai_request(asked);
+    }
+
+    fn finish_ai_request(&mut self, asked: Option<String>) {
         let shown = asked.clone().unwrap_or_else(|| self.brief_ask());
         self.ai_push(AiRole::User, shown);
         self.state.ai_question_ctx = asked.clone();
@@ -1204,6 +1246,35 @@ impl StormApp {
         self.state.ai_pending_data_at = None;
         self.state.ai_last_look.clear();
         self.send_ai(asked, Vec::new());
+    }
+
+    /// Release a question parked while the observation refresh was in flight:
+    /// send it when fresh data landed, or on the deadline fall back to the
+    /// cached snapshot rather than hanging the request.
+    fn drain_ai_fresh_queue(&mut self) {
+        let (Some(started), Some(deadline)) = (self.ai_fresh_started, self.ai_fresh_deadline)
+        else {
+            return;
+        };
+        let fresh = self
+            .state
+            .observation_fetched_at
+            .is_some_and(|t| t >= started);
+        if !fresh && std::time::Instant::now() < deadline {
+            return;
+        }
+        // Outer Option = parked-or-not; flatten gives the inner question
+        // (None means "use the current GPS/marker brief prompt").
+        let asked = self.ai_fresh_queue.take().flatten();
+        self.ai_fresh_started = None;
+        self.ai_fresh_deadline = None;
+        self.state.ai_pending = false;
+        if fresh {
+            log::info!("AI: answering with a fresh surface observation");
+        } else {
+            log::warn!("AI: current-conditions refresh timed out; using the cached snapshot");
+        }
+        self.finish_ai_request(asked);
     }
 
     /// Re-send the last question after a failure, without duplicating it in

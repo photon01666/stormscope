@@ -496,6 +496,10 @@ pub struct AppState {
     /// When the forecast/observation currently on screen was fetched, for the
     /// auto-refresh cadence.
     pub forecast_fetched_at: Option<std::time::Instant>,
+    /// Last time a surface observation actually landed (the forecast stamp
+    /// only marks the first response of a pair). The AI uses this to decide
+    /// whether a second question should wait for a refresh.
+    pub observation_fetched_at: Option<std::time::Instant>,
     /// Current UV index for the forecast point (Open-Meteo).
     pub uv_index: Option<f32>,
     // Rain/snow totals (NWS observation series around the selected site).
@@ -925,6 +929,7 @@ impl Default for AppState {
             forecast_site: String::new(),
             forecast_requested: None,
             forecast_fetched_at: None,
+            observation_fetched_at: None,
             uv_index: None,
             gps_fix: None,
             gps_polled_at: f64::NEG_INFINITY,
@@ -1237,6 +1242,12 @@ fn load_markers() -> Vec<MapMarker> {
 }
 
 impl AppState {
+    /// Age of the loaded surface observation in seconds (None if never one).
+    pub fn observation_age_secs(&self) -> Option<f64> {
+        self.observation_fetched_at
+            .map(|t| t.elapsed().as_secs_f64())
+    }
+
     /// Persist the spoken-alert switches (best-effort).
     pub fn persist_voice_alerts(&self) {
         let path = voice_alerts_path();
@@ -1686,6 +1697,17 @@ mod tests {
     /// The ring must respect the memory budget: with a tiny budget the oldest
     /// frames are evicted (but never below MIN_RING_FRAMES), and the
     /// accounting tracks what is resident.
+    #[test]
+    fn observation_age_tracks_freshness() {
+        use std::time::Duration;
+        let mut state = AppState::default();
+        assert!(state.observation_age_secs().is_none());
+        state.observation_fetched_at = Some(std::time::Instant::now());
+        assert!(state.observation_age_secs().unwrap() < 1.0);
+        state.observation_fetched_at = Some(std::time::Instant::now() - Duration::from_secs(180));
+        assert!(state.observation_age_secs().unwrap() > 120.0);
+    }
+
     #[test]
     fn ring_evicts_by_memory_budget() {
         let mut s = state();

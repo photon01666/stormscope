@@ -387,17 +387,20 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
 
     if let Some(forecast) = input.forecast {
         let point = input.forecast_point;
+        // Every period the forecast window shows: the model must be able to
+        // answer questions about the whole list, not just the first few days.
         let periods: Vec<Value> = forecast
             .periods
             .iter()
-            .take(4)
             .map(|p| {
                 json!({
                     "name": p.name,
+                    "start_utc": p.start.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "is_daytime": p.is_daytime,
                     "temperature_f": round(p.temperature),
                     "wind": p.wind,
                     "short": p.short,
-                    "detailed": clip(&p.detailed, 240),
+                    "detailed": clip(&p.detailed, 320),
                 })
             })
             .collect();

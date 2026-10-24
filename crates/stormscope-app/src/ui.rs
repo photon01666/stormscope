@@ -6,7 +6,7 @@ use radar_core::Moment;
 
 mod ai;
 pub(crate) mod alerts;
-mod forecast;
+pub(crate) mod forecast;
 mod map;
 mod reports;
 mod totals;

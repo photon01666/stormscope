@@ -349,6 +349,21 @@ pub(super) fn request_forecast_if_stale(app: &mut StormApp) {
     ) {
         return;
     }
+    request_forecast_now(app);
+}
+
+/// Unconditional refresh of forecast + current conditions + UV for the
+/// current target. The AI calls this before answering when its cached
+/// surface observation has gone stale.
+pub(crate) fn request_forecast_now(app: &mut StormApp) {
+    let picked = app.state.forecast_point;
+    let (lat, lon) = match picked {
+        Some(p) => p,
+        None => match radar_core::sites::site(&app.state.site_id) {
+            Some(s) => (s.latitude, s.longitude),
+            None => return,
+        },
+    };
     // Target changed: drop what is on screen rather than showing the old
     // point's numbers under the new point's label.
     if let Some((plat, plon)) = app.state.forecast_requested {
@@ -357,10 +372,7 @@ pub(super) fn request_forecast_if_stale(app: &mut StormApp) {
             app.state.observation = None;
         }
     }
-    log::debug!(
-        "forecast refresh: {lat:.4}, {lon:.4} (loaded age {:?}s)",
-        age.map(|a| a as i64)
-    );
+    log::debug!("forecast refresh (forced for AI): {lat:.4}, {lon:.4}");
     app.state.forecast_requested = Some((lat, lon));
     app.state.forecast_site = match picked {
         Some(_) => "pinned".to_string(),

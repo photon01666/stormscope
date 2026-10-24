@@ -36,7 +36,9 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     // Refetch when the station changed, when the point was repicked, or when
     // what is on screen has aged past the cadence — and keep a slow repaint
     // coming so that timer can fire while nothing else animates.
-    ctx.request_repaint_after(std::time::Duration::from_secs(30));
+    // Fast repaint: the row icons (rain, sun rays, drifting clouds) and the
+    // moon glow are time-animated, and egui only redraws on request.
+    ctx.request_repaint_after(std::time::Duration::from_millis(150));
     request_forecast_if_stale(app);
 
     let fill = cfg!(target_os = "android");
@@ -197,55 +199,73 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
                             return;
                         }
                         for (i, p) in fc.periods.iter().enumerate() {
-                            let temp = if p.temperature.is_finite() {
-                                let shown = ui.animate_value_with_time(
-                                    egui::Id::new(("fc-temp", i)),
-                                    p.temperature,
-                                    0.5,
+                            let icon = weather_icon_kind(&p.short, p.is_daytime);
+                            ui.horizontal(|ui| {
+                                let (icon_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(34.0, 34.0),
+                                    egui::Sense::hover(),
                                 );
-                                format!("{shown:.0}°{}", p.unit)
-                            } else {
-                                "—".to_string()
-                            };
-                            let subtitle = if p.wind.is_empty() {
-                                p.short.clone()
-                            } else if p.short.is_empty() {
-                                p.wind.clone()
-                            } else {
-                                format!("{} · {}", p.short, p.wind)
-                            };
-                            let title_short = format!("{} — {temp}", p.name);
-                            let title_full = if subtitle.is_empty() {
-                                title_short.clone()
-                            } else {
-                                format!("{title_short} · {subtitle}")
-                            };
-                            // CollapsingHeader draws its title on one line
-                            // with TextWrapMode::Extend: it does not wrap,
-                            // it just runs past the window and gets clipped
-                            // ("…Showers · S 5 mj" on a phone). Keep the
-                            // full line only when it actually fits; otherwise
-                            // use the short title and move the tail into the
-                            // body, which does wrap.
-                            let reserve =
-                                ui.spacing().indent + ui.spacing().button_padding.x + 6.0 * scale;
-                            let button_font = ui
-                                .style()
-                                .text_styles
-                                .get(&egui::TextStyle::Button)
-                                .cloned()
-                                .unwrap_or(egui::FontId::proportional(14.0));
-                            let fits = ui.ctx().fonts_mut(|f| {
-                                f.layout_no_wrap(
-                                    title_full.clone(),
-                                    button_font,
-                                    egui::Color32::WHITE,
+                                draw_weather_icon(ui.ctx(), ui.painter(), icon_rect, icon);
+                                let temp = if p.temperature.is_finite() {
+                                    let shown = ui.animate_value_with_time(
+                                        egui::Id::new(("fc-temp", i)),
+                                        p.temperature,
+                                        0.5,
+                                    );
+                                    format!("{shown:.0}°{}", p.unit)
+                                } else {
+                                    "—".to_string()
+                                };
+                                let subtitle = if p.wind.is_empty() {
+                                    p.short.clone()
+                                } else if p.short.is_empty() {
+                                    p.wind.clone()
+                                } else {
+                                    format!("{} · {}", p.short, p.wind)
+                                };
+                                let title_short = format!("{} — {temp}", p.name);
+                                let title_full = if subtitle.is_empty() {
+                                    title_short.clone()
+                                } else {
+                                    format!("{title_short} · {subtitle}")
+                                };
+                                // CollapsingHeader draws its title on one line
+                                // with TextWrapMode::Extend: it does not wrap,
+                                // it just runs past the window and gets clipped
+                                // ("…Showers · S 5 mj" on a phone). Keep the
+                                // full line only when it actually fits; otherwise
+                                // use the short title and move the tail into the
+                                // body, which does wrap.
+                                // Room for the collapse arrow plus the
+                                // scrollbar: measuring only the arrow let
+                                // long titles run under the window edge on a
+                                // phone ("S 5 mj").
+                                let reserve = ui.spacing().indent
+                                    + ui.spacing().button_padding.x
+                                    + 26.0 * scale;
+                                let mut button_font = ui
+                                    .style()
+                                    .text_styles
+                                    .get(&egui::TextStyle::Button)
+                                    .cloned()
+                                    .unwrap_or(egui::FontId::proportional(14.0));
+                                // Bigger forecast titles: measured and drawn
+                                // with this same font so the fit check cannot
+                                // disagree with what ends up on screen.
+                                button_font.size = (button_font.size * 1.2).min(30.0);
+                                let fits = ui.ctx().fonts_mut(|f| {
+                                    f.layout_no_wrap(
+                                        title_full.clone(),
+                                        button_font.clone(),
+                                        egui::Color32::WHITE,
+                                    )
+                                    .size()
+                                    .x
+                                }) <= (ui.available_width() - reserve).max(0.0);
+                                let title = if fits { title_full } else { title_short };
+                                egui::CollapsingHeader::new(
+                                    egui::RichText::new(title).font(button_font),
                                 )
-                                .size()
-                                .x
-                            }) <= (ui.available_width() - reserve).max(0.0);
-                            let title = if fits { title_full } else { title_short };
-                            egui::CollapsingHeader::new(title)
                                 .id_salt(("forecast.period", i))
                                 .default_open(i == 0)
                                 .show(ui, |ui| {
@@ -263,6 +283,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
                                         }
                                     }
                                 });
+                            });
                         }
                     });
             }
@@ -350,6 +371,255 @@ pub(super) fn request_forecast_if_stale(app: &mut StormApp) {
 
 /// One line of "72°F · Light Rain · dew 61°F · …" for the current conditions,
 /// converted to the US units the rest of the app uses.
+/// Animated weather glyph for a forecast row, keyed off the NWS summary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WeatherIcon {
+    Sunny,
+    ClearNight,
+    PartlyDay,
+    PartlyNight,
+    MostlyDay,
+    Cloudy,
+    Rain,
+    Showers,
+    Thunder,
+    Snow,
+    Fog,
+}
+
+fn weather_icon_kind(short: &str, is_daytime: bool) -> WeatherIcon {
+    let s = short.to_lowercase();
+    if s.contains("thunder") || s.contains("tstm") {
+        WeatherIcon::Thunder
+    } else if s.contains("snow")
+        || s.contains("sleet")
+        || s.contains("ice")
+        || s.contains("blizzard")
+        || s.contains("flurr")
+    {
+        WeatherIcon::Snow
+    } else if s.contains("rain") || s.contains("shower") || s.contains("drizzle") {
+        if s.contains("chance") || s.contains("slight") || s.contains("scattered") {
+            WeatherIcon::Showers
+        } else {
+            WeatherIcon::Rain
+        }
+    } else if s.contains("fog") || s.contains("haze") || s.contains("smoke") || s.contains("mist") {
+        WeatherIcon::Fog
+    } else if s.contains("mostly cloudy") || s.contains("overcast") || s.contains("cloudy") {
+        WeatherIcon::Cloudy
+    } else if s.contains("partly cloudy") || s.contains("partly sunny") {
+        if is_daytime {
+            WeatherIcon::PartlyDay
+        } else {
+            WeatherIcon::PartlyNight
+        }
+    } else if s.contains("mostly clear") || s.contains("mostly sunny") {
+        if is_daytime {
+            WeatherIcon::MostlyDay
+        } else {
+            WeatherIcon::PartlyNight
+        }
+    } else if s.contains("sunny") || s.contains("clear") {
+        if is_daytime {
+            WeatherIcon::Sunny
+        } else {
+            WeatherIcon::ClearNight
+        }
+    } else if is_daytime {
+        WeatherIcon::Sunny
+    } else {
+        WeatherIcon::ClearNight
+    }
+}
+
+const SUN: egui::Color32 = egui::Color32::from_rgb(255, 196, 60);
+const MOON: egui::Color32 = egui::Color32::from_rgb(222, 228, 245);
+const CLOUD: egui::Color32 = egui::Color32::from_rgb(150, 156, 168);
+const RAIN: egui::Color32 = egui::Color32::from_rgb(95, 165, 255);
+const SNOW: egui::Color32 = egui::Color32::from_rgb(235, 240, 255);
+const BOLT: egui::Color32 = egui::Color32::from_rgb(255, 220, 90);
+
+/// Puffy cloud: three lobes over a rounded base, centred in `rect`.
+fn draw_cloud(painter: &egui::Painter, rect: egui::Rect, dx: f32, color: egui::Color32) {
+    let c = rect.center() + egui::vec2(dx, 1.0);
+    let s = rect.width() / 26.0;
+    painter.circle_filled(c + egui::vec2(-5.0 * s, 1.0 * s), 5.0 * s, color);
+    painter.circle_filled(c + egui::vec2(0.0, -2.0 * s), 6.5 * s, color);
+    painter.circle_filled(c + egui::vec2(5.5 * s, 1.5 * s), 4.5 * s, color);
+    let base =
+        egui::Rect::from_center_size(c + egui::vec2(0.0, 4.0 * s), egui::vec2(18.0 * s, 8.0 * s));
+    painter.rect_filled(base, 4.0 * s, color);
+}
+
+/// One animated forecast glyph: sun/moon, clouds, rain, snow, bolt or mist.
+fn draw_weather_icon(
+    ctx: &egui::Context,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    kind: WeatherIcon,
+) {
+    let t = ctx.input(|i| i.time) as f32;
+    let c = rect.center();
+    let r = rect.width() / 2.0;
+    // Interior offsets below are authored for a 26 pt box; k rescales them
+    // when the icon grows.
+    let k = r / 13.0;
+
+    match kind {
+        WeatherIcon::Sunny | WeatherIcon::ClearNight => {
+            if kind == WeatherIcon::Sunny {
+                let glow = 0.5 + 0.5 * (t * 1.2).sin();
+                painter.circle_filled(
+                    c,
+                    r * 0.75 + 3.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 196, 60, (18.0 + 16.0 * glow) as u8),
+                );
+                painter.circle_filled(c, r * 0.55, SUN);
+                for i in 0..8 {
+                    let a = t * 0.5 + i as f32 * std::f32::consts::FRAC_PI_4;
+                    let (sa, ca) = a.sin_cos();
+                    let p1 = c + egui::vec2(ca * r * 0.7, sa * r * 0.7);
+                    let p2 = c + egui::vec2(ca * r * 0.95, sa * r * 0.95);
+                    painter.line_segment([p1, p2], egui::Stroke::new(1.6, SUN));
+                }
+            } else {
+                draw_moon(
+                    painter,
+                    c,
+                    r * 0.8,
+                    0.72,
+                    egui::Color32::from_gray(45),
+                    MOON,
+                );
+            }
+        }
+        WeatherIcon::PartlyDay | WeatherIcon::PartlyNight | WeatherIcon::MostlyDay => {
+            let sun_side = kind == WeatherIcon::PartlyDay || kind == WeatherIcon::MostlyDay;
+            let big_cloud = kind == WeatherIcon::MostlyDay;
+            if sun_side {
+                let sc = c + egui::vec2(-4.0, -5.0);
+                let glow = 0.5 + 0.5 * (t * 1.2).sin();
+                painter.circle_filled(
+                    sc,
+                    6.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 196, 60, (30.0 + 30.0 * glow) as u8),
+                );
+                painter.circle_filled(sc, 4.2, SUN);
+                for i in 0..6 {
+                    let a = t * 0.4 + i as f32 * std::f32::consts::FRAC_PI_3;
+                    let (sa, ca) = a.sin_cos();
+                    painter.line_segment(
+                        [
+                            sc + egui::vec2(ca * 5.4, sa * 5.4),
+                            sc + egui::vec2(ca * 7.0, sa * 7.0),
+                        ],
+                        egui::Stroke::new(1.3, SUN),
+                    );
+                }
+            } else {
+                let mc = c + egui::vec2(-5.0 * k, -5.0 * k);
+                draw_moon(
+                    painter,
+                    mc,
+                    5.0 * k,
+                    0.72,
+                    egui::Color32::from_gray(45),
+                    MOON,
+                );
+            }
+            let drift = (t * 0.6).sin() * 1.5;
+            draw_cloud(
+                painter,
+                egui::Rect::from_center_size(
+                    c + egui::vec2(3.0, 3.0),
+                    egui::vec2(
+                        rect.width() * if big_cloud { 1.1 } else { 1.0 },
+                        rect.height(),
+                    ),
+                ),
+                drift,
+                CLOUD,
+            );
+        }
+        WeatherIcon::Cloudy => {
+            let drift = (t * 0.4).sin() * 2.0;
+            draw_cloud(painter, rect, drift - 2.0, egui::Color32::from_gray(105));
+            draw_cloud(painter, rect, drift + 2.5, CLOUD);
+        }
+        WeatherIcon::Rain | WeatherIcon::Showers | WeatherIcon::Thunder => {
+            let drift = (t * 0.5).sin() * 1.5;
+            draw_cloud(painter, rect, drift, CLOUD);
+            if kind == WeatherIcon::Thunder {
+                let flick = 0.4 + 0.6 * ((t * 6.0).sin() * 0.5 + 0.5);
+                let bolt = [
+                    c + egui::vec2(-1.0 * k, 4.0 * k),
+                    c + egui::vec2(2.5 * k, 4.0 * k),
+                    c + egui::vec2(0.0, 9.5 * k),
+                    c + egui::vec2(3.0 * k, 9.5 * k),
+                    c + egui::vec2(-2.5 * k, 16.0 * k),
+                    c + egui::vec2(-0.5 * k, 10.5 * k),
+                    c + egui::vec2(-3.5 * k, 10.5 * k),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    bolt.to_vec(),
+                    egui::Color32::from_rgba_unmultiplied(
+                        BOLT.r(),
+                        BOLT.g(),
+                        BOLT.b(),
+                        (255.0 * flick) as u8,
+                    ),
+                    egui::Stroke::NONE,
+                ));
+            }
+            let drops = if kind == WeatherIcon::Showers { 2 } else { 3 };
+            for i in 0..drops {
+                let y = (4.0 + ((t * 34.0 + i as f32 * 14.0) % 14.0)) * k;
+                let x = c.x - 5.0 * k + i as f32 * 5.0 * k;
+                painter.line_segment(
+                    [
+                        egui::pos2(x, c.y + y),
+                        egui::pos2(x - 1.5 * k, c.y + y + 3.5 * k),
+                    ],
+                    egui::Stroke::new(1.8, RAIN),
+                );
+            }
+        }
+        WeatherIcon::Snow => {
+            let drift = (t * 0.4).sin() * 1.5;
+            draw_cloud(painter, rect, drift, CLOUD);
+            for i in 0..3 {
+                let y = (4.0 + ((t * 12.0 + i as f32 * 13.0) % 13.0)) * k;
+                let x = (c.x - 5.0 * k + i as f32 * 5.0 * k) + (t * 1.5 + i as f32).sin() * 1.5 * k;
+                let p = egui::pos2(x, c.y + y);
+                painter.line_segment(
+                    [p + egui::vec2(-2.2 * k, 0.0), p + egui::vec2(2.2 * k, 0.0)],
+                    egui::Stroke::new(1.4, SNOW),
+                );
+                painter.line_segment(
+                    [p + egui::vec2(0.0, -2.2 * k), p + egui::vec2(0.0, 2.2 * k)],
+                    egui::Stroke::new(1.4, SNOW),
+                );
+            }
+        }
+        WeatherIcon::Fog => {
+            let drift = (t * 0.3).sin() * 1.2;
+            draw_cloud(painter, rect, drift, CLOUD);
+            for i in 0..3 {
+                let slide = (((t * 9.0 + i as f32 * 5.0) % 12.0) - 6.0) * k;
+                let y = c.y + (5.0 + i as f32 * 3.5) * k;
+                painter.line_segment(
+                    [
+                        egui::pos2(c.x - 7.0 * k + slide, y),
+                        egui::pos2(c.x + 7.0 * k + slide, y),
+                    ],
+                    egui::Stroke::new(1.8, egui::Color32::from_gray(150)),
+                );
+            }
+        }
+    }
+}
+
 fn uv_word(uv: f32) -> &'static str {
     match uv {
         0.0..=2.0 => "Low",
@@ -383,36 +653,74 @@ fn moon_name(phase: f64) -> &'static str {
     }
 }
 
-/// Polygon of the lit portion of a moon disc. The terminator is an ellipse
-/// whose horizontal radius shrinks to zero at quarter moons; the whole shape
-/// is mirrored for the waning half of the cycle.
-fn lit_moon_points(c: egui::Pos2, r: f32, phase: f64) -> Vec<egui::Pos2> {
-    const N: usize = 32;
-    let (frac, mirror) = if phase < 0.5 {
-        (phase, false)
+/// Phase-correct moon built from a dark base, a clipped lit half and the
+/// terminator ellipse — all primitives epaint fills reliably. (A filled lune
+/// polygon renders as an invisible stroke, which made the old glyph a dark
+/// blob with stray dots.)
+///
+/// `phase`: 0.0 = new, 0.25 = first quarter, 0.5 = full, 0.75 = last quarter.
+fn draw_moon(
+    painter: &egui::Painter,
+    c: egui::Pos2,
+    r: f32,
+    phase: f64,
+    dark: egui::Color32,
+    lit: egui::Color32,
+) {
+    let rx = r * (2.0 * std::f64::consts::PI * phase).cos() as f32;
+    let pad = 2.0;
+    let waxing = phase < 0.5;
+    // The lit half first, then the terminator lobe on the appropriate side.
+    let (lit_clip, other_clip) = if waxing {
+        (
+            egui::Rect::from_min_max(
+                egui::pos2(c.x, c.y - r - pad),
+                egui::pos2(c.x + r + pad, c.y + r + pad),
+            ),
+            egui::Rect::from_min_max(
+                egui::pos2(c.x - r - pad, c.y - r - pad),
+                egui::pos2(c.x, c.y + r + pad),
+            ),
+        )
     } else {
-        (phase - 0.5, true)
+        (
+            egui::Rect::from_min_max(
+                egui::pos2(c.x - r - pad, c.y - r - pad),
+                egui::pos2(c.x, c.y + r + pad),
+            ),
+            egui::Rect::from_min_max(
+                egui::pos2(c.x, c.y - r - pad),
+                egui::pos2(c.x + r + pad, c.y + r + pad),
+            ),
+        )
     };
-    let rx = (2.0 * std::f64::consts::PI * frac).cos();
-    let mut points = Vec::with_capacity(2 * N + 2);
-    for i in 0..=N {
-        let a = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * (i as f64 / N as f64);
-        points.push(egui::pos2(
-            c.x + r * a.cos() as f32,
-            c.y + r * a.sin() as f32,
+
+    painter.circle_filled(c, r, dark);
+    painter.with_clip_rect(lit_clip).circle_filled(c, r, lit);
+    if rx >= 0.0 {
+        // Crescent/quarter: the terminator bulges into the lit half; carve it
+        // back out with the dark side of the terminator ellipse.
+        painter.with_clip_rect(lit_clip).add(egui::Shape::Ellipse(
+            egui::epaint::EllipseShape::filled(c, egui::vec2(rx, r), dark),
+        ));
+    } else {
+        // Gibbous: the lit region spills past center over the dark half.
+        painter.with_clip_rect(other_clip).add(egui::Shape::Ellipse(
+            egui::epaint::EllipseShape::filled(c, egui::vec2(-rx, r), lit),
         ));
     }
-    for i in 0..=N {
-        let a = std::f64::consts::FRAC_PI_2 - std::f64::consts::PI * (i as f64 / N as f64);
-        let x = rx * a.cos();
-        points.push(egui::pos2(c.x + r * x as f32, c.y + r * a.sin() as f32));
-    }
-    if mirror {
-        for p in &mut points {
-            p.x = 2.0 * c.x - p.x;
+
+    // Faint craters, only when the disc is mostly lit and on the lit side.
+    if moon_illumination(phase) > 0.85 {
+        let s = if waxing { 1.0 } else { -1.0 };
+        for (dx, dy, cr) in [(0.25, -0.2, 0.13), (0.45, 0.3, 0.09), (0.1, 0.4, 0.07)] {
+            painter.circle_filled(
+                c + egui::vec2(s * dx * r, dy * r),
+                cr * r,
+                egui::Color32::from_gray(200),
+            );
         }
     }
-    points
 }
 
 /// Animated moon-phase glyph: the lit portion is computed from the real
@@ -429,12 +737,16 @@ fn moon_ui(ui: &mut egui::Ui, ctx: &egui::Context) {
         r + 5.0,
         egui::Color32::from_rgba_unmultiplied(200, 205, 255, (8.0 + 24.0 * pulse) as u8),
     );
-    painter.circle_filled(c, r, egui::Color32::from_gray(40));
-    let lit = lit_moon_points(c, r, phase);
-    painter.add(egui::Shape::Path(egui::epaint::PathShape::closed_line(
-        lit,
-        egui::epaint::PathStroke::new(0.0, egui::Color32::from_gray(230)),
-    )));
+    draw_moon(
+        painter,
+        c,
+        r,
+        phase,
+        egui::Color32::from_gray(40),
+        egui::Color32::from_gray(230),
+    );
+    // A thin rim keeps the disc crisp against the window fill.
+    painter.circle_stroke(c, r, egui::Stroke::new(1.0, egui::Color32::from_gray(110)));
     let illum = moon_illumination(phase) * 100.0;
     ui.label(egui::RichText::new(format!("{} · {:.0}% lit", moon_name(phase), illum)).small());
 }
@@ -470,9 +782,9 @@ fn current_conditions_ui(
     match f(o.temperature_c) {
         Some(t) => {
             let shown = ui.animate_value_with_time(egui::Id::new("cc-temp"), t, 0.6);
-            parts.push(format!("Air {shown:.0}°F"));
+            parts.push(format!("Temp {shown:.0}°F"));
         }
-        None => parts.push("Air —°F".into()),
+        None => parts.push("Temp —°F".into()),
     }
     if !o.text.is_empty() {
         parts.push(o.text.clone());
@@ -545,19 +857,22 @@ fn current_conditions_ui(
         let shown = ui.animate_value_with_time(egui::Id::new("cc-uv"), uv, 0.6);
         parts.push(format!("UV {:.1} ({})", shown, uv_word(shown)));
     }
-    ui.label(egui::RichText::new(parts.join(" · ")));
+    // Wrap explicitly: these long summary lines ran under the window edge on
+    // a phone when inherited wrap was off in some layouts.
+    ui.add(egui::Label::new(egui::RichText::new(parts.join(" · "))).wrap());
 
     // Moon phase: a real phase glyph with a slow glow, next to its name.
     ui.horizontal(|ui| {
         moon_ui(ui, &ctx);
-        ui.label(
-            egui::RichText::new(
-                "Moon phase updates from the current time; UV index from Open-Meteo.",
-            )
-            .weak()
-            .small(),
-        );
     });
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new("Moon phase from the device clock · UV index from Open-Meteo")
+                .weak()
+                .small(),
+        )
+        .wrap(),
+    );
 
     if let Some(ts) = o.timestamp {
         let age = chrono::Utc::now() - ts;
@@ -567,13 +882,16 @@ fn current_conditions_ui(
         } else {
             format!("{} h {} min ago", mins / 60, mins % 60)
         };
-        ui.label(
-            egui::RichText::new(format!(
-                "observed {} ({age_text}) · source api.weather.gov · auto-refreshes every 15 min",
-                crate::timefmt::fmt_central(&ts)
-            ))
-            .weak()
-            .small(),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!(
+                    "observed {} ({age_text}) · source api.weather.gov · auto-refreshes every 15 min",
+                    crate::timefmt::fmt_central(&ts)
+                ))
+                .weak()
+                .small(),
+            )
+            .wrap(),
         );
     }
 }

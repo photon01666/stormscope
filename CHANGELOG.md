@@ -50,6 +50,16 @@ log; entries start at the first public release.
   device clock. The temperature/wind/pressure/UV numbers tween when new data
   arrives, forecast temperatures animate, and the moon disc has a slow glow.
 - The Android AI chat composer is taller with a larger Ask button.
+- Every forecast period row now carries an animated weather icon drawn from
+  the NWS summary — sun with rotating rays, drifting clouds, falling rain,
+  drifting snowflakes, a flickering thunder bolt, sliding fog, and day/night
+  variants — sized 34 pt with 1.2x row titles. The window repaints while open
+  so the animation plays, and titles measure against the icon plus scrollbar
+  with an explicit-wrap policy, so phone rows no longer run under the edge.
+- The current-conditions moon glyph is rebuilt from clipped primitives (the
+  old filled polygon rendered as an invisible stroke): correct terminator,
+  crisp rim, faint craters, correct waxing/waning side. Current conditions
+  now read "Temp" instead of "Air".
 
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,

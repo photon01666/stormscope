@@ -801,6 +801,44 @@ pub struct AppState {
     /// hail core, an updraft top…). Replaced by each answer that marks.
     pub ai_annotations: Vec<AiAnnotation>,
 
+    // Gemini Live voice conversation (Android): a native speech-to-speech
+    // session carries the same full weather snapshot the typed AI gets.
+    /// Gemini Live API key (Google AI Studio), separate from the text key.
+    pub gemini_api_key: String,
+    /// Reveal the Gemini key field instead of drawing dots.
+    pub gemini_show_key: bool,
+    /// Persist the Gemini key in `ai.json` (0600).
+    pub gemini_remember_key: bool,
+    /// Live model name (`gemini-3.8-live` by default).
+    pub gemini_model: String,
+    /// Prebuilt voice name (Aoede, Kore, Puck, …).
+    pub gemini_voice: String,
+
+    /// A Gemini Live conversation is running (tap Talk / End).
+    pub voice_convo: bool,
+    /// The session is set up and the microphone is streaming.
+    pub voice_listening: bool,
+    /// Live transcript while the user talks.
+    pub voice_partial: String,
+    /// Model audio is playing.
+    pub voice_speaking: bool,
+    /// What the voice footer shows ("Connecting…", "Listening…", an error).
+    pub voice_status: Option<String>,
+    /// Input level 0..1 for the little equalizer.
+    pub voice_level: f32,
+    /// Last time the Java audio bridge was polled (throttles the JNI call).
+    pub voice_polled_at: Option<std::time::Instant>,
+    /// Current turn's user transcript, pushed to the chat on turn complete.
+    pub voice_user_text: String,
+    /// Current turn's spoken reply transcript, pushed on turn complete.
+    pub voice_reply_text: String,
+    /// Talk was tapped and the fresh forecast/observation fetch is in flight.
+    pub voice_pending_start: bool,
+    /// When that fetch began (used for the fallback timeout).
+    pub voice_pending_at: Option<std::time::Instant>,
+    /// A rain/snow totals fetch is part of the pre-session wait.
+    pub voice_totals_wanted: bool,
+
     /// Playhead advance accumulator for LoopState::Playing.
     _acc: f32,
 }
@@ -830,6 +868,21 @@ impl Default for AppState {
             .or_else(|| std::env::var("STORMSCOPE_AI_KEY").ok())
             .or(ai.api_key.clone())
             .unwrap_or_default();
+        let gemini_api_key = std::env::var("GEMINI_API_KEY")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or(ai.gemini_api_key.clone())
+            .unwrap_or_default();
+        let gemini_model = std::env::var("STORMSCOPE_GEMINI_MODEL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or(ai.gemini_model.clone())
+            .unwrap_or_else(|| "gemini-3.8-live".to_string());
+        let gemini_voice = ai
+            .gemini_voice
+            .clone()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "Aoede".to_string());
         let voice = load_voice_alert_prefs();
         let site = radar_core::sites::site(radar_core::DEFAULT_SITE)
             .unwrap_or_else(|| radar_core::sites::SITES.first().expect("site catalog"));
@@ -1087,6 +1140,25 @@ impl Default for AppState {
             ai_actions: None,
             ai_view_before: None,
             ai_annotations: Vec::new(),
+            gemini_api_key,
+            gemini_show_key: false,
+            gemini_remember_key: ai
+                .gemini_remember_key
+                .unwrap_or(ai.gemini_api_key.is_some()),
+            gemini_model,
+            gemini_voice,
+            voice_convo: false,
+            voice_listening: false,
+            voice_partial: String::new(),
+            voice_speaking: false,
+            voice_status: None,
+            voice_level: 0.0,
+            voice_polled_at: None,
+            voice_user_text: String::new(),
+            voice_reply_text: String::new(),
+            voice_pending_start: false,
+            voice_pending_at: None,
+            voice_totals_wanted: false,
             _acc: 0.0,
         }
     }
@@ -1205,6 +1277,14 @@ struct AiPrefs {
     api_key: Option<String>,
     #[serde(default)]
     remember_key: Option<bool>,
+    #[serde(default)]
+    gemini_api_key: Option<String>,
+    #[serde(default)]
+    gemini_model: Option<String>,
+    #[serde(default)]
+    gemini_voice: Option<String>,
+    #[serde(default)]
+    gemini_remember_key: Option<bool>,
 }
 
 /// `~/.config/stormscope/ai-chat.json`: the last conversation, capped, so a
@@ -1326,6 +1406,12 @@ impl AppState {
             model: Some(self.ai_model.clone()),
             api_key: self.ai_remember_key.then(|| self.ai_api_key.clone()),
             remember_key: Some(self.ai_remember_key),
+            gemini_api_key: self
+                .gemini_remember_key
+                .then(|| self.gemini_api_key.clone()),
+            gemini_model: Some(self.gemini_model.clone()),
+            gemini_voice: Some(self.gemini_voice.clone()),
+            gemini_remember_key: Some(self.gemini_remember_key),
         };
         let Ok(json) = serde_json::to_string_pretty(&prefs) else {
             return;

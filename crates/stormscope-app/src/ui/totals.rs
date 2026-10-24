@@ -302,6 +302,15 @@ pub(super) fn totals_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app
         });
 }
 
+/// Unconditional totals refresh for an explicit point (the AI meteorologist
+/// uses it before a voice session, where the model cannot issue DATA lookups).
+/// The response lands as `station_totals` in the snapshot.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn request_totals_now(app: &mut StormApp, lat: f64, lon: f64) {
+    app.state.totals_requested = Some((lat, lon, std::time::Instant::now()));
+    let _ = app.tx.send(crate::app::DataCmd::LoadTotals(lat, lon));
+}
+
 /// Send a totals request unless one already covers this target — with a
 /// 60-second retry window, so a failed fetch retries on the next visit
 /// instead of either sticking forever or hammering the API. The target is

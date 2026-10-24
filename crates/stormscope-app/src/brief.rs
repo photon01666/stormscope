@@ -332,8 +332,34 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             "spc_day": input.outlook.map(|o| o.day),
             "spc_type": input.outlook.map(|o| o.ty.label()),
             "srm_loaded": input.srm_volume.is_some(),
-            "note": "MRMS/GOES/forecast/totals/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them.",
+            "note": "MRMS/GOES/forecast/totals/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them. Rain/snow values are in `rain_snow_totals`, in inches.",
         }),
+    );
+
+    // Rain/snow totals in one top-level list, independent of whether a
+    // station carries geometry. Per-marker `station_totals` remains for
+    // distance context, but this guarantees the model can see every loaded
+    // station value.
+    root.insert(
+        "rain_snow_totals".into(),
+        json!(
+            input
+                .totals
+                .iter()
+                .take(8)
+                .map(|station| json!({
+                    "station": station.station_id,
+                    "name": station.station_name,
+                    "lat": station.lat,
+                    "lon": station.lon,
+                    "last_obs_utc": station.last_obs.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                    "window_hours": round1(station.window_hours),
+                    "obs_count": station.obs_count,
+                    "latest": station.buckets.iter().take(4).map(|(k, v)| json!({"label": k, "inches": round1(*v)})).collect::<Vec<_>>(),
+                    "hourly_sums": station.hourly_sums.iter().take(3).map(|(k, v)| json!({"label": k, "inches": round1(*v)})).collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>()
+        ),
     );
 
     root.insert(

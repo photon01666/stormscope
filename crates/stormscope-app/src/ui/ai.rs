@@ -90,7 +90,11 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
         }
         super::apply_text_scale(ui, text_scale);
         ui.set_width((size.x - 40.0).max(320.0));
-        ui.label(
+        egui::ScrollArea::vertical()
+            .id_salt("stormscope.ai.settings.scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(
             egui::RichText::new(
                 "The brief is optional. Nothing is sent until you press Write brief or Ask, \
                      and then only the compact snapshot built from the decoded radar, warnings, \
@@ -98,97 +102,97 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
             )
             .weak(),
         );
-        ui.separator();
+                ui.separator();
 
-        ui.label(egui::RichText::new("Provider").strong());
-        ui.horizontal(|ui| {
-            if ui
-                .button("OpenCode Go")
-                .on_hover_text(
-                    "OpenAI-compatible endpoint used by OpenCode Go; \
-                         get a key at opencode.ai/console",
-                )
-                .clicked()
-            {
-                preset = Some((
-                    radar_data::ai::OPENCODE_GO_BASE,
-                    radar_data::ai::OPENCODE_GO_MODEL,
-                ));
-            }
-            if ui
-                .button("Ollama (local)")
-                .on_hover_text("http://localhost:11434/v1 — no key needed")
-                .clicked()
-            {
-                preset = Some(("http://localhost:11434/v1", "llama3.1:8b"));
-            }
-            if ui
-                .button("OpenAI")
-                .on_hover_text("https://api.openai.com/v1")
-                .clicked()
-            {
-                preset = Some(("https://api.openai.com/v1", "gpt-4o-mini"));
-            }
-        });
-        if let Some((base, model)) = preset {
-            app.state.ai_base_url = base.to_string();
-            app.state.ai_model = model.to_string();
-        }
-
-        ui.add_space(4.0);
-        ui.label("Base URL (OpenAI-compatible)");
-        ui.add(
-            egui::TextEdit::singleline(&mut app.state.ai_base_url)
-                .desired_width(ui.available_width())
-                .hint_text("https://opencode.ai/inference/go/v1"),
-        );
-
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Model");
-            ui.menu_button("OpenCode Go models", |ui| {
-                for model in GO_MODELS {
+                ui.label(egui::RichText::new("Provider").strong());
+                ui.horizontal(|ui| {
                     if ui
-                        .selectable_label(app.state.ai_model == *model, *model)
+                        .button("OpenCode Go")
+                        .on_hover_text(
+                            "OpenAI-compatible endpoint used by OpenCode Go; \
+                         get a key at opencode.ai/console",
+                        )
                         .clicked()
                     {
-                        app.state.ai_model = (*model).to_string();
-                        ui.close();
+                        preset = Some((
+                            radar_data::ai::OPENCODE_GO_BASE,
+                            radar_data::ai::OPENCODE_GO_MODEL,
+                        ));
                     }
+                    if ui
+                        .button("Ollama (local)")
+                        .on_hover_text("http://localhost:11434/v1 — no key needed")
+                        .clicked()
+                    {
+                        preset = Some(("http://localhost:11434/v1", "llama3.1:8b"));
+                    }
+                    if ui
+                        .button("OpenAI")
+                        .on_hover_text("https://api.openai.com/v1")
+                        .clicked()
+                    {
+                        preset = Some(("https://api.openai.com/v1", "gpt-4o-mini"));
+                    }
+                });
+                if let Some((base, model)) = preset {
+                    app.state.ai_base_url = base.to_string();
+                    app.state.ai_model = model.to_string();
                 }
-            });
-        });
-        ui.add(
-            egui::TextEdit::singleline(&mut app.state.ai_model)
-                .desired_width(ui.available_width())
-                .hint_text("deepseek-v4.1-flash"),
-        );
 
-        ui.add_space(6.0);
-        ui.label("API key");
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut app.state.ai_api_key)
-                    .password(!app.state.ai_show_key)
-                    .desired_width((ui.available_width() - 72.0).max(100.0))
-                    .hint_text("Paste your OpenCode Go key"),
-            );
-            if ui
-                .small_button(if app.state.ai_show_key {
-                    "Hide"
-                } else {
-                    "Show"
-                })
-                .clicked()
-            {
-                app.state.ai_show_key = !app.state.ai_show_key;
-            }
-        });
-        ui.checkbox(
-            &mut app.state.ai_remember_key,
-            "Remember the key on disk (plain text, 0600)",
-        );
-        ui.label(
+                ui.add_space(4.0);
+                ui.label("Base URL (OpenAI-compatible)");
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.state.ai_base_url)
+                        .desired_width(ui.available_width())
+                        .hint_text("https://opencode.ai/inference/go/v1"),
+                );
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Model");
+                    ui.menu_button("OpenCode Go models", |ui| {
+                        for model in GO_MODELS {
+                            if ui
+                                .selectable_label(app.state.ai_model == *model, *model)
+                                .clicked()
+                            {
+                                app.state.ai_model = (*model).to_string();
+                                ui.close();
+                            }
+                        }
+                    });
+                });
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.state.ai_model)
+                        .desired_width(ui.available_width())
+                        .hint_text("deepseek-v4.1-flash"),
+                );
+
+                ui.add_space(6.0);
+                ui.label("API key");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.state.ai_api_key)
+                            .password(!app.state.ai_show_key)
+                            .desired_width((ui.available_width() - 72.0).max(100.0))
+                            .hint_text("Paste your OpenCode Go key"),
+                    );
+                    if ui
+                        .small_button(if app.state.ai_show_key {
+                            "Hide"
+                        } else {
+                            "Show"
+                        })
+                        .clicked()
+                    {
+                        app.state.ai_show_key = !app.state.ai_show_key;
+                    }
+                });
+                ui.checkbox(
+                    &mut app.state.ai_remember_key,
+                    "Remember the key on disk (plain text, 0600)",
+                );
+                ui.label(
             egui::RichText::new(
                 "The OPENCODE_API_KEY environment variable is read at launch; a key set here \
                      overrides it. Keys are sent only to the base URL above.",
@@ -197,44 +201,117 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
             .small(),
         );
 
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .button("Save")
-                .on_hover_text("Write endpoint and model to ~/.config/stormscope/ai.json")
-                .clicked()
-            {
-                save = true;
-            }
-            if ui.button("Clear key").clicked() {
-                app.state.ai_api_key.clear();
-                save = true;
-            }
-            if ui
-                .button("Test connection")
-                .on_hover_text("One tiny request — verifies URL, key and model")
-                .clicked()
-            {
-                save = true;
-                test = true;
-            }
-        });
-        if save {
-            app.state.persist_ai();
-        }
-        if test {
-            app.ai_test();
-        }
-        if app.state.ai_test_pending {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Testing…");
-            });
-        } else if let Some(status) = &app.state.ai_test_status {
-            ui.label(egui::RichText::new(status).small());
-        }
-        ui.add_space(4.0);
-        ui.label(
+                #[cfg(target_os = "android")]
+                {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Gemini Live — natural voice conversation").strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "Android only. Google AI Studio's Live API holds a native \
+                     speech-to-speech conversation and receives the same weather snapshot \
+                     as a typed question, as text. Voice audio is streamed to Google; the \
+                     microphone pauses while Gemini speaks so it does not hear itself. \
+                     Talk tests the voice key directly. Get a key at \
+                     aistudio.google.com/apikey.",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label("Gemini API key");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut app.state.gemini_api_key)
+                                .password(!app.state.gemini_show_key)
+                                .desired_width((ui.available_width() - 72.0).max(100.0))
+                                .hint_text("Paste your AI Studio key"),
+                        );
+                        if ui
+                            .small_button(if app.state.gemini_show_key {
+                                "Hide"
+                            } else {
+                                "Show"
+                            })
+                            .clicked()
+                        {
+                            app.state.gemini_show_key = !app.state.gemini_show_key;
+                        }
+                    });
+                    ui.checkbox(
+                        &mut app.state.gemini_remember_key,
+                        "Remember the Gemini key on disk (plain text, 0600)",
+                    );
+                    ui.add_space(4.0);
+                    ui.label("Voice model");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.state.gemini_model)
+                            .desired_width(ui.available_width())
+                            .hint_text("gemini-3.8-live"),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("Voice");
+                        egui::ComboBox::from_id_salt("stormscope.gemini.voice")
+                            .selected_text(&app.state.gemini_voice)
+                            .show_ui(ui, |ui| {
+                                for voice in [
+                                    "Aoede", "Kore", "Leda", "Zephyr", "Puck", "Charon", "Fenrir",
+                                    "Orus",
+                                ] {
+                                    ui.selectable_value(
+                                        &mut app.state.gemini_voice,
+                                        voice.to_string(),
+                                        voice,
+                                    );
+                                }
+                            });
+                    });
+                    if ui.small_button("Clear Gemini key").clicked() {
+                        app.state.gemini_api_key.clear();
+                    }
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Save")
+                        .on_hover_text(
+                            "Write endpoint, models and keys to ~/.config/stormscope/ai.json",
+                        )
+                        .clicked()
+                    {
+                        save = true;
+                    }
+                    if ui.button("Clear key").clicked() {
+                        app.state.ai_api_key.clear();
+                        save = true;
+                    }
+                    if ui
+                        .button("Test connection")
+                        .on_hover_text("One tiny request — verifies URL, key and model")
+                        .clicked()
+                    {
+                        save = true;
+                        test = true;
+                    }
+                });
+                if save {
+                    app.state.persist_ai();
+                }
+                if test {
+                    app.ai_test();
+                }
+                if app.state.ai_test_pending {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Testing…");
+                    });
+                } else if let Some(status) = &app.state.ai_test_status {
+                    ui.label(egui::RichText::new(status).small());
+                }
+                ui.add_space(4.0);
+                ui.label(
             egui::RichText::new(
                 "OpenCode Go: subscribe in the OpenCode Console, copy the API key, paste it \
                      above. The default model is DeepSeek V4.1 Flash — fast and inexpensive \
@@ -243,6 +320,7 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
             .weak()
             .small(),
         );
+            });
     });
     if close_requested {
         open = false;
@@ -290,6 +368,10 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     let mut clear_marks = false;
     let mut retry = false;
     let mut kbd = false;
+    #[cfg(target_os = "android")]
+    let mut voice_start = false;
+    #[cfg(target_os = "android")]
+    let mut voice_end = false;
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close_requested = false;
 
@@ -453,48 +535,80 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 {
                     retry = true;
                 }
-                ui.horizontal(|ui| {
-                    let hint = if configured {
-                        "Ask the meteorologist — e.g. \"is the hail core going to hit the \
-                             north pin?\""
-                    } else {
-                        "Paste your API key in Settings to chat"
-                    };
-                    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
-                    let mut editor = egui::TextEdit::singleline(&mut app.state.ai_question)
-                        .desired_width((ui.available_width() - 72.0).max(100.0))
-                        .hint_text(hint);
-                    // The default composer is a finger-width strip on a
-                    // phone; make the field and the Ask button touch-sized.
+                // On a phone the spoken conversation gets the footer to
+                // itself while it runs; the composer (and Talk) return when
+                // the user taps End.
+                #[cfg(target_os = "android")]
+                let voice_active = app.state.voice_convo;
+                #[cfg(not(target_os = "android"))]
+                let voice_active = false;
+                if voice_active {
                     #[cfg(target_os = "android")]
-                    {
-                        // Two rows at an 18 pt font: roughly double the
-                        // default strip's height, comfortable to type into.
-                        editor = editor
-                            .font(egui::FontId::new(18.0, egui::FontFamily::Proportional))
-                            .desired_rows(2)
-                            .desired_width((ui.available_width() - 108.0).max(100.0));
-                    }
-                    let response = ui.add_enabled(configured, editor);
-                    kbd = response.has_focus();
-                    let can_ask = configured && !no_markers && !app.state.ai_pending;
-                    let submit = response.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        && can_ask;
-                    #[cfg(not(target_os = "android"))]
-                    let ask_resp = ui.add_enabled(can_ask, egui::Button::new("Ask"));
-                    #[cfg(target_os = "android")]
-                    let ask_resp = ui.add_enabled(
-                        can_ask,
-                        egui::Button::new("Ask").min_size(egui::vec2(72.0, 44.0)),
-                    );
-                    if ask_resp.clicked() || submit {
-                        let question = app.state.ai_question.trim().to_string();
-                        if !question.is_empty() {
-                            ask = Some(question);
+                    voice_footer(ui, app, &mut voice_end);
+                } else {
+                    ui.horizontal(|ui| {
+                        let hint = if configured {
+                            "Ask the meteorologist — e.g. \"is the hail core going to hit the \
+                                 north pin?\""
+                        } else {
+                            "Paste your API key in Settings to chat"
+                        };
+                        #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+                        let mut editor = egui::TextEdit::singleline(&mut app.state.ai_question)
+                            .desired_width((ui.available_width() - 72.0).max(100.0))
+                            .hint_text(hint);
+                        // The default composer is a finger-width strip on a
+                        // phone; make the field and the buttons touch-sized.
+                        #[cfg(target_os = "android")]
+                        {
+                            // Two rows at an 18 pt font: roughly double the
+                            // default strip's height, comfortable to type into.
+                            editor = editor
+                                .font(egui::FontId::new(18.0, egui::FontFamily::Proportional))
+                                .desired_rows(2)
+                                .desired_width((ui.available_width() - 180.0).max(80.0));
                         }
-                    }
-                });
+                        let response = ui.add_enabled(configured, editor);
+                        kbd = response.has_focus();
+                        let can_ask = configured && !no_markers && !app.state.ai_pending;
+                        let submit = response.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            && can_ask;
+                        #[cfg(not(target_os = "android"))]
+                        let ask_resp = ui.add_enabled(can_ask, egui::Button::new("Ask"));
+                        #[cfg(target_os = "android")]
+                        let ask_resp = ui.add_enabled(
+                            can_ask,
+                            egui::Button::new("Ask").min_size(egui::vec2(72.0, 44.0)),
+                        );
+                        if ask_resp.clicked() || submit {
+                            let question = app.state.ai_question.trim().to_string();
+                            if !question.is_empty() {
+                                ask = Some(question);
+                            }
+                        }
+                        // Hands-free conversation: the answer is spoken and
+                        // the microphone reopens after each reply.
+                        #[cfg(target_os = "android")]
+                        {
+                            let talk = ui.add_enabled(
+                                !no_markers,
+                                egui::Button::new("Talk")
+                                    .min_size(egui::vec2(64.0, 44.0)),
+                            );
+                            if talk
+                                .on_hover_text(
+                                    "Talk with the meteorologist using Gemini Live — a natural \
+                                     spoken conversation with the full weather snapshot",
+                                )
+                                .clicked()
+                            {
+                                voice_start = true;
+                                response.surrender_focus();
+                            }
+                        }
+                    });
+                }
                 #[cfg(not(target_os = "android"))]
                 ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new("Show me:").small().weak());
@@ -606,6 +720,17 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                                 )
                                 .wrap(),
                             );
+                            #[cfg(target_os = "android")]
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        "Tap Talk for a live voice conversation with the \
+                                         meteorologist — ask naturally and hear the answer.",
+                                    )
+                                    .weak(),
+                                )
+                                .wrap(),
+                            );
                         }
                         let hidden = app.state.ai_messages.len().saturating_sub(20);
                         if hidden > 0 {
@@ -692,6 +817,14 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         open = false;
     }
     app.state.ai_open = open;
+    #[cfg(target_os = "android")]
+    if voice_start {
+        app.start_voice_convo();
+    }
+    #[cfg(target_os = "android")]
+    if voice_end {
+        app.end_voice_convo();
+    }
     // Keep the soft keyboard up while the composer holds focus, and mirror
     // its text for the Android IME bridge.
     app.state.text_focus |= kbd;
@@ -809,6 +942,94 @@ fn resize_grips(ui: &mut egui::Ui, app: &mut StormApp) {
                 egui::pos2(rect.right() - 2.0, rect.bottom() - off - 3.0),
             ],
             egui::Stroke::new(1.0, color),
+        );
+    }
+}
+
+/// Footer while a Gemini Live conversation is running: a level meter, the
+/// current phase, the live transcript and one End button.
+#[cfg(target_os = "android")]
+fn voice_footer(ui: &mut egui::Ui, app: &StormApp, end: &mut bool) {
+    let status = app
+        .state
+        .voice_status
+        .as_deref()
+        .unwrap_or("Gemini Live — talk naturally");
+    let active = app.state.voice_listening || app.state.voice_speaking;
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        voice_meter(ui, app.state.voice_level, active);
+        ui.label(egui::RichText::new(status).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(egui::Button::new("End").min_size(egui::vec2(72.0, 40.0)))
+                .clicked()
+            {
+                *end = true;
+            }
+        });
+    });
+    if app.state.voice_speaking && !app.state.voice_reply_text.trim().is_empty() {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(app.state.voice_reply_text.trim())
+                    .italics()
+                    .weak(),
+            )
+            .wrap(),
+        );
+    } else if !app.state.voice_partial.trim().is_empty() {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("“{}”", app.state.voice_partial.trim()))
+                    .italics()
+                    .weak(),
+            )
+            .wrap(),
+        );
+    } else {
+        ui.label(
+            egui::RichText::new(
+                "Just talk — Gemini Live answers out loud. The microphone pauses while it \
+                 speaks, then reopens for your next question. It has the same live radar, \
+                 alert and forecast snapshot as a typed question.",
+            )
+            .small()
+            .weak(),
+        );
+    }
+}
+
+/// Four small bars that follow the microphone level.
+#[cfg(target_os = "android")]
+fn voice_meter(ui: &mut egui::Ui, level: f32, listening: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 18.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let bars = 4usize;
+    let gap = 2.0;
+    let width = (rect.width() - gap * (bars - 1) as f32) / bars as f32;
+    let time = ui.input(|i| i.time) as f32;
+    for i in 0..bars {
+        let phase = ((time * 6.0 + i as f32 * 1.1).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+        let amp = if listening {
+            (level.max(0.08) * (0.55 + 0.45 * phase)).clamp(0.12, 1.0)
+        } else {
+            0.12
+        };
+        let height = (rect.height() * amp).max(2.0);
+        let x = rect.left() + i as f32 * (width + gap);
+        let color = if listening {
+            egui::Color32::from_rgb(120, 200, 255)
+        } else {
+            egui::Color32::from_gray(110)
+        };
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x, rect.bottom() - height),
+                egui::pos2(x + width, rect.bottom()),
+            ),
+            1.0,
+            color,
         );
     }
 }

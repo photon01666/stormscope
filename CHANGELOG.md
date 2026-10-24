@@ -3,6 +3,22 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## Unreleased
+
+**Android**
+- **Natural voice conversation with the AI meteorologist, powered by Gemini
+  Live.** Tap **Talk** in the AI window for a native speech-to-speech
+  conversation: ask about the radar, warnings, current conditions or the full
+  NWS forecast and hear the answer in a human voice. The session carries the
+  same live weather snapshot as a typed question, including a freshly fetched
+  forecast, observation and station rain/snow totals before it connects. Input and output are pinned to
+  US English, and the microphone pauses while Gemini speaks so the model
+  cannot hear itself and cut an answer off. Add a Google AI Studio key under
+  **Settings → AI meteorologist → Gemini Live** — separate from the OpenCode
+  key, with editable model (`gemini-3.8-live`) and voice (Aoede by default)
+  fields. The microphone is requested on first use; voice audio is streamed to
+  Google only while a conversation is active. Android only.
+
 ## v1.5.1 — 2026-10-24
 
 **Alerts**

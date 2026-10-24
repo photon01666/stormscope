@@ -81,3 +81,20 @@ png = "0.17"
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
 jni = "0.22"
+# Gemini Live: one WebSocket carries the conversation while the Java audio
+# helper streams 16 kHz PCM up and 24 kHz PCM down.
+base64 = "0.23"
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt", "time", "net", "macros"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+    "connect",
+    "rustls-tls-webpki-roots",
+] }
+# The app's reqwest stack enables both aws-lc-rs and ring in the same rustls
+# build, so rustls cannot choose a process default on its own. Pin the ring
+# provider for the Live WebSocket's TLS connector.
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+] }

@@ -39,6 +39,7 @@ public class MainActivity extends GameActivity {
 
     private static final int LOCATION_REQUEST = 0x4750; // "GP"
     private static final int NOTIFICATION_REQUEST = 0x4751; // "GP" + 1
+    private static final int AUDIO_REQUEST = 0x4752; // "GP" + 2
     /** Intent extra: the Storm Watch notification was tapped. */
     public static final String EXTRA_AI_BRIEF = "stormscope_ai_brief";
     /** Intent extra: the tapped alert notification's NWS id. */
@@ -67,6 +68,13 @@ public class MainActivity extends GameActivity {
     private static volatile boolean sTtsReady;
     private static final ArrayDeque<String> sTtsPending = new ArrayDeque<>();
 
+    /** RECORD_AUDIO is being requested for the Gemini Live session. */
+    private static volatile boolean sLivePermissionPending;
+    /** A live session is waiting for the permission dialog to close. */
+    private static volatile boolean sLivePendingStart;
+    /** One-shot audio error for the Rust session thread. */
+    private static volatile String sLiveError;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -89,11 +97,16 @@ public class MainActivity extends GameActivity {
     protected void onResume() {
         super.onResume();
         sForeground = true;
+        GeminiLiveAudio.resumeCapture();
     }
 
     @Override
     protected void onPause() {
         sForeground = false;
+        // Free the microphone as soon as the app leaves the foreground; the
+        // Gemini Live WebSocket can stay connected for a short background
+        // spell, and onResume restarts capture.
+        GeminiLiveAudio.pauseCapture();
         super.onPause();
     }
 
@@ -135,6 +148,9 @@ public class MainActivity extends GameActivity {
 
     @Override
     protected void onDestroy() {
+        sLivePendingStart = false;
+        sLivePermissionPending = false;
+        GeminiLiveAudio.stop();
         TextToSpeech tts = sTts;
         sTts = null;
         sTtsReady = false;
@@ -236,6 +252,72 @@ public class MainActivity extends GameActivity {
         }
     }
 
+    /**
+     * Called from Rust (JNI, Java main thread): initialize the Gemini Live
+     * microphone/speaker, asking for RECORD_AUDIO the first time. The Rust
+     * session thread polls {@link #stormscopeLiveAudioState()} until ready.
+     */
+    public void stormscopeLiveAudioStart() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            sLivePendingStart = true;
+            sLivePermissionPending = true;
+            requestPermissions(
+                    new String[]{Manifest.permission.RECORD_AUDIO},
+                    AUDIO_REQUEST);
+            return;
+        }
+        GeminiLiveAudio.start();
+        if (!GeminiLiveAudio.isRunning()) {
+            sLiveError = GeminiLiveAudio.lastError();
+        }
+    }
+
+    /** Called from Rust (JNI): `idle`, `permission`, `ready` or `error:<msg>`. */
+    public String stormscopeLiveAudioState() {
+        if (sLivePermissionPending) {
+            return "permission";
+        }
+        String error = sLiveError;
+        if (error != null) {
+            sLiveError = null;
+            return "error:" + error;
+        }
+        return GeminiLiveAudio.isRunning() ? "ready" : "idle";
+    }
+
+    /** Called from Rust (JNI, Java main thread): release mic and speaker. */
+    public void stormscopeLiveAudioStop() {
+        sLivePendingStart = false;
+        sLivePermissionPending = false;
+        GeminiLiveAudio.stop();
+    }
+
+    /** Called from Rust: pop one captured 16 kHz PCM16 chunk, or null. */
+    public byte[] stormscopeLiveReadMic() {
+        return GeminiLiveAudio.readMic();
+    }
+
+    /** Called from Rust: queue 24 kHz PCM16 model audio for playback. */
+    public void stormscopeLivePlay(byte[] pcm) {
+        GeminiLiveAudio.play(pcm);
+    }
+
+    /** Called from Rust: drop captured audio waiting in the queue. */
+    public void stormscopeLiveFlushMic() {
+        GeminiLiveAudio.flushMic();
+    }
+
+    /** Called from Rust: stop the current answer (the user interrupted). */
+    public void stormscopeLiveFlushPlayback() {
+        GeminiLiveAudio.flushPlayback();
+    }
+
+    /** Called from Rust: current microphone level 0..1 for the meter. */
+    public float stormscopeLiveLevel() {
+        return GeminiLiveAudio.level();
+    }
+
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
@@ -248,6 +330,20 @@ public class MainActivity extends GameActivity {
                 StormWatchService.start(this);
             } catch (Exception e) {
                 Log.w(TAG, "Storm Watch could not start after notification grant: " + e);
+            }
+        } else if (requestCode == AUDIO_REQUEST) {
+            sLivePermissionPending = false;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted && sLivePendingStart) {
+                sLivePendingStart = false;
+                GeminiLiveAudio.start();
+                if (!GeminiLiveAudio.isRunning()) {
+                    sLiveError = GeminiLiveAudio.lastError();
+                }
+            } else if (!granted && sLivePendingStart) {
+                sLivePendingStart = false;
+                sLiveError = "Microphone permission denied. Allow it in Android Settings.";
             }
         }
     }

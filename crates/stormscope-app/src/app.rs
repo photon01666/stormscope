@@ -381,6 +381,11 @@ pub struct StormApp {
     pub ai_fresh_queue: Option<Option<String>>,
     pub ai_fresh_started: Option<std::time::Instant>,
     pub ai_fresh_deadline: Option<std::time::Instant>,
+    /// Android Gemini Live voice session and its event stream.
+    #[cfg(target_os = "android")]
+    pub live: Option<crate::gemini_live::LiveSession>,
+    #[cfg(target_os = "android")]
+    pub live_rx: Option<Receiver<crate::gemini_live::LiveEvent>>,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -529,6 +534,10 @@ impl StormApp {
             ai_fresh_queue: None,
             ai_fresh_started: None,
             ai_fresh_deadline: None,
+            #[cfg(target_os = "android")]
+            live: None,
+            #[cfg(target_os = "android")]
+            live_rx: None,
         }
     }
 
@@ -1323,6 +1332,415 @@ impl StormApp {
         self.ai_push(AiRole::Note, text);
     }
 
+    // ---- Android Gemini Live voice conversation ------------------------
+
+    /// A short plain-language summary of the data the voice model has. The
+    /// full JSON follows it; putting the observation and forecast first keeps
+    /// the model from treating the session as an open-ended chat.
+    #[cfg(target_os = "android")]
+    fn voice_summary(&self) -> String {
+        let mut out = String::new();
+        if let Some((lat, lon)) = self.state.gps_fix {
+            out.push_str(&format!("User's GPS fix: {lat:.4}, {lon:.4}.\n"));
+        }
+        if !self.state.markers.is_empty() {
+            out.push_str(&format!(
+                "Manual map markers: {}.\n",
+                self.state.markers.len()
+            ));
+        }
+        out.push_str("RAINFALL / SNOW TOTALS (inches, from NWS stations near the user):\n");
+        if self.state.totals.is_empty() {
+            out.push_str("- No station totals are loaded for this point.\n");
+        } else {
+            for station in self.state.totals.iter().take(5) {
+                let mut parts: Vec<String> = station
+                    .buckets
+                    .iter()
+                    .take(4)
+                    .map(|(label, value)| format!("{label} {value:.2} in"))
+                    .collect();
+                parts.extend(
+                    station
+                        .hourly_sums
+                        .iter()
+                        .take(3)
+                        .map(|(label, value)| format!("{label} {value:.2} in")),
+                );
+                if parts.is_empty() {
+                    out.push_str(&format!(
+                        "- {} ({}): no rain/snow values reported.\n",
+                        station.station_id, station.station_name
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "- {} ({}): {}.\n",
+                        station.station_id,
+                        station.station_name,
+                        parts.join(", ")
+                    ));
+                }
+            }
+            out.push_str(
+                "Use these station values for every rain or snow accumulation question. \
+                 0.00 means the station reported no measurable precipitation. Never say you \
+                 lack access to rainfall or snow totals while this section lists stations.\n",
+            );
+        }
+        if let Some(obs) = self.state.observation.as_ref() {
+            let to_f = |c: f32| c * 9.0 / 5.0 + 32.0;
+            let to_mph = |kmh: f32| kmh * 0.621_371;
+            out.push_str(&format!(
+                "Current observation at {} ({}): {}",
+                obs.station_id, obs.station_name, obs.text
+            ));
+            if let Some(t) = obs.temperature_c {
+                out.push_str(&format!(", {:.0}°F", to_f(t)));
+            }
+            if let Some(d) = obs.dewpoint_c {
+                out.push_str(&format!(", dew point {:.0}°F", to_f(d)));
+            }
+            if let Some(w) = obs.wind_speed_kmh {
+                out.push_str(&format!(", wind {:.0} mph", to_mph(w)));
+            }
+            if let Some(g) = obs.wind_gust_kmh {
+                out.push_str(&format!(", gusting {:.0} mph", to_mph(g)));
+            }
+            if let Some(h) = obs.humidity_pct {
+                out.push_str(&format!(", humidity {h:.0}%"));
+            }
+            out.push_str(".\n");
+        }
+        if let Some(forecast) = self.state.forecast.as_ref() {
+            out.push_str(&format!(
+                "NWS forecast for {} (office {}):\n",
+                forecast.place, forecast.office
+            ));
+            for p in forecast.periods.iter().take(8) {
+                let temp_f = if p.unit.eq_ignore_ascii_case("C") {
+                    p.temperature * 9.0 / 5.0 + 32.0
+                } else {
+                    p.temperature
+                };
+                out.push_str(&format!(
+                    "- {}: {:.0}°F, {}, wind {}\n",
+                    p.name, temp_f, p.short, p.wind
+                ));
+            }
+        } else {
+            out.push_str("No NWS forecast is loaded for the user's point.\n");
+        }
+        let alerts: Vec<&str> = self
+            .state
+            .alerts
+            .iter()
+            .take(5)
+            .map(|alert| alert.event.as_str())
+            .collect();
+        if alerts.is_empty() {
+            out.push_str("No active alerts near the radar site.\n");
+        } else {
+            out.push_str(&format!(
+                "Active alerts near the radar site: {}.\n",
+                alerts.join("; ")
+            ));
+        }
+        out
+    }
+
+    /// Build the system instruction for a live voice session. The short
+    /// summary is first, then the full JSON snapshot the typed AI uses.
+    #[cfg(target_os = "android")]
+    fn voice_prompt(&self) -> Result<String, String> {
+        let brief = self.build_brief(&[])?;
+        let summary = self.voice_summary();
+        let mut prompt = String::with_capacity(brief.user.len() + summary.len() + 2200);
+        prompt.push_str(
+            "You are Stormscope's meteorologist, speaking live with a storm spotter by voice.\n\
+             ALWAYS SPEAK US ENGLISH, even if you hear another language, an accent, or \
+             background noise.\n\n\
+             You already have all of the weather data below. Answer from it. NEVER ask the \
+             user to report conditions, tell you what they are observing, or provide weather \
+             data — you are the meteorologist with the radar, warnings, observation and \
+             forecast. If something is genuinely absent from the snapshot, name that one \
+             missing thing and answer with what you do have. Never say you do not have \
+             access to the forecast when a forecast appears in the summary below.\n\n\
+             Talk like a meteorologist on the phone: natural, concise, 2-4 sentences per \
+             turn (under 80 words), plain spoken English. No lists, headings, markdown, \
+             JSON, or radar jargon unless the user uses it first. Use miles, feet, °F and \
+             the local times in the data. Rain and snow totals are in the RAINFALL / SNOW \
+             TOTALS section at the top of the summary and in `rain_snow_totals` (inches). \
+             Use them for every accumulation question. If the stations report 0.00, say no \
+             measurable precipitation was reported; never say you lack access to totals. \
+             Do not invent data. The user may interrupt you; \
+             stop immediately if they do. Do not greet or speak until the user speaks first. \
+             If the transcription of the user's speech is garbled, ask one short clarifying \
+             question instead of guessing. You cannot move the map in this mode; answer with \
+             words.\n\n\
+             CURRENT SUMMARY:\n",
+        );
+        prompt.push_str(&summary);
+        prompt.push_str(&format!("\nSnapshot: {}\n\n", brief.label));
+        prompt.push_str("DETAILED SNAPSHOT (JSON):\n");
+        prompt.push_str(&brief.user);
+        Ok(prompt)
+    }
+
+    /// Open the WebSocket once the freshest forecast has landed.
+    #[cfg(target_os = "android")]
+    fn begin_voice_session(&mut self) -> Result<(), String> {
+        let prompt = self.voice_prompt()?;
+        log::debug!("Gemini Live summary:\n{}", self.voice_summary());
+        log::info!(
+            "Gemini Live snapshot: {} bytes (forecast={}, observation={}, totals={}, alerts={}, markers={})",
+            prompt.len(),
+            self.state.forecast.is_some(),
+            self.state.observation.is_some(),
+            self.state.totals.len(),
+            self.state.alerts.len(),
+            self.state.markers.len()
+        );
+        let config = crate::gemini_live::LiveConfig {
+            api_key: self.state.gemini_api_key.trim().to_string(),
+            model: self.state.gemini_model.trim().to_string(),
+            voice: self.state.gemini_voice.clone(),
+            system: prompt,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.live = Some(crate::gemini_live::LiveSession::start(config, tx));
+        self.live_rx = Some(rx);
+        self.state.voice_status = Some("Connecting to Gemini Live…".into());
+        self.state.voice_level = 0.0;
+        self.state.voice_polled_at = None;
+        self.state.voice_listening = false;
+        self.state.voice_speaking = false;
+        Ok(())
+    }
+
+    /// Start a Gemini Live voice conversation. Android only: the audio
+    /// capture/playback bridge lives in MainActivity + GeminiLiveAudio.
+    #[cfg(target_os = "android")]
+    pub fn start_voice_convo(&mut self) {
+        if self.state.voice_convo {
+            return;
+        }
+        if self.state.gemini_api_key.trim().is_empty() {
+            self.state.ai_settings_open = true;
+            self.ai_note(
+                "Add a Gemini API key in Settings → AI meteorologist → Gemini Live, then tap Talk."
+                    .into(),
+            );
+            return;
+        }
+        if self.state.markers.is_empty() && self.state.gps_fix.is_none() {
+            self.ai_note(
+                "Waiting for a GPS fix — place a marker or use the GPS button, then tap Talk."
+                    .into(),
+            );
+            return;
+        }
+        self.state.ai_open = true;
+        self.state.voice_convo = true;
+        self.state.voice_listening = false;
+        self.state.voice_speaking = false;
+        self.state.voice_partial.clear();
+        self.state.voice_user_text.clear();
+        self.state.voice_reply_text.clear();
+        self.state.voice_level = 0.0;
+        self.state.voice_polled_at = None;
+        self.state.ai_snapshot = Some(format!("Gemini Live · {}", self.state.gemini_model));
+        if self.state.forecast_point.is_none() {
+            let gps = self.state.gps_fix;
+            self.state.forecast_point = gps.or_else(|| {
+                self.state
+                    .markers
+                    .first()
+                    .map(|marker| (marker.lat, marker.lon))
+            });
+            self.state.forecast_point_gps = gps.is_some();
+        }
+        self.state.voice_pending_start = true;
+        self.state.voice_pending_at = Some(std::time::Instant::now());
+        self.state.voice_status = Some("Loading the forecast and rain/snow totals…".into());
+        // A voice brief must know the forecast, current conditions and
+        // precipitation totals, not just the radar. The Live model cannot
+        // issue the typed AI's DATA lookups, so fetch both before opening
+        // the socket.
+        crate::ui::forecast::request_forecast_now(self);
+        let totals_target = self
+            .state
+            .gps_fix
+            .or_else(|| {
+                self.state
+                    .markers
+                    .first()
+                    .map(|marker| (marker.lat, marker.lon))
+            })
+            .or(self.state.forecast_point);
+        self.state.voice_totals_wanted = totals_target.is_some();
+        if let Some((lat, lon)) = totals_target {
+            crate::ui::totals::request_totals_now(self, lat, lon);
+        }
+    }
+
+    /// End the live session and release the microphone / speaker.
+    #[cfg(target_os = "android")]
+    pub fn end_voice_convo(&mut self) {
+        self.state.voice_convo = false;
+        self.state.voice_listening = false;
+        self.state.voice_speaking = false;
+        self.state.voice_partial.clear();
+        self.state.voice_user_text.clear();
+        self.state.voice_reply_text.clear();
+        self.state.voice_status = None;
+        self.state.voice_level = 0.0;
+        self.state.voice_polled_at = None;
+        self.state.voice_pending_start = false;
+        self.state.voice_pending_at = None;
+        self.state.voice_totals_wanted = false;
+        self.live_rx = None;
+        if let Some(mut live) = self.live.take() {
+            live.stop();
+        }
+    }
+
+    /// Add the current voice turn to the visible transcript.
+    #[cfg(target_os = "android")]
+    fn voice_push_turn(&mut self) {
+        let user = std::mem::take(&mut self.state.voice_user_text);
+        let reply = std::mem::take(&mut self.state.voice_reply_text);
+        if !user.trim().is_empty() {
+            self.ai_push(AiRole::User, user.trim().to_string());
+        }
+        if !reply.trim().is_empty() {
+            self.ai_push(AiRole::Assistant, reply.trim().to_string());
+        }
+    }
+
+    /// Drain Gemini Live events and keep the voice footer / mic meter fed.
+    #[cfg(target_os = "android")]
+    fn pump_gemini_live(&mut self) {
+        if self.state.voice_convo && !self.state.ai_open {
+            self.end_voice_convo();
+            return;
+        }
+        if self.state.voice_pending_start {
+            let now = std::time::Instant::now();
+            let started = self.state.voice_pending_at.unwrap_or(now);
+            let forecast_fresh = self
+                .state
+                .forecast_fetched_at
+                .is_some_and(|fetched| fetched >= started);
+            let totals_fresh = !self.state.voice_totals_wanted
+                || self
+                    .state
+                    .totals_fetched_at
+                    .is_some_and(|fetched| fetched >= started);
+            let fresh = forecast_fresh && totals_fresh;
+            if fresh || now.duration_since(started) > std::time::Duration::from_secs(20) {
+                self.state.voice_pending_start = false;
+                self.state.voice_pending_at = None;
+                if !fresh {
+                    log::warn!(
+                        "Gemini Live: forecast/totals refresh did not land in 20 s; using the snapshot available"
+                    );
+                }
+                if let Err(message) = self.begin_voice_session() {
+                    self.ai_note(message);
+                    self.end_voice_convo();
+                }
+            }
+            return;
+        }
+        let events: Vec<crate::gemini_live::LiveEvent> = self
+            .live_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        for event in events {
+            use crate::gemini_live::LiveEvent;
+            match event {
+                LiveEvent::Status(status) => {
+                    self.state.voice_status = Some(status);
+                }
+                LiveEvent::Listening => {
+                    self.state.voice_listening = true;
+                    self.state.voice_speaking = false;
+                    self.state.voice_status = Some("Listening — just talk".into());
+                }
+                LiveEvent::UserPartial(text) => {
+                    self.state.voice_partial = text;
+                }
+                LiveEvent::UserFinal(text) => {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        // The Live transcription can repeat a cumulative
+                        // segment; keep the newest full version.
+                        if self.state.voice_user_text.is_empty()
+                            || text.starts_with(&self.state.voice_user_text)
+                        {
+                            self.state.voice_user_text = text.to_string();
+                        } else if !self.state.voice_user_text.ends_with(text) {
+                            self.state.voice_user_text.push(' ');
+                            self.state.voice_user_text.push_str(text);
+                        }
+                    }
+                    self.state.voice_partial.clear();
+                }
+                LiveEvent::AssistantPartial(text) => {
+                    self.state.voice_speaking = true;
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        if self.state.voice_reply_text.is_empty()
+                            || text.starts_with(&self.state.voice_reply_text)
+                        {
+                            self.state.voice_reply_text = text.to_string();
+                        } else if !self.state.voice_reply_text.ends_with(text) {
+                            self.state.voice_reply_text.push(' ');
+                            self.state.voice_reply_text.push_str(text);
+                        }
+                    }
+                    self.state.voice_status = Some("Speaking…".into());
+                }
+                LiveEvent::Interrupted => {
+                    self.state.voice_speaking = false;
+                    self.state.voice_status = Some("Listening — just talk".into());
+                }
+                LiveEvent::TurnComplete => {
+                    self.state.voice_speaking = false;
+                    self.state.voice_status = Some("Listening — just talk".into());
+                    self.voice_push_turn();
+                    self.state.voice_partial.clear();
+                }
+                LiveEvent::Error(error) => {
+                    self.ai_note(error);
+                    self.end_voice_convo();
+                    return;
+                }
+                LiveEvent::Ended => {
+                    if self.state.voice_convo {
+                        self.ai_note(
+                            "The Gemini Live session ended. Tap Talk to start a fresh one.".into(),
+                        );
+                        self.end_voice_convo();
+                    }
+                    return;
+                }
+            }
+        }
+        if self.state.voice_convo {
+            let now = std::time::Instant::now();
+            if self
+                .state
+                .voice_polled_at
+                .is_none_or(|t| now.duration_since(t) > std::time::Duration::from_millis(100))
+            {
+                self.state.voice_polled_at = Some(now);
+                self.state.voice_level = crate::android_live_audio::level();
+            }
+        }
+    }
+
     /// The first half of a LOOK round: sample the places the model named,
     /// centre the map on the first one, and ask again with the extra data.
     /// Returns false when the request had no usable points.
@@ -1669,34 +2087,23 @@ impl StormApp {
         }
     }
 
-    /// Build the snapshot (optionally with the LOOK samples), compose the
-    /// prompts and send the request. Callers own the pending flags.
-    fn send_ai(&mut self, question: Option<String>, look: Vec<LookPointSample>) {
+    /// Build the compact weather snapshot the AI sees: decoded radar, storm
+    /// tracks, warnings, outlook, the forecast and observation, plus the GPS
+    /// sample and markers. `look` adds the extra areas a LOOK round sampled.
+    fn build_brief(&self, look: &[LookPointSample]) -> Result<crate::brief::Brief, String> {
         // A GPS fix is a sample too: the brief always covers where the
         // spotter is, so no pin is needed on a phone.
         if self.state.markers.is_empty() && self.state.gps_fix.is_none() {
-            self.state.ai_pending = false;
-            self.ai_note(
+            return Err(
                 "Still waiting for a GPS fix — place a marker, or try the GPS button.".into(),
             );
-            return;
         }
         let Some(site) = radar_core::sites::site(&self.state.site_id) else {
-            self.state.ai_pending = false;
-            self.ai_note("No radar site is selected.".into());
-            return;
+            return Err("No radar site is selected.".into());
         };
         let Some(volume) = self.state.current().map(|f| Arc::clone(&f.volume)) else {
-            self.state.ai_pending = false;
-            self.ai_note("No radar volume is loaded yet.".into());
-            return;
+            return Err("No radar volume is loaded yet.".into());
         };
-        if !self.state.ai_config().is_configured() {
-            self.state.ai_settings_open = true;
-            self.state.ai_pending = false;
-            self.ai_note("Add your OpenCode Go API key in Settings → AI meteorologist.".into());
-            return;
-        }
         // The map computes tracks while drawing, but an AI question can
         // arrive before the first draw (especially right after a site
         // switch). Derive from the two newest scans here if needed.
@@ -1731,7 +2138,7 @@ impl StormApp {
         let mrms = self.state.mrms.as_ref().map(|(m, _)| m.as_slice());
         let goes = self.state.goes.as_ref().map(|(i, _)| i.as_slice());
         let srm = self.state.srm_cache.as_ref().map(|(_, v)| v.as_ref());
-        let brief = crate::brief::build(&crate::brief::BriefInputs {
+        Ok(crate::brief::build(&crate::brief::BriefInputs {
             site,
             mode: match self.state.mode {
                 crate::state::Mode::Live => "live",
@@ -1762,12 +2169,31 @@ impl StormApp {
             view_zoom: self.state.view.zoom,
             view3d_open: self.state.view3d_open,
             show_melting_layer: self.state.show_melting_layer,
-            look_points: &look,
+            look_points: look,
             srm_volume: srm,
             goes,
             scan_interval_min,
             now: chrono::Utc::now(),
-        });
+        }))
+    }
+
+    /// Build the snapshot (optionally with the LOOK samples), compose the
+    /// prompts and send the request. Callers own the pending flags.
+    fn send_ai(&mut self, question: Option<String>, look: Vec<LookPointSample>) {
+        let brief = match self.build_brief(&look) {
+            Ok(brief) => brief,
+            Err(message) => {
+                self.state.ai_pending = false;
+                self.ai_note(message);
+                return;
+            }
+        };
+        if !self.state.ai_config().is_configured() {
+            self.state.ai_settings_open = true;
+            self.state.ai_pending = false;
+            self.ai_note("Add your OpenCode Go API key in Settings → AI meteorologist.".into());
+            return;
+        }
 
         // Real chat turns: the transcript becomes role messages, and the
         // current question is restated in the final user message.
@@ -2101,6 +2527,15 @@ impl StormApp {
                 if self.state.ai_config().is_configured() && !no_markers && !self.state.ai_pending {
                     self.ai_request(None);
                 }
+            }
+            self.pump_gemini_live();
+            // Sessions are event-driven, but the footer meter, status and
+            // transcript need a frame even when the user is not touching the
+            // screen. Without this the UI can sit on "Connecting…" while the
+            // audio session is already live.
+            if self.state.voice_convo {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
         self.handle_input(ui.ctx());

@@ -12,6 +12,8 @@ mod ai_actions;
 #[cfg(target_os = "android")]
 pub mod android_ime;
 #[cfg(target_os = "android")]
+pub mod android_live_audio;
+#[cfg(target_os = "android")]
 pub mod android_location;
 #[cfg(target_os = "android")]
 pub mod android_storm_watch;
@@ -22,6 +24,8 @@ mod background;
 mod brief;
 #[cfg(windows)]
 mod embedded_piper;
+#[cfg(target_os = "android")]
+pub mod gemini_live;
 pub mod render3d;
 mod state;
 mod timefmt;

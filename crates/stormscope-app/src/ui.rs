@@ -9,7 +9,7 @@ pub(crate) mod alerts;
 pub(crate) mod forecast;
 mod map;
 mod reports;
-mod totals;
+pub(crate) mod totals;
 mod volume3d;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the

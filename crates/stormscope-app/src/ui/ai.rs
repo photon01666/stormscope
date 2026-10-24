@@ -313,11 +313,14 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         window
     };
     let window = if fill {
+        // A few points of inset: without it the top of the phone header sat
+        // flush against the pane edge and read as "cut off".
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
         window
-            .fixed_rect(area)
+            .fixed_rect(inset)
             .movable(false)
             .resizable(false)
-            .constrain_to(area)
+            .constrain_to(inset)
     } else {
         window
             .fixed_size(window_size)
@@ -479,6 +482,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                         }
                     }
                 });
+                #[cfg(not(target_os = "android"))]
                 ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new("Show me:").small().weak());
                     if ui
@@ -524,16 +528,19 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                         );
                     }
                 });
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Sends decoded radar samples, coordinates, alerts and forecast text to {}. \
-                             No screenshot is taken, no image is sent, no session history.",
-                        short_host(&app.state.ai_base_url)
-                    ))
-                    .small()
-                    .weak(),
-                );
+                #[cfg(not(target_os = "android"))]
+                {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Sends decoded radar samples, coordinates, alerts and forecast text to {}. \
+                                 No screenshot is taken, no image is sent, no session history.",
+                            short_host(&app.state.ai_base_url)
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                }
                 // Leave the bottom edge to the resize grip: without this,
                 // the privacy text sits inside its band.
                 ui.add_space(16.0);

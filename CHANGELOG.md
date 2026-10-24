@@ -50,6 +50,10 @@ log; entries start at the first public release.
   device clock. The temperature/wind/pressure/UV numbers tween when new data
   arrives, forecast temperatures animate, and the moon disc has a slow glow.
 - The Android AI chat composer is taller with a larger Ask button.
+- The Android AI window drops the "Show me" quick-prompt row and the
+  data-sharing note under the composer, and the filled window is inset a few
+  points so its title header is never flush with (or cut by) the pane edge.
+  Desktop keeps both.
 - Every forecast period row now carries an animated weather icon drawn from
   the NWS summary — sun with rotating rays, drifting clouds, falling rain,
   drifting snowflakes, a flickering thunder bolt, sliding fog, and day/night

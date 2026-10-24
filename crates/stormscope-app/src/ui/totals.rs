@@ -67,12 +67,14 @@ pub fn totals_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) 
     }
     window = if fill {
         // Same treatment as the AI and forecast windows: fill the map area
-        // edge to edge, no dragging or resizing, with the phone type scale.
+        // edge to edge, no dragging or resizing, with the phone type scale,
+        // with the same small inset so the header isn't cut at the top.
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
         window
-            .fixed_rect(area)
+            .fixed_rect(inset)
             .movable(false)
             .resizable(false)
-            .constrain_to(area)
+            .constrain_to(inset)
     } else {
         window.default_size(size).max_height(max_h).resizable(true)
     };

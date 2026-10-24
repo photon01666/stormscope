@@ -74,11 +74,14 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     window = if fill {
         // Same treatment as the AI window: fill the map area edge to edge,
         // no dragging or resizing, with the roomier phone type scale.
+        // A few points of inset so the phone header isn't flush with (and
+        // read as cut by) the pane's top edge.
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
         window
-            .fixed_rect(area)
+            .fixed_rect(inset)
             .movable(false)
             .resizable(false)
-            .constrain_to(area)
+            .constrain_to(inset)
     } else {
         window.default_size(size).max_height(max_h).resizable(true)
     };

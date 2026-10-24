@@ -282,6 +282,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     window_size.y = window_size.y.clamp(280.0, screen.y * 0.92);
     app.state.ai_window_size = window_size;
     let mut open = app.state.ai_open;
+    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut brief = false;
     let mut ask: Option<String> = None;
     let mut restore = false;
@@ -336,15 +337,17 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
 
         // Header (always visible, even before the key is configured).
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} · {}",
-                    short_host(&app.state.ai_base_url),
-                    app.state.ai_model
-                ))
-                .small()
-                .weak(),
-            );
+            // The phone keeps only the model name — no endpoint path and no
+            // toolbar buttons (Settings lives in the slide-out; the window's
+            // ✕ closes it).
+            #[cfg(target_os = "android")]
+            let model_line = app.state.ai_model.clone();
+            #[cfg(not(target_os = "android"))]
+            let model_line =
+                format!("{} · {}", short_host(&app.state.ai_base_url), app.state.ai_model);
+            ui.label(egui::RichText::new(model_line).small().weak());
+            #[cfg(not(target_os = "android"))]
+            {
             if ui.small_button("Settings").clicked() {
                 app.state.ai_settings_open = true;
             }
@@ -354,6 +357,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 .clicked()
             {
                 app.state.ai_compact = true;
+            }
             }
         });
         let configured = app.state.ai_config().is_configured();
@@ -375,6 +379,8 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 ui.set_max_width((ui.available_width() - 14.0).max(120.0));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
+                    #[cfg(not(target_os = "android"))]
+                    {
                     let write = ui.add_enabled(
                         configured && !no_markers && !app.state.ai_pending,
                         egui::Button::new("Write brief"),
@@ -387,6 +393,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                         .clicked()
                     {
                         brief = true;
+                    }
                     }
                     if app.state.ai_pending {
                         ui.spinner();
@@ -842,6 +849,7 @@ fn compact_bar(ctx: &egui::Context, app: &mut StormApp) {
 }
 
 /// Host (and path when it is not the default `/v1`) for the small header line.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn short_host(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
     let without_scheme = trimmed

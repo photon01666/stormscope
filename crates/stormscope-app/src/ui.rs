@@ -3041,12 +3041,14 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Re
     }
     window = if fill {
         // Same phone treatment as AI, forecast and totals: fill the map
-        // pane, painted header, no drag/resize.
+        // pane, painted header, no drag/resize — with the small inset so the
+        // header isn't flush with (and cut by) the pane's top edge.
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
         window
-            .fixed_rect(area)
+            .fixed_rect(inset)
             .movable(false)
             .resizable(false)
-            .constrain_to(area)
+            .constrain_to(inset)
     } else {
         window.default_size(size).max_height(max_h).resizable(true)
     };

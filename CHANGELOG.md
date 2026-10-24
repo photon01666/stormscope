@@ -108,6 +108,12 @@ log; entries start at the first public release.
   It polls the last GPS fix every 60 seconds and speaks new warnings while
   Stormscope is closed (Android 15 caps `dataSync` foreground services at
   about 6 hours per day); a Stop action on the notification turns it off.
+- New warnings/watches within 50 miles now also **pop up as a text
+  notification**: a high-importance channel (sound, vibration, red light)
+  heads-ups the event as the title with the area, expiry and full instruction
+  underneath, and tapping it opens Stormscope. Posted whether or not the app
+  is open and whether or not read-aloud is on; the per-family switches still
+  filter which products notify, capped at six per batch.
   The persistent notification also doubles as a current-conditions readout
   (Open-Meteo: temperature, sky, wind, refreshed each poll), and tapping it
   opens the AI meteorologist and automatically asks it for a brief.

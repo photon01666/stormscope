@@ -51,6 +51,10 @@ public class StormWatchService extends Service {
     private static final String TAG = "stormscope";
     private static final String PREFS = "stormscope";
     private static final String CHANNEL = "storm_watch";
+    /// High-importance channel for per-alert popups (heads-up + sound).
+    private static final String ALERT_CHANNEL = "severe_alerts";
+    /// Cap so one multi-product outbreak can't flood the shade.
+    private static final int MAX_ALERT_NOTIFS = 6;
     private static final int NOTIFICATION_ID = 0x5701;
     private static final long POLL_SECONDS = 60;
     private static final double RADIUS_KM = 50.0 * 1.609344;
@@ -153,14 +157,28 @@ public class StormWatchService extends Service {
 
     private void createChannel() {
         NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm == null || nm.getNotificationChannel(CHANNEL) != null) {
+        if (nm == null) {
             return;
         }
-        NotificationChannel channel = new NotificationChannel(
-                CHANNEL, "Storm Watch", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Keeps Stormscope watching for severe warnings in the background");
-        channel.setShowBadge(false);
-        nm.createNotificationChannel(channel);
+        if (nm.getNotificationChannel(CHANNEL) == null) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL, "Storm Watch", NotificationManager.IMPORTANCE_LOW);
+            channel.setDescription("Keeps Stormscope watching for severe warnings in the background");
+            channel.setShowBadge(false);
+            nm.createNotificationChannel(channel);
+        }
+        if (nm.getNotificationChannel(ALERT_CHANNEL) == null) {
+            // IMPORTANCE_HIGH is what makes a notification pop up (heads-up)
+            // with sound and vibration instead of sitting silently in the shade.
+            NotificationChannel alerts = new NotificationChannel(
+                    ALERT_CHANNEL, "Severe alerts", NotificationManager.IMPORTANCE_HIGH);
+            alerts.setDescription("Pops up when a new warning or watch is issued near you");
+            alerts.enableVibration(true);
+            alerts.setVibrationPattern(new long[]{0, 400, 200, 400});
+            alerts.setLightColor(0xFFFF3B30);
+            alerts.setShowBadge(true);
+            nm.createNotificationChannel(alerts);
+        }
     }
 
     private Notification notification(String line) {
@@ -195,6 +213,46 @@ public class StormWatchService extends Service {
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm != null) {
             nm.notify(NOTIFICATION_ID, notification(line));
+        }
+    }
+
+    /**
+     * Heads-up text notification for one new alert: event as the title, the
+     * area/expiry as the collapsed line and the full spoken announcement as
+     * the expanded text. Tapping opens Stormscope.
+     */
+    private void postAlert(Alert a) {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm == null) {
+            return;
+        }
+        Intent open = new Intent(this, MainActivity.class)
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent content = PendingIntent.getActivity(
+                this, a.id.hashCode(), open,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        String collapsed = a.area;
+        if (a.area.length() > 90) {
+            collapsed = a.area.substring(0, 90) + "\u2026";
+        }
+        String expiry = formatTime(a.expires);
+        if (!expiry.isEmpty()) {
+            collapsed = collapsed + " \u00b7 expires " + expiry;
+        }
+        Notification notification = new Notification.Builder(this, ALERT_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle(a.event)
+                .setContentText(collapsed)
+                .setStyle(new Notification.BigTextStyle().bigText(announcement(a)))
+                .setContentIntent(content)
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_ALARM)
+                .build();
+        try {
+            nm.notify(a.id.hashCode(), notification);
+            Log.i(TAG, "Storm Watch posted alert notification: " + a.event);
+        } catch (Exception e) {
+            Log.w(TAG, "alert notification failed: " + e);
         }
     }
 
@@ -275,6 +333,16 @@ public class StormWatchService extends Service {
                 prefs.getLong("last_lat_bits", Double.doubleToRawLongBits(Double.NaN)));
         double lon = Double.longBitsToDouble(
                 prefs.getLong("last_lon_bits", Double.doubleToRawLongBits(Double.NaN)));
+        // Optional point override (used to verify popups against a real
+        // warning without moving the device's GPS fix).
+        double oLat = Double.longBitsToDouble(
+                prefs.getLong("alert_lat_bits", Double.doubleToRawLongBits(Double.NaN)));
+        double oLon = Double.longBitsToDouble(
+                prefs.getLong("alert_lon_bits", Double.doubleToRawLongBits(Double.NaN)));
+        if (!Double.isNaN(oLat) && !Double.isNaN(oLon)) {
+            lat = oLat;
+            lon = oLon;
+        }
         if (Double.isNaN(lat) || Double.isNaN(lon)) {
             Log.i(TAG, "Storm Watch waiting for a GPS fix");
             updateNotification("Waiting for a GPS fix · watching for warnings");
@@ -290,15 +358,7 @@ public class StormWatchService extends Service {
                 + " · watching for warnings";
         updateNotification(line);
 
-        if (MainActivity.isAppForeground()) {
-            // The in-app voice path handles foreground announcements.
-            return;
-        }
-
         VoicePrefs voice = readVoicePrefs();
-        if (!voice.enabled) {
-            return;
-        }
 
         JSONArray features;
         try {
@@ -346,6 +406,7 @@ public class StormWatchService extends Service {
             }
             if (!seen.contains(signature)) {
                 fresh.add(new Alert(
+                        id,
                         event,
                         props.optString("areaDesc", ""),
                         props.optString("expires", ""),
@@ -360,9 +421,22 @@ public class StormWatchService extends Service {
         if (!baseline || fresh.isEmpty()) {
             return;
         }
+        // Text notifications first: every new alert near you pops up whether
+        // or not the app is open and whether or not speech is enabled (the
+        // master switch only mutes the voice).
+        int posted = 0;
+        for (Alert a : fresh) {
+            if (posted++ >= MAX_ALERT_NOTIFS) {
+                break;
+            }
+            postAlert(a);
+        }
         if (MainActivity.isAppForeground()) {
             // The app came back while this poll was in flight; its own TTS
             // owns foreground announcements.
+            return;
+        }
+        if (!voice.enabled) {
             return;
         }
 
@@ -670,12 +744,14 @@ public class StormWatchService extends Service {
     }
 
     private static final class Alert {
+        final String id;
         final String event;
         final String area;
         final String expires;
         final String instruction;
 
-        Alert(String event, String area, String expires, String instruction) {
+        Alert(String id, String event, String area, String expires, String instruction) {
+            this.id = id;
             this.event = event;
             this.area = area;
             this.expires = expires;

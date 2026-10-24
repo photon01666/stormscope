@@ -42,6 +42,15 @@ log; entries start at the first public release.
   stdin, hides the piper console with `CREATE_NO_WINDOW`, and no longer falls
   back to SAPI on Test voice.
 
+- **Current conditions are now a full surface report**: air temperature, dew
+  point, relative humidity, wind speed/direction/gusts, altimeter and
+  sea-level pressure, 1/3/6-hour precipitation, visibility, sky cover with
+  cloud-base heights, heat index/wind chill, the current UV index
+  (Open-Meteo, since NWS has none) and a moon-phase glyph computed from the
+  device clock. The temperature/wind/pressure/UV numbers tween when new data
+  arrives, forecast temperatures animate, and the moon disc has a slow glow.
+- The Android AI chat composer is taller with a larger Ask button.
+
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,
   window titles, the Android app label and the docs (crate/package names,

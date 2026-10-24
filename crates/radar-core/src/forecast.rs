@@ -67,10 +67,23 @@ pub struct Observation {
     pub wind_direction_deg: Option<f32>,
     pub wind_gust_kmh: Option<f32>,
     pub humidity_pct: Option<f32>,
+    /// Barometric (altimeter) setting, Pa.
     pub pressure_pa: Option<f32>,
+    /// Sea-level pressure, Pa.
+    pub sea_level_pressure_pa: Option<f32>,
     pub visibility_m: Option<f32>,
     /// Precipitation over the last hour, mm.
     pub precip_last_hour_mm: Option<f32>,
+    /// Precipitation over the last 3 hours, mm.
+    pub precip_3h_mm: Option<f32>,
+    /// Precipitation over the last 6 hours, mm.
+    pub precip_6h_mm: Option<f32>,
+    /// Sky summary from the station's cloud layers, e.g. "Overcast 8000 ft".
+    pub sky: String,
+    /// Highest reported cloud coverage, 0–100%.
+    pub cloud_cover_pct: Option<f32>,
+    /// Cloud bases above ground, feet.
+    pub cloud_bases_ft: Vec<f32>,
     pub heat_index_c: Option<f32>,
     pub wind_chill_c: Option<f32>,
 }

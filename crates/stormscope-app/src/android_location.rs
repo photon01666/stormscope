@@ -82,6 +82,7 @@ fn apply_fix(app: &mut StormApp, lat: f64, lon: f64) {
         app.state.forecast_point = Some((lat, lon));
         app.state.forecast_point_gps = true;
         app.state.forecast = None;
+        app.state.uv_index = None;
         app.state.observation = None;
         app.state.forecast_site.clear();
         app.state.forecast_requested = None;

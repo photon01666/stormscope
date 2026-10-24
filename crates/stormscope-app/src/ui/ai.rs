@@ -444,18 +444,35 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     } else {
                         "Paste your API key in Settings to chat"
                     };
-                    let response = ui.add_enabled(
-                        configured,
-                        egui::TextEdit::singleline(&mut app.state.ai_question)
-                            .desired_width((ui.available_width() - 72.0).max(100.0))
-                            .hint_text(hint),
-                    );
+                    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+                    let mut editor = egui::TextEdit::singleline(&mut app.state.ai_question)
+                        .desired_width((ui.available_width() - 72.0).max(100.0))
+                        .hint_text(hint);
+                    // The default composer is a finger-width strip on a
+                    // phone; make the field and the Ask button touch-sized.
+                    #[cfg(target_os = "android")]
+                    {
+                        // Two rows at an 18 pt font: roughly double the
+                        // default strip's height, comfortable to type into.
+                        editor = editor
+                            .font(egui::FontId::new(18.0, egui::FontFamily::Proportional))
+                            .desired_rows(2)
+                            .desired_width((ui.available_width() - 108.0).max(100.0));
+                    }
+                    let response = ui.add_enabled(configured, editor);
                     kbd = response.has_focus();
                     let can_ask = configured && !no_markers && !app.state.ai_pending;
                     let submit = response.lost_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter))
                         && can_ask;
-                    if ui.add_enabled(can_ask, egui::Button::new("Ask")).clicked() || submit {
+                    #[cfg(not(target_os = "android"))]
+                    let ask_resp = ui.add_enabled(can_ask, egui::Button::new("Ask"));
+                    #[cfg(target_os = "android")]
+                    let ask_resp = ui.add_enabled(
+                        can_ask,
+                        egui::Button::new("Ask").min_size(egui::vec2(72.0, 44.0)),
+                    );
+                    if ask_resp.clicked() || submit {
                         let question = app.state.ai_question.trim().to_string();
                         if !question.is_empty() {
                             ask = Some(question);

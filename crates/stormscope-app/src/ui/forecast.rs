@@ -143,7 +143,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
 
         // --- Current conditions -------------------------------------
         match app.state.observation.as_ref() {
-            Some(o) => current_conditions_ui(ui, o),
+            Some(o) => current_conditions_ui(ui, o, app.state.uv_index),
             None => {
                 ui.label(
                     egui::RichText::new("Current conditions: loading…")
@@ -198,7 +198,12 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
                         }
                         for (i, p) in fc.periods.iter().enumerate() {
                             let temp = if p.temperature.is_finite() {
-                                format!("{:.0}°{}", p.temperature, p.unit)
+                                let shown = ui.animate_value_with_time(
+                                    egui::Id::new(("fc-temp", i)),
+                                    p.temperature,
+                                    0.5,
+                                );
+                                format!("{shown:.0}°{}", p.unit)
                             } else {
                                 "—".to_string()
                             };
@@ -345,10 +350,104 @@ pub(super) fn request_forecast_if_stale(app: &mut StormApp) {
 
 /// One line of "72°F · Light Rain · dew 61°F · …" for the current conditions,
 /// converted to the US units the rest of the app uses.
-fn current_conditions_ui(ui: &mut egui::Ui, o: &radar_core::forecast::Observation) {
+fn uv_word(uv: f32) -> &'static str {
+    match uv {
+        0.0..=2.0 => "Low",
+        3.0..=5.0 => "Moderate",
+        6.0..=7.0 => "High",
+        8.0..=10.0 => "Very high",
+        _ => "Extreme",
+    }
+}
+
+/// Lunar phase from the current instant: 0.0 = new, 0.5 = full.
+fn moon_phase(now: chrono::DateTime<chrono::Utc>) -> f64 {
+    let jd = now.timestamp() as f64 / 86_400.0 + 2_440_587.5;
+    ((jd - 2_451_550.097_66) / 29.530_588_853).rem_euclid(1.0)
+}
+
+fn moon_illumination(phase: f64) -> f64 {
+    (1.0 - (2.0 * std::f64::consts::PI * phase).cos()) / 2.0
+}
+
+fn moon_name(phase: f64) -> &'static str {
+    match (phase * 8.0).round() as u32 % 8 {
+        0 => "New moon",
+        1 => "Waxing crescent",
+        2 => "First quarter",
+        3 => "Waxing gibbous",
+        4 => "Full moon",
+        5 => "Waning gibbous",
+        6 => "Last quarter",
+        _ => "Waning crescent",
+    }
+}
+
+/// Polygon of the lit portion of a moon disc. The terminator is an ellipse
+/// whose horizontal radius shrinks to zero at quarter moons; the whole shape
+/// is mirrored for the waning half of the cycle.
+fn lit_moon_points(c: egui::Pos2, r: f32, phase: f64) -> Vec<egui::Pos2> {
+    const N: usize = 32;
+    let (frac, mirror) = if phase < 0.5 {
+        (phase, false)
+    } else {
+        (phase - 0.5, true)
+    };
+    let rx = (2.0 * std::f64::consts::PI * frac).cos();
+    let mut points = Vec::with_capacity(2 * N + 2);
+    for i in 0..=N {
+        let a = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * (i as f64 / N as f64);
+        points.push(egui::pos2(
+            c.x + r * a.cos() as f32,
+            c.y + r * a.sin() as f32,
+        ));
+    }
+    for i in 0..=N {
+        let a = std::f64::consts::FRAC_PI_2 - std::f64::consts::PI * (i as f64 / N as f64);
+        let x = rx * a.cos();
+        points.push(egui::pos2(c.x + r * x as f32, c.y + r * a.sin() as f32));
+    }
+    if mirror {
+        for p in &mut points {
+            p.x = 2.0 * c.x - p.x;
+        }
+    }
+    points
+}
+
+/// Animated moon-phase glyph: the lit portion is computed from the real
+/// phase, and a slow glow pulse keeps it feeling live.
+fn moon_ui(ui: &mut egui::Ui, ctx: &egui::Context) {
+    let phase = moon_phase(chrono::Utc::now());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
+    let c = rect.center();
+    let r = rect.width() / 2.0 - 2.0;
+    let painter = ui.painter();
+    let pulse = 0.5 + 0.5 * (ctx.input(|i| i.time) * 0.8).sin();
+    painter.circle_filled(
+        c,
+        r + 5.0,
+        egui::Color32::from_rgba_unmultiplied(200, 205, 255, (8.0 + 24.0 * pulse) as u8),
+    );
+    painter.circle_filled(c, r, egui::Color32::from_gray(40));
+    let lit = lit_moon_points(c, r, phase);
+    painter.add(egui::Shape::Path(egui::epaint::PathShape::closed_line(
+        lit,
+        egui::epaint::PathStroke::new(0.0, egui::Color32::from_gray(230)),
+    )));
+    let illum = moon_illumination(phase) * 100.0;
+    ui.label(egui::RichText::new(format!("{} · {:.0}% lit", moon_name(phase), illum)).small());
+}
+
+fn current_conditions_ui(
+    ui: &mut egui::Ui,
+    o: &radar_core::forecast::Observation,
+    uv_index: Option<f32>,
+) {
     fn f(c: Option<f32>) -> Option<f32> {
         c.map(|v| v * 9.0 / 5.0 + 32.0)
     }
+    let ctx = ui.ctx().clone();
     let station = if o.station_name.is_empty() {
         o.station_id.clone()
     } else {
@@ -356,13 +455,24 @@ fn current_conditions_ui(ui: &mut egui::Ui, o: &radar_core::forecast::Observatio
     };
     ui.horizontal_wrapped(|ui| {
         ui.strong("Current conditions");
+        // A softly pulsing "live" dot marks fresh data.
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+        let pulse = 0.5 + 0.5 * (ctx.input(|i| i.time) * 2.0).sin();
+        ui.painter().circle_filled(
+            rect.center(),
+            4.5,
+            egui::Color32::from_rgba_unmultiplied(90, 220, 120, (110.0 + 110.0 * pulse) as u8),
+        );
         ui.label(egui::RichText::new(station).weak().small());
     });
 
     let mut parts: Vec<String> = Vec::new();
     match f(o.temperature_c) {
-        Some(t) => parts.push(format!("{t:.0}°F")),
-        None => parts.push("—°F".into()),
+        Some(t) => {
+            let shown = ui.animate_value_with_time(egui::Id::new("cc-temp"), t, 0.6);
+            parts.push(format!("Air {shown:.0}°F"));
+        }
+        None => parts.push("Air —°F".into()),
     }
     if !o.text.is_empty() {
         parts.push(o.text.clone());
@@ -383,10 +493,15 @@ fn current_conditions_ui(ui: &mut egui::Ui, o: &radar_core::forecast::Observatio
             .wind_gust_kmh
             .map(|g| format!(" gust {:.0}", g * 0.621371))
             .unwrap_or_default();
-        parts.push(format!("wind{dir} {mph:.0} mph{gust}"));
+        let shown = ui.animate_value_with_time(egui::Id::new("cc-wind"), mph, 0.6);
+        parts.push(format!("wind{dir} {shown:.0} mph{gust}"));
     }
     if let Some(p) = o.pressure_pa {
-        parts.push(format!("{:.2} inHg", p / 3386.389));
+        let shown = ui.animate_value_with_time(egui::Id::new("cc-alt"), p / 3386.389, 0.6);
+        parts.push(format!("altimeter {shown:.2} inHg"));
+    }
+    if let Some(slp) = o.sea_level_pressure_pa {
+        parts.push(format!("sea-level {:.2} inHg", slp / 3386.389));
     }
     if let Some(v) = o.visibility_m {
         parts.push(format!("vis {:.1} mi", v / 1609.344));
@@ -396,13 +511,53 @@ fn current_conditions_ui(ui: &mut egui::Ui, o: &radar_core::forecast::Observatio
             parts.push(format!("{:.2} in/hr", mm / 25.4));
         }
     }
+    if let Some(mm) = o.precip_3h_mm {
+        if mm > 0.0 {
+            parts.push(format!("{:.2} in/3h", mm / 25.4));
+        }
+    }
+    if let Some(mm) = o.precip_6h_mm {
+        if mm > 0.0 {
+            parts.push(format!("{:.2} in/6h", mm / 25.4));
+        }
+    }
+    if !o.sky.is_empty() {
+        parts.push(o.sky.clone());
+    }
+    if !o.cloud_bases_ft.is_empty() {
+        let bases: Vec<String> = o
+            .cloud_bases_ft
+            .iter()
+            .map(|b| format!("{b:.0} ft"))
+            .collect();
+        parts.push(format!("bases {}", bases.join(", ")));
+    }
+    if let Some(pct) = o.cloud_cover_pct {
+        parts.push(format!("cover {pct:.0}%"));
+    }
     if let Some(hi) = f(o.heat_index_c) {
         parts.push(format!("heat index {hi:.0}°F"));
     }
     if let Some(wc) = f(o.wind_chill_c) {
         parts.push(format!("wind chill {wc:.0}°F"));
     }
+    if let Some(uv) = uv_index {
+        let shown = ui.animate_value_with_time(egui::Id::new("cc-uv"), uv, 0.6);
+        parts.push(format!("UV {:.1} ({})", shown, uv_word(shown)));
+    }
     ui.label(egui::RichText::new(parts.join(" · ")));
+
+    // Moon phase: a real phase glyph with a slow glow, next to its name.
+    ui.horizontal(|ui| {
+        moon_ui(ui, &ctx);
+        ui.label(
+            egui::RichText::new(
+                "Moon phase updates from the current time; UV index from Open-Meteo.",
+            )
+            .weak()
+            .small(),
+        );
+    });
 
     if let Some(ts) = o.timestamp {
         let age = chrono::Utc::now() - ts;
@@ -426,6 +581,23 @@ fn current_conditions_ui(ui: &mut egui::Ui, o: &radar_core::forecast::Observatio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moon_phase_tracks_new_and_full_moons() {
+        // 2000-01-06 18:14 UTC was a new moon; 2000-01-21 was full.
+        let new = chrono::DateTime::parse_from_rfc3339("2000-01-06T18:14:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let full = chrono::DateTime::parse_from_rfc3339("2000-01-21T04:40:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let np = moon_phase(new);
+        let fp = moon_phase(full);
+        assert!(np < 0.03 || np > 0.97, "new moon phase {np}");
+        assert!((fp - 0.5).abs() < 0.05, "full moon phase {fp}");
+        assert_eq!(moon_name(np), "New moon");
+        assert_eq!(moon_name(fp), "Full moon");
+    }
 
     /// The cadence rule: refetch when the target moved, when nothing is
     /// loaded, or when the data aged past 15 minutes — not otherwise (the

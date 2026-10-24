@@ -1486,6 +1486,14 @@ fn refresh_forecast(
         Some(Err(e)) => log::debug!("observation fetch failed: {e:#}"),
         None => {}
     }
+    // UV index (Open-Meteo — NWS does not publish one). One small request per
+    // refresh cadence.
+    match f.uv_index(lat, lon) {
+        Ok(uv) => {
+            let _ = out.send(DataMsg::UvIndex(uv));
+        }
+        Err(e) => log::debug!("UV index fetch failed: {e:#}"),
+    }
 }
 
 /// Fetch every SPC outlook product SPC publishes for `day` — categorical

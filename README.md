@@ -42,6 +42,12 @@ No accounts, API keys or telemetry.
 - SPC Day 1–3 outlooks (categorical, Tornado/Wind/Hail) with risk-level help.
 - NWS warnings (ice-blue winter family), alerts browser, local storm reports,
   mesoscale discussions, NWS forecast, station rain/snow totals.
+- The forecast window's current conditions carry the full surface observation:
+  air temperature, dew point, relative humidity, wind speed/direction/gusts,
+  altimeter and sea-level pressure, 1/3/6-hour precipitation, visibility,
+  sky cover and cloud bases, heat index/wind chill, the current UV index
+  (Open-Meteo) and an animated moon-phase glyph. Numbers tween when data
+  refreshes, and forecast temperatures animate on update.
 - Storm tracks with nowcasts and per-marker arrival ETAs; measure tool;
   range rings.
 - MRMS national composite (CONUS + native 1 km window) and GOES infrared or

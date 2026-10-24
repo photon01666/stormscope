@@ -66,6 +66,8 @@ pub enum DataMsg {
     AlertsFast(Vec<radar_core::warnings::Warning>),
     /// Every active alert nationwide (alerts browser only).
     AllAlerts(Vec<radar_core::warnings::Warning>),
+    /// Current UV index for the forecast point (Open-Meteo; NWS has no feed).
+    UvIndex(Option<f32>),
     /// Preliminary Local Storm Reports (realtime spotter/public reports).
     Reports(Vec<radar_data::lsrs::Lsr>),
     /// Active SPC Mesoscale Discussions.
@@ -772,6 +774,7 @@ impl StormApp {
                     self.inject_debug_warning();
                     self.announce_nearby_alerts();
                 }
+                DataMsg::UvIndex(uv) => self.state.uv_index = uv,
                 DataMsg::Reports(v) => self.state.lsrs = v,
                 DataMsg::Mcds(v) => self.state.mcds = v,
                 DataMsg::AlertsFast(a) => {
@@ -1367,6 +1370,7 @@ impl StormApp {
         }
         if let Some(point) = &request.forecast {
             self.state.forecast = None;
+            self.state.uv_index = None;
             self.state.observation = None;
             self.state.forecast_point = Some((point.lat, point.lon));
             self.state.forecast_point_gps = false;

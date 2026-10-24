@@ -65,6 +65,26 @@ impl ForecastSource {
     /// Both in one go, sharing the gridpoint lookup: the forecast, and the
     /// current conditions when a nearby station reports them. Observation
     /// failures are non-fatal (many points sit between stations).
+    /// Current UV index for a point from Open-Meteo (NWS has no UV feed).
+    /// Free, no API key; one tiny request.
+    pub fn uv_index(&self, lat: f64, lon: f64) -> Result<Option<f32>> {
+        let url = format!(
+            "https://api.open-meteo.com/v1/forecast?latitude={lat:.4}&longitude={lon:.4} \
+             &current=uv_index"
+        );
+        let resp: serde_json::Value = self
+            .client
+            .get(url)
+            .send()
+            .context("requesting Open-Meteo UV index")?
+            .json()
+            .context("parsing Open-Meteo UV index")?;
+        Ok(resp
+            .pointer("/current/uv_index")
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32))
+    }
+
     pub fn snapshot(&self, lat: f64, lon: f64) -> (Result<Forecast>, Option<Result<Observation>>) {
         let points = match self.points(lat, lon) {
             Ok(p) => p,
@@ -580,10 +600,91 @@ pub(crate) fn observation_from_json(
         wind_gust_kmh: num("windGust"),
         humidity_pct: num("relativeHumidity"),
         pressure_pa: num("barometricPressure"),
+        sea_level_pressure_pa: num("seaLevelPressure"),
         visibility_m: num("visibility"),
         precip_last_hour_mm: num("precipitationLastHour"),
+        precip_3h_mm: num("precipitationLast3Hours"),
+        precip_6h_mm: num("precipitationLast6Hours"),
+        sky: sky_summary(p),
+        cloud_cover_pct: cloud_cover(p),
+        cloud_bases_ft: cloud_bases(p),
         heat_index_c: num("heatIndex"),
         wind_chill_c: num("windChill"),
+    }
+}
+
+/// NWS cloud-layer amount codes -> percent coverage.
+fn cloud_amount_pct(amount: &str) -> Option<f32> {
+    match amount {
+        "CLR" | "SKC" | "NCD" | "NSC" => Some(0.0),
+        "FEW" => Some(25.0),
+        "SCT" => Some(50.0),
+        "BKN" => Some(75.0),
+        "OVC" | "VV" => Some(100.0),
+        _ => None,
+    }
+}
+
+/// Human sky summary + coverage + cloud bases (feet) from `cloudLayers`.
+fn cloud_cover(p: Option<&serde_json::Value>) -> Option<f32> {
+    let layers = p?.pointer("/cloudLayers")?.as_array()?;
+    layers
+        .iter()
+        .filter_map(|l| l.get("amount").and_then(|v| v.as_str()))
+        .filter_map(cloud_amount_pct)
+        .fold(None, |acc: Option<f32>, v| {
+            Some(acc.map_or(v, |a| a.max(v)))
+        })
+}
+
+fn cloud_bases(p: Option<&serde_json::Value>) -> Vec<f32> {
+    p.and_then(|p| p.pointer("/cloudLayers"))
+        .and_then(|v| v.as_array())
+        .map(|layers| {
+            layers
+                .iter()
+                .filter_map(|l| l.get("base").and_then(|v| v.as_f64()))
+                .map(|m| m as f32 * 3.280_84)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn sky_summary(p: Option<&serde_json::Value>) -> String {
+    let Some(layers) = p
+        .and_then(|p| p.pointer("/cloudLayers"))
+        .and_then(|v| v.as_array())
+    else {
+        return String::new();
+    };
+    let mut best = 0.0f32;
+    let mut base_ft: Option<f32> = None;
+    for layer in layers {
+        let Some(amount) = layer.get("amount").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(pct) = cloud_amount_pct(amount) else {
+            continue;
+        };
+        if pct >= best {
+            best = pct;
+            base_ft = layer
+                .get("base")
+                .and_then(|v| v.as_f64())
+                .map(|m| m as f32 * 3.280_84);
+        }
+    }
+    let word = match best as u32 {
+        0 => "Clear",
+        25 => "Few clouds",
+        50 => "Scattered",
+        75 => "Broken",
+        100 => "Overcast",
+        _ => return String::new(),
+    };
+    match base_ft {
+        Some(base) if base.is_finite() => format!("{word} {} ft", (base / 100.0).round() * 100.0),
+        _ => word.to_string(),
     }
 }
 

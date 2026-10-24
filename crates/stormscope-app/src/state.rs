@@ -496,6 +496,8 @@ pub struct AppState {
     /// When the forecast/observation currently on screen was fetched, for the
     /// auto-refresh cadence.
     pub forecast_fetched_at: Option<std::time::Instant>,
+    /// Current UV index for the forecast point (Open-Meteo).
+    pub uv_index: Option<f32>,
     // Rain/snow totals (NWS observation series around the selected site).
     pub totals_open: bool,
     pub totals: Vec<radar_data::StationTotals>,
@@ -923,6 +925,7 @@ impl Default for AppState {
             forecast_site: String::new(),
             forecast_requested: None,
             forecast_fetched_at: None,
+            uv_index: None,
             gps_fix: None,
             gps_polled_at: f64::NEG_INFINITY,
             gps_applied: false,

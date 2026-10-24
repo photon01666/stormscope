@@ -243,6 +243,7 @@ public class StormWatchService extends Service {
         main.post(() -> {
             TextToSpeech current = tts;
             if (current != null) {
+                Log.i(TAG, "Storm Watch speaking: " + text);
                 current.speak(text, TextToSpeech.QUEUE_ADD, null,
                         "storm-watch-" + System.nanoTime());
             }
@@ -285,6 +286,7 @@ public class StormWatchService extends Service {
         if (features == null) {
             return;
         }
+        Log.i(TAG, "Storm Watch polled " + features.length() + " point alerts");
 
         Set<String> seen = new HashSet<>(
                 prefs.getStringSet("storm_watch_seen", Collections.emptySet()));

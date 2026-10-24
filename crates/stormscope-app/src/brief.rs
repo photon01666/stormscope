@@ -92,6 +92,10 @@ pub fn system_prompt() -> String {
      Rules:\n\
      - Use only the snapshot. Never invent a measurement or a time. If a variable is missing, say \
      it is not available.\n\
+     - Every clock time you state must be in the user's local timezone. `as_of_local`, \
+     `local_timezone` and `local_utc_offset` give the current local wall-clock time and zone; \
+     `as_of` and anything ending in `_utc` is UTC — never print a `_utc` value as a clock time, \
+     and always append the timezone abbreviation to clock times (for example \"9:11 PM MST\").\n\
      - Write for a normal person, not a radar operator. Do not recite radar variables or \
      acronyms (dBZ, kft, HCA, ZDR, CC, MEHS, VIL, spectrum width, echo regions, melting level). \
      Translate them into what they mean: \"a few very light returns\", \"the storm tops are low\", \
@@ -212,6 +216,22 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
     root.insert(
         "as_of".into(),
         json!(input.now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+    );
+    // Wall-clock time for the model. The snapshot's _utc fields are there for
+    // arithmetic; without these, a model reads 02:11Z as "2:11 AM" and quotes
+    // a UTC instant as the user's local clock.
+    let local_now = input.now.with_timezone(&chrono::Local);
+    root.insert(
+        "as_of_local".into(),
+        json!(local_now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+    );
+    root.insert(
+        "local_timezone".into(),
+        json!(iana_time_zone::get_timezone().unwrap_or_else(|_| "local".to_string())),
+    );
+    root.insert(
+        "local_utc_offset".into(),
+        json!(local_now.format("%:z").to_string()),
     );
     root.insert(
         "radar".into(),
@@ -1811,6 +1831,9 @@ mod tests {
             r#""dbz":35.0"#,
             r#""echo_top_kft""#,
             r#""current_view""#,
+            r#""as_of_local""#,
+            r#""local_timezone""#,
+            r#""local_utc_offset""#,
             r#""storm_cells_all""#,
             r#""mean_motion""#,
             r#""heading":"NE""#,

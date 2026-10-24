@@ -26,6 +26,9 @@ env_logger.workspace = true
 bytemuck.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+# The AI snapshot reports the user's local timezone name so the model can
+# quote arrival times in the reader's clock, not UTC.
+iana-time-zone = "0.1"
 serde.workspace = true
 serde_json.workspace = true
 earcutr.workspace = true

@@ -56,23 +56,20 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Build (release)
-        run: cargo build --release -p stormscope-app
-
-      # The Windows build has no system neural voice. Bundle the MIT-licensed
-      # Piper runtime next to stormscope.exe; the app discovers
-      # piper/piper.exe and piper/voices automatically.
-      - name: Bundle Piper and the female neural voice
+      # Prepare the self-contained voice asset before the release build. The
+      # embedded-piper feature bakes this zip into Stormscope.exe; first launch
+      # extracts it to %LOCALAPPDATA%\stormscope\piper.
+      - name: Prepare the embedded Piper voice
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force dist/windows | Out-Null
-          Copy-Item target/release/stormscope.exe dist/windows/
+          $stage = "staging"
+          New-Item -ItemType Directory -Force $stage | Out-Null
           curl.exe -L --fail --retry 3 -o piper.zip `
             https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip
           if ($LASTEXITCODE -ne 0) { throw "Piper download failed" }
-          Expand-Archive -Path piper.zip -DestinationPath dist/windows -Force
-          $voiceDir = "dist/windows/piper/voices/en/en_US/lessac/high"
+          Expand-Archive -Path piper.zip -DestinationPath $stage -Force
+          $voiceDir = "$stage/piper/voices/en/en_US/lessac/high"
           New-Item -ItemType Directory -Force $voiceDir | Out-Null
           $base = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/high"
           foreach ($file in @("en_US-lessac-high.onnx", "en_US-lessac-high.onnx.json", "MODEL_CARD")) {
@@ -80,22 +77,34 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Voice download failed: $file" }
           }
           @"
-          Stormscope's Windows bundle includes the Piper runtime and the
+          Stormscope's Windows executable embeds the Piper runtime and the
           lessac high English voice.
 
           Piper: https://github.com/rhasspy/piper (MIT)
           Voice: https://huggingface.co/rhasspy/piper-voices
           Lessac dataset/license:
           https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html
-          "@ | Set-Content -Encoding UTF8 dist/windows/VOICE-LICENSE.txt
-          Get-Item dist/windows/piper/piper.exe, "$voiceDir/en_US-lessac-high.onnx" |
-            Format-Table Name, Length
+          "@ | Set-Content -Encoding UTF8 "$stage/piper/VOICE-LICENSE.txt"
+          New-Item -ItemType Directory -Force crates/stormscope-app/assets | Out-Null
+          Compress-Archive -Path "$stage/piper" `
+            -DestinationPath crates/stormscope-app/assets/piper-windows.zip -Force
+          Get-Item "$stage/piper/piper.exe", "$voiceDir/en_US-lessac-high.onnx", `
+            crates/stormscope-app/assets/piper-windows.zip | Format-Table Name, Length
 
-      - name: Upload the Windows bundle
+      - name: Build single-file release
+        run: cargo build --release -p stormscope-app --features embedded-piper
+
+      - name: Name the Windows executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/stormscope.exe dist/Stormscope.exe
+
+      - name: Upload the single-file Windows exe
         uses: actions/upload-artifact@v4
         with:
           name: stormscope-windows-x86_64
-          path: dist/windows
+          path: dist/Stormscope.exe
           if-no-files-found: error
 
   # Android builds are still maturing; keep the job informational so a

@@ -469,6 +469,8 @@ impl StormApp {
         });
 
         let state = AppState::default();
+        #[cfg(windows)]
+        crate::embedded_piper::ensure_extracted();
         #[cfg(not(target_os = "android"))]
         crate::voice::set_voice(state.voice_model.clone());
         if let Some(fonts) = Self::configure_fonts(&cc.egui_ctx) {

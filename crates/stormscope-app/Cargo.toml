@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Windows single-file release: embed the Piper runtime and lessac voice in the
+# executable. CI prepares assets/piper-windows.zip before enabling this; a
+# normal developer build leaves it off and uses a sidecar/SAPI fallback.
+embedded-piper = []
+
 [[bin]]
 name = "stormscope"
 path = "src/main.rs"

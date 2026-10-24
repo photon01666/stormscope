@@ -68,10 +68,13 @@ No accounts, API keys or telemetry.
 **Voice alerts**
 - New warnings and watches are read aloud when their polygon is within
   **50 miles of the GPS fix or a manual map marker**.
-- Linux/Windows use the neural **Piper** voice (female lessac high by default,
-  with a voice picker in Settings); Android uses the system text-to-speech
-  engine. Settings has a master switch and separate tornado, severe
-  thunderstorm, watch and other-warning switches.
+- Desktop builds use the neural **Piper** voice (female lessac high by
+  default, with a voice picker in Settings); Android uses the system
+  text-to-speech engine. The Windows CI artifact is a single
+  **`Stormscope.exe`** with Piper and the voice embedded; it extracts them to
+  `%LOCALAPPDATA%\stormscope\piper` on first launch. Settings has a master
+  switch and separate tornado, severe thunderstorm, watch and other-warning
+  switches.
 
 ## Install
 
@@ -101,8 +104,8 @@ without Piper, Stormscope falls back to the system TTS. On Windows the
 renderer uses DX12: install the MSVC build tools (Desktop development with
 C++) plus CMake and NASM (the TLS crates need them), then
 `cargo build --release -p stormscope-app` writes
-`target\release\stormscope.exe`. The CI Windows artifact bundles `piper.exe`
-and the lessac high voice next to the executable; a local build uses the
+`target\release\stormscope.exe`. The CI Windows artifact is a single
+`Stormscope.exe` with Piper and lessac embedded; a local build uses the
 system SAPI voice unless Piper is placed in `%APPDATA%\stormscope\piper`.
 
 ## Data sources

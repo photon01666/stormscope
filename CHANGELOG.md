@@ -16,9 +16,11 @@ log; entries start at the first public release.
   Stormscope uses the neural **Piper** voices when installed (the female
   `en_US-lessac-high` voice by default, with a voice picker in Settings), and
   falls back to SAPI on Windows or speech-dispatcher/espeak-ng on Linux. The
-  Windows CI artifact bundles Piper and the lessac high voice next to the
-  executable. Only alerts whose polygon is within **50 miles of the GPS fix
-  or a manual map marker** are read; zone-only alerts have no polygon and stay
+  Windows CI artifact is a single **`Stormscope.exe`** with Piper and the
+  lessac high voice embedded; first launch extracts them to
+  `%LOCALAPPDATA%\stormscope\piper`. Only alerts whose polygon is within
+  **50 miles of the GPS fix or a manual map marker** are read; zone-only
+  alerts have no polygon and stay
   silent. The first sweep after launch or a station change is silent, speech
   is serialized so a burst cannot talk over itself, and Settings has a master
   **Voice alerts** switch, separate **Tornado warnings**, **Severe
@@ -32,6 +34,9 @@ log; entries start at the first public release.
 - Voice discovery checks explicit Piper paths instead of recursively walking
   the bundle, avoiding UI stalls and reparse-point loops; the Windows bundle
   has one voice, shown as a label instead of a combo box.
+- The single-file Windows build passes announcement text to `piper.exe` on
+  stdin, hides the piper console with `CREATE_NO_WINDOW`, and no longer falls
+  back to SAPI on Test voice.
 
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,

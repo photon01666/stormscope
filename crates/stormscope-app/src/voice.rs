@@ -559,8 +559,6 @@ fn synthesize_piper(text: &str, voice: &Voice, wav: &Path) -> bool {
             .arg(&voice.path)
             .arg("-f")
             .arg(wav)
-            .arg(text)
-            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         // A packaged Windows Piper needs its own directory as the working
@@ -570,10 +568,43 @@ fn synthesize_piper(text: &str, voice: &Voice, wav: &Path) -> bool {
         {
             command.current_dir(parent);
         }
-        match command.status() {
-            Ok(status) if status.success() && wav.is_file() => return true,
-            Ok(status) => log::debug!("voice: {program:?} exited with {status}"),
-            Err(e) => log::debug!("voice: {program:?}: {e}"),
+
+        #[cfg(windows)]
+        {
+            use std::io::Write;
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            // The C++ piper.exe reads text from stdin and is a console
+            // program; without CREATE_NO_WINDOW every Test voice flashes a
+            // black command window. Text as a positional argument is silently
+            // ignored by this build, which is why it fell back to SAPI.
+            command
+                .stdin(std::process::Stdio::piped())
+                .creation_flags(CREATE_NO_WINDOW);
+            let Ok(mut child) = command.spawn() else {
+                continue;
+            };
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+                let _ = stdin.write_all(b"\n");
+            }
+            match child.wait() {
+                Ok(status) if status.success() && wav.is_file() => return true,
+                Ok(status) => log::debug!("voice: {program:?} exited with {status}"),
+                Err(e) => log::debug!("voice: {program:?}: {e}"),
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            // Python piper-tts only renders a short fragment from a pipe
+            // (heard as a "pew"); an argument produces the whole sentence.
+            command.arg(text).stdin(std::process::Stdio::null());
+            match command.status() {
+                Ok(status) if status.success() && wav.is_file() => return true,
+                Ok(status) => log::debug!("voice: {program:?} exited with {status}"),
+                Err(e) => log::debug!("voice: {program:?}: {e}"),
+            }
         }
     }
     false

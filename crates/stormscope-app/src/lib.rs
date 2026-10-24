@@ -18,6 +18,8 @@ pub mod android_tts;
 mod app;
 mod background;
 mod brief;
+#[cfg(windows)]
+mod embedded_piper;
 pub mod render3d;
 mod state;
 mod timefmt;

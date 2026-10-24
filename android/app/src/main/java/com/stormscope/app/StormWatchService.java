@@ -227,7 +227,8 @@ public class StormWatchService extends Service {
             return;
         }
         Intent open = new Intent(this, MainActivity.class)
-                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(MainActivity.EXTRA_ALERT_ID, a.id);
         PendingIntent content = PendingIntent.getActivity(
                 this, a.id.hashCode(), open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);

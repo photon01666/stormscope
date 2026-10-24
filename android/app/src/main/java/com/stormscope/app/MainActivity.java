@@ -41,9 +41,12 @@ public class MainActivity extends GameActivity {
     private static final int NOTIFICATION_REQUEST = 0x4751; // "GP" + 1
     /** Intent extra: the Storm Watch notification was tapped. */
     public static final String EXTRA_AI_BRIEF = "stormscope_ai_brief";
+    /** Intent extra: the tapped alert notification's NWS id. */
+    public static final String EXTRA_ALERT_ID = "stormscope_alert_id";
 
     /** One-shot flag parked by the notification, consumed by Rust's UI loop. */
     private static volatile boolean sPendingAiBrief;
+    private static volatile String sPendingAlertId;
 
     /** Latest fix as {lat, lon}; volatile because Rust reads it on its own thread. */
     private static volatile double[] sLocation;
@@ -69,6 +72,7 @@ public class MainActivity extends GameActivity {
         super.onCreate(savedInstanceState);
         sPendingAiBrief = getIntent() != null
                 && getIntent().getBooleanExtra(EXTRA_AI_BRIEF, false);
+        sPendingAlertId = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_ALERT_ID);
         sPrefs = getSharedPreferences("stormscope", MODE_PRIVATE);
         startLocation(false);
         initTts();
@@ -101,6 +105,17 @@ public class MainActivity extends GameActivity {
         if (intent != null && intent.getBooleanExtra(EXTRA_AI_BRIEF, false)) {
             sPendingAiBrief = true;
         }
+        sPendingAlertId = intent == null ? null : intent.getStringExtra(EXTRA_ALERT_ID);
+    }
+
+    /**
+     * Called from Rust (JNI, UI thread): consume the tapped alert notification's
+     * id once, so the app can open that alert's detail.
+     */
+    public String stormscopeTakeAlertId() {
+        String id = sPendingAlertId;
+        sPendingAlertId = null;
+        return id;
     }
 
     /**

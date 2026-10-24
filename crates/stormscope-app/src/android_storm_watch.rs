@@ -62,6 +62,34 @@ pub fn take_brief_request() -> bool {
     res.unwrap_or(false)
 }
 
+/// One-shot: the id of the alert notification the user tapped (None if the
+/// last intent wasn't an alert tap). Clears it so it is consumed exactly once.
+pub fn take_alert_id() -> Option<String> {
+    let app = ANDROID_APP.get()?;
+    let vm_ptr = app.vm_as_ptr() as usize;
+    let activity_ptr = app.activity_as_ptr() as usize;
+    let vm = unsafe { jni::JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) };
+    let res = vm.attach_current_thread(|env| {
+        let activity =
+            unsafe { jni::objects::JObject::from_raw(env, activity_ptr as jni::sys::jobject) };
+        let value = env.call_method(
+            &activity,
+            jni::jni_str!("stormscopeTakeAlertId"),
+            jni::jni_sig!("()Ljava/lang/String;"),
+            &[],
+        )?;
+        let obj = value.l()?;
+        if obj.is_null() {
+            return Ok::<Option<String>, jni::errors::Error>(None);
+        }
+        // SAFETY: taking ownership of the local reference is the same pattern
+        // as android_location's array read.
+        let jstr = unsafe { jni::objects::JString::from_raw(env, obj.into_raw()) };
+        Ok(Some(jstr.try_to_string(env)?))
+    });
+    res.ok().flatten()
+}
+
 /// Start or stop the background service; persists the preference in Java.
 pub fn set_enabled(enabled: bool) {
     let Some(app) = ANDROID_APP.get() else {

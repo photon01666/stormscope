@@ -2085,6 +2085,14 @@ impl StormApp {
                 self.state.storm_watch_polled_at = now;
                 self.state.storm_watch_enabled = crate::android_storm_watch::enabled();
             }
+            // A tapped alert notification: open that alert's NOAA detail
+            // (full-pane on a phone) with the polygon focused behind it.
+            if let Some(id) = crate::android_storm_watch::take_alert_id() {
+                self.state.alert_detail = Some(id.clone());
+                self.state.alerts_popup_open = true;
+                self.state.alerts_focus = Some(id);
+                self.state.alerts_focus_at = ui.ctx().input(|i| i.time);
+            }
             // The persistent notification's content intent: open the AI
             // window and ask for a brief, exactly like pressing "Write brief".
             if crate::android_storm_watch::take_brief_request() {

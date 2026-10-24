@@ -1654,10 +1654,6 @@ fn sidebar_want_open(
 
 /// Full-height target for the sidebar panel: the middle rect minus a small
 /// margin, floored so it stays usable on short windows.
-fn sidebar_panel_height(middle: egui::Rect) -> f32 {
-    middle.height().max(120.0)
-}
-
 /// Height of the panel's *content* inside its frame: the frame's own vertical
 /// padding (side_top_panel = Margin::symmetric(8, 2) → 4 pt) is subtracted so
 /// the visible panel ends exactly at `middle.max.y` — flush against the
@@ -3326,9 +3322,11 @@ mod tests {
 
     #[test]
     fn sidebar_panel_height_fills_middle_rect() {
-        let h = sidebar_panel_height(middle());
+        // Content = full middle rect minus the frame's 4 pt padding; the
+        // frame adds it back, so the visible panel spans the rect exactly.
+        let h = sidebar_content_height(middle(), 4.0);
         assert!(
-            (h - 710.0).abs() < 1e-6,
+            (h - (710.0 - 4.0)).abs() < 1e-6,
             "should span the middle rect, got {h}"
         );
     }
@@ -3351,7 +3349,7 @@ mod tests {
     #[test]
     fn sidebar_panel_height_floored_on_short_windows() {
         let tiny = egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(1280.0, 50.0));
-        assert_eq!(sidebar_panel_height(tiny), 120.0);
+        assert_eq!(sidebar_content_height(tiny, 4.0), 120.0);
     }
 
     /// Dragging a popup's bottom border must not move it: egui derives the

@@ -66,15 +66,18 @@ log; entries start at the first public release.
   now read "Temp" instead of "Air".
 
 **AI meteorologist**
-- The AI snapshot now carries **every** forecast period in the list, not just
-  the first four — the model no longer claims the forecast "only goes to
-  Sunday" when the window shows next Friday. Each period also includes its
-  start time (UTC) and day/night flag.
-- Asking a question when the cached surface observation is older than two
-  minutes now refreshes current conditions first: the question is parked for
-  the duration of the refresh (bounded by a 6-second deadline) and the answer
-  is built from the fresh snapshot, so a repeat question never reuses stale
-  weather.
+- **FIXED — the AI claiming the forecast "only goes to Sunday."** The snapshot
+  truncated the list to the first four periods while the forecast window kept
+  showing all of them. The snapshot now carries **every** period in the list,
+  each with its start time (UTC) and day/night flag. (The NWS gridpoint
+  forecast itself only extends 7 days, so "through Friday" is the true end of
+  the data.)
+- **FIXED — repeat questions reusing stale current weather.** When the cached
+  surface observation is older than two minutes, a question now forces a
+  forecast/observation refresh first and is parked until the new observation
+  lands (6-second deadline), so the answer is always built from the fresh
+  snapshot. Verified in logcat: a 223-second-old observation triggered the
+  refresh path and the answer used the fresh one half a second later.
 
 **Presentation**
 - The project is spelled **Stormscope** everywhere it is shown: status bar,

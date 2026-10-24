@@ -85,6 +85,10 @@ log; entries start at the first public release.
   refresh path and the answer used the fresh one half a second later.
 
 **Presentation**
+- The slide-out sidebar now reaches the timeline bar on every platform. It
+  reserved 16 pt at the bottom (and ignored the panel frame's own 4 pt
+  padding), leaving a visible gap above the Play row; the panel height now
+  accounts for the frame padding so the panel sits flush on the bar.
 - The project is spelled **Stormscope** everywhere it is shown: status bar,
   window titles, the Android app label and the docs (crate/package names,
   paths, URLs and the logcat tag stay lowercase as before).

@@ -1655,7 +1655,15 @@ fn sidebar_want_open(
 /// Full-height target for the sidebar panel: the middle rect minus a small
 /// margin, floored so it stays usable on short windows.
 fn sidebar_panel_height(middle: egui::Rect) -> f32 {
-    (middle.height() - 16.0).max(120.0)
+    middle.height().max(120.0)
+}
+
+/// Height of the panel's *content* inside its frame: the frame's own vertical
+/// padding (side_top_panel = Margin::symmetric(8, 2) → 4 pt) is subtracted so
+/// the visible panel ends exactly at `middle.max.y` — flush against the
+/// timeline bar instead of leaving a gap above the Play button.
+fn sidebar_content_height(middle: egui::Rect, frame_vertical_margin: f32) -> f32 {
+    (middle.height() - frame_vertical_margin).max(120.0)
 }
 
 /// Auto-hiding controls sidebar: slides in from the left when the pointer
@@ -1732,14 +1740,15 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
         .show(ctx, |ui| {
             apply_text_scale(ui, scale);
             let frame = egui::Frame::side_top_panel(ui.style());
+            let frame_v = f32::from(frame.inner_margin.top) + f32::from(frame.inner_margin.bottom);
             frame.show(ui, |ui| {
                 ui.set_min_width(panel_w);
                 ui.set_max_width(panel_w);
-                // Pin the full middle height: a bare Area sizes to its
-                // content, which left the sidebar as a short floating box.
-                // With the height fixed, long control lists scroll inside
-                // instead of spilling over the timeline.
-                let h = sidebar_panel_height(middle);
+                // Pin the middle height: a bare Area sizes to its content,
+                // which left the sidebar as a short floating box. Subtracting
+                // the frame's own padding makes the visible panel reach the
+                // timeline instead of stopping 16 pt short of it.
+                let h = sidebar_content_height(middle, frame_v);
                 ui.set_min_height(h);
                 ui.set_max_height(h);
                 sidebar_header(ui, app);
@@ -3319,8 +3328,23 @@ mod tests {
     fn sidebar_panel_height_fills_middle_rect() {
         let h = sidebar_panel_height(middle());
         assert!(
-            (h - (710.0 - 16.0)).abs() < 1e-6,
+            (h - 710.0).abs() < 1e-6,
             "should span the middle rect, got {h}"
+        );
+    }
+
+    #[test]
+    fn sidebar_panel_reaches_the_timeline_bar() {
+        // side_top_panel's frame padding is 4 pt (Margin::symmetric(8, 2));
+        // content + padding must land exactly on the middle rect's bottom,
+        // where the timeline bar begins — no gap above the Play row.
+        let m = middle();
+        let frame_v = 4.0;
+        let visible = sidebar_content_height(m, frame_v) + frame_v;
+        assert!(
+            (visible - m.height()).abs() < 1e-6,
+            "gap of {} pt above the timeline",
+            m.height() - visible
         );
     }
 

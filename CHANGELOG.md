@@ -49,11 +49,12 @@ log; entries start at the first public release.
   (Open-Meteo, since NWS has none) and a moon-phase glyph computed from the
   device clock. The temperature/wind/pressure/UV numbers tween when new data
   arrives, forecast temperatures animate, and the moon disc has a slow glow.
-- The Android AI window's top toolbar now shows only the tiny model name
-  (e.g. `mimo-v2.6-flash`): the Write brief, Settings and Minimize buttons
-  and the endpoint path are gone — Settings lives in the slide-out, the ✕
-  closes the window and a brief arrives from the notification tap. Desktop
-  keeps the full toolbar.
+- The Android AI window's header is one clean row: the title with the tiny
+  model name to its right (`AI meteorologist  mimo-v2.6-flash  ✕`) and no
+  separator rules. The Write brief, Settings and Minimize buttons and the
+  endpoint path are gone — Settings lives in the slide-out, the ✕ closes the
+  window and a brief arrives from the notification tap. Desktop keeps the full
+  toolbar.
 - The Android Map controls window now uses the phone header (title left,
   painted ✕ at the right edge of a row that spans the box) instead of the
   stock title bar whose background stopped short of the window edge, and its

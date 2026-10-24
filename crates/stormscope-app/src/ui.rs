@@ -37,6 +37,35 @@ pub(super) fn big_text_scale(app: &StormApp) -> f32 {
     }
 }
 
+/// Phone header for the AI window: title, the model name to its right, and a
+/// painted ✕ at the far right — and none of the separator rules.
+#[cfg(target_os = "android")]
+fn ai_phone_header(ui: &mut egui::Ui, title: &str, model: &str) -> bool {
+    ui.add_space(4.0);
+    let mut close = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title).strong().size(20.0));
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(model).small().weak());
+        let gap = (ui.available_width() - 44.0).max(0.0);
+        ui.add_space(gap);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::click());
+        let visuals = ui.style().interact(&resp);
+        if resp.hovered() || resp.is_pointer_button_down_on() {
+            ui.painter()
+                .rect_filled(rect.shrink(4.0), 6.0, visuals.weak_bg_fill);
+        }
+        let arm = rect.shrink(14.0);
+        let stroke = egui::Stroke::new(2.5, visuals.fg_stroke.color);
+        ui.painter()
+            .line_segment([arm.left_top(), arm.right_bottom()], stroke);
+        ui.painter()
+            .line_segment([arm.right_top(), arm.left_bottom()], stroke);
+        close = resp.clicked();
+    });
+    close
+}
+
 /// A finger-sized header for the AI/forecast windows on Android: egui's stock
 /// title bar sizes itself from the default Heading height, so the 26 pt
 /// Android Heading pokes out of the top and loses the top of the title.

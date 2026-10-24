@@ -330,12 +330,18 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     window.show(ctx, |ui| {
         #[cfg(target_os = "android")]
         if fill {
-            close_requested |= super::phone_header(ui, "AI meteorologist");
+            close_requested |= super::ai_phone_header(
+                ui,
+                "AI meteorologist",
+                &app.state.ai_model.clone(),
+            );
         }
         super::apply_text_scale(ui, text_scale);
         ui.set_min_width(400.0);
 
-        // Header (always visible, even before the key is configured).
+        // Header (desktop): model/endpoint line with Settings + Minimize.
+        // The phone gets the model text in the phone header instead.
+        #[cfg(not(target_os = "android"))]
         ui.horizontal(|ui| {
             // The phone keeps only the model name — no endpoint path and no
             // toolbar buttons (Settings lives in the slide-out; the window's

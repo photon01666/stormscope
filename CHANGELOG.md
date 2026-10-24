@@ -85,6 +85,9 @@ log; entries start at the first public release.
   refresh path and the answer used the fresh one half a second later.
 
 **Presentation**
+- The Alerts browser and NOAA alert detail windows get the same small inset
+  as the AI window (4 x 8 pt), so their phone headers no longer sit flush
+  against the pane edge and read as cut off at the top.
 - The slide-out sidebar now reaches the timeline bar on every platform. It
   reserved 16 pt at the bottom (and ignored the panel frame's own 4 pt
   padding), leaving a visible gap above the Play row; the panel height now

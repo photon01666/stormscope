@@ -620,7 +620,10 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         // No constrain_to here: the window is already exactly the pane, and
         // constraining a content-taller-than-pane window shifted its hit
         // testing down while the painted content stayed put.
-        window.fixed_rect(area).movable(false).resizable(false)
+        // A few points of inset so the phone header never sits flush with
+        // (and reads as cut by) the pane edge — same as the AI window.
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
+        window.fixed_rect(inset).movable(false).resizable(false)
     } else {
         window
             .default_size(size)
@@ -1367,8 +1370,9 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::R
         // The browser fills the pane too; the detail replaces it so the whole
         // NOAA text is readable without a tiny floating window over the list.
         // Keep the fixed rect free of default/min sizes and constrain_to,
-        // like the browser.
-        window.fixed_rect(area).movable(false).resizable(false)
+        // like the browser, and inset it so the header isn't cut at the top.
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
+        window.fixed_rect(inset).movable(false).resizable(false)
     } else {
         window
             .default_size(size)

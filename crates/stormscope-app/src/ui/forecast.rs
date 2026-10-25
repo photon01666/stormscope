@@ -793,88 +793,118 @@ fn current_conditions_ui(
         ui.label(egui::RichText::new(station).weak().small());
     });
 
-    let mut parts: Vec<String> = Vec::new();
-    match f(o.temperature_c) {
-        Some(t) => {
-            let shown = ui.animate_value_with_time(egui::Id::new("cc-temp"), t, 0.6);
-            parts.push(format!("Temp {shown:.0}°F"));
+    // Large headline: temperature and the NWS condition word. The details are
+    // a label/value list below so the eye can scan them instead of parsing one
+    // long dot-separated line.
+    let temp =
+        f(o.temperature_c).map(|t| ui.animate_value_with_time(egui::Id::new("cc-temp"), t, 0.6));
+    ui.horizontal_wrapped(|ui| {
+        match temp {
+            Some(t) => {
+                ui.label(egui::RichText::new(format!("{t:.0}°F")).size(34.0).strong());
+            }
+            None => {
+                ui.label(egui::RichText::new("—°F").size(34.0).strong().weak());
+            }
         }
-        None => parts.push("Temp —°F".into()),
-    }
-    if !o.text.is_empty() {
-        parts.push(o.text.clone());
-    }
-    if let Some(d) = f(o.dewpoint_c) {
-        parts.push(format!("dew {d:.0}°F"));
-    }
-    if let Some(h) = o.humidity_pct {
-        parts.push(format!("RH {h:.0}%"));
-    }
-    if let Some(sp) = o.wind_speed_kmh {
-        let mph = sp * 0.621371;
-        let dir = o
-            .wind_direction_deg
-            .map(|d| format!(" {}", super::map::compass16(d as f64)))
-            .unwrap_or_default();
-        let gust = o
-            .wind_gust_kmh
-            .map(|g| format!(" gust {:.0}", g * 0.621371))
-            .unwrap_or_default();
-        let shown = ui.animate_value_with_time(egui::Id::new("cc-wind"), mph, 0.6);
-        parts.push(format!("wind{dir} {shown:.0} mph{gust}"));
-    }
-    if let Some(p) = o.pressure_pa {
-        let shown = ui.animate_value_with_time(egui::Id::new("cc-alt"), p / 3386.389, 0.6);
-        parts.push(format!("altimeter {shown:.2} inHg"));
-    }
-    if let Some(slp) = o.sea_level_pressure_pa {
-        parts.push(format!("sea-level {:.2} inHg", slp / 3386.389));
-    }
-    if let Some(v) = o.visibility_m {
-        parts.push(format!("vis {:.1} mi", v / 1609.344));
-    }
-    if let Some(mm) = o.precip_last_hour_mm {
-        if mm > 0.0 {
-            parts.push(format!("{:.2} in/hr", mm / 25.4));
+        if !o.text.is_empty() {
+            ui.label(egui::RichText::new(&o.text).size(20.0));
         }
-    }
-    if let Some(mm) = o.precip_3h_mm {
-        if mm > 0.0 {
-            parts.push(format!("{:.2} in/3h", mm / 25.4));
-        }
-    }
-    if let Some(mm) = o.precip_6h_mm {
-        if mm > 0.0 {
-            parts.push(format!("{:.2} in/6h", mm / 25.4));
-        }
-    }
-    if !o.sky.is_empty() {
-        parts.push(o.sky.clone());
-    }
-    if !o.cloud_bases_ft.is_empty() {
-        let bases: Vec<String> = o
-            .cloud_bases_ft
-            .iter()
-            .map(|b| format!("{b:.0} ft"))
-            .collect();
-        parts.push(format!("bases {}", bases.join(", ")));
-    }
-    if let Some(pct) = o.cloud_cover_pct {
-        parts.push(format!("cover {pct:.0}%"));
-    }
-    if let Some(hi) = f(o.heat_index_c) {
-        parts.push(format!("heat index {hi:.0}°F"));
-    }
-    if let Some(wc) = f(o.wind_chill_c) {
-        parts.push(format!("wind chill {wc:.0}°F"));
-    }
-    if let Some(uv) = uv_index {
-        let shown = ui.animate_value_with_time(egui::Id::new("cc-uv"), uv, 0.6);
-        parts.push(format!("UV {:.1} ({})", shown, uv_word(shown)));
-    }
-    // Wrap explicitly: these long summary lines ran under the window edge on
-    // a phone when inherited wrap was off in some layouts.
-    ui.add(egui::Label::new(egui::RichText::new(parts.join(" · "))).wrap());
+    });
+    ui.add_space(2.0);
+
+    let wind_shown = o
+        .wind_speed_kmh
+        .map(|sp| ui.animate_value_with_time(egui::Id::new("cc-wind"), sp * 0.621371, 0.6));
+    let alt_shown = o
+        .pressure_pa
+        .map(|p| ui.animate_value_with_time(egui::Id::new("cc-alt"), p / 3386.389, 0.6));
+    let uv_shown = uv_index.map(|uv| ui.animate_value_with_time(egui::Id::new("cc-uv"), uv, 0.6));
+
+    const DETAIL: f32 = 18.0;
+    const LABEL: f32 = 15.0;
+    egui::Grid::new("stormscope.forecast.current-conditions")
+        .num_columns(2)
+        .spacing([16.0, 6.0])
+        .show(ui, |ui| {
+            let mut row = |label: &str, value: String| {
+                ui.label(egui::RichText::new(label).weak().size(LABEL));
+                ui.label(egui::RichText::new(value).strong().size(DETAIL));
+                ui.end_row();
+            };
+            if let Some(d) = f(o.dewpoint_c) {
+                row("Dew point", format!("{d:.0}°F"));
+            }
+            if let Some(h) = o.humidity_pct {
+                row("Humidity", format!("{h:.0}%"));
+            }
+            if let (Some(_), Some(shown)) = (o.wind_speed_kmh, wind_shown) {
+                let dir = o
+                    .wind_direction_deg
+                    .map(|d| format!("{} ", super::map::compass16(d as f64)))
+                    .unwrap_or_default();
+                let gust = o
+                    .wind_gust_kmh
+                    .map(|g| format!(" · gust {:.0}", g * 0.621371))
+                    .unwrap_or_default();
+                row("Wind", format!("{dir}{shown:.0} mph{gust}"));
+            }
+            if let (Some(_), Some(shown)) = (o.pressure_pa, alt_shown) {
+                row("Altimeter", format!("{shown:.2} inHg"));
+            }
+            if let Some(slp) = o.sea_level_pressure_pa {
+                row("Sea-level", format!("{:.2} inHg", slp / 3386.389));
+            }
+            if let Some(v) = o.visibility_m {
+                row("Visibility", format!("{:.1} mi", v / 1609.344));
+            }
+            let mut precip: Vec<String> = Vec::new();
+            if let Some(mm) = o.precip_last_hour_mm
+                && mm > 0.0
+            {
+                precip.push(format!("{:.2} in/hr", mm / 25.4));
+            }
+            if let Some(mm) = o.precip_3h_mm
+                && mm > 0.0
+            {
+                precip.push(format!("{:.2} in/3h", mm / 25.4));
+            }
+            if let Some(mm) = o.precip_6h_mm
+                && mm > 0.0
+            {
+                precip.push(format!("{:.2} in/6h", mm / 25.4));
+            }
+            if !precip.is_empty() {
+                row("Precipitation", precip.join(" · "));
+            }
+            let mut sky: Vec<String> = Vec::new();
+            if !o.sky.is_empty() {
+                sky.push(o.sky.clone());
+            }
+            if !o.cloud_bases_ft.is_empty() {
+                let bases: Vec<String> = o
+                    .cloud_bases_ft
+                    .iter()
+                    .map(|b| format!("{b:.0} ft"))
+                    .collect();
+                sky.push(format!("bases {}", bases.join(", ")));
+            }
+            if let Some(pct) = o.cloud_cover_pct {
+                sky.push(format!("cover {pct:.0}%"));
+            }
+            if !sky.is_empty() {
+                row("Sky", sky.join(" · "));
+            }
+            if let Some(hi) = f(o.heat_index_c) {
+                row("Heat index", format!("{hi:.0}°F"));
+            }
+            if let Some(wc) = f(o.wind_chill_c) {
+                row("Wind chill", format!("{wc:.0}°F"));
+            }
+            if let (Some(_), Some(shown)) = (uv_index, uv_shown) {
+                row("UV index", format!("{:.1} ({})", shown, uv_word(shown)));
+            }
+        });
 
     // Moon phase: a real phase glyph with a slow glow, next to its name.
     ui.horizontal(|ui| {

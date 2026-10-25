@@ -9,14 +9,14 @@
     android:gravity="center_vertical"
     android:background="@android:color/transparent"
     android:paddingStart="16dp"
-    android:paddingTop="8dp"
+    android:paddingTop="6dp"
     android:paddingEnd="16dp"
-    android:paddingBottom="8dp">
+    android:paddingBottom="6dp">
 
     <ViewFlipper
         android:id="@+id/storm_watch_flipper"
-        android:layout_width="46dp"
-        android:layout_height="46dp"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
         android:autoStart="true"
         android:flipInterval="700"
         android:inAnimation="@android:anim/fade_in"
@@ -44,8 +44,9 @@
         android:layout_weight="1"
         android:layout_marginStart="12dp"
         android:ellipsize="end"
+        android:includeFontPadding="false"
         android:maxLines="2"
         android:textColor="#FFFFFFFF"
-        android:textSize="20sp"
+        android:textSize="21sp"
         android:textStyle="bold" />
 </LinearLayout>

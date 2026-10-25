@@ -564,10 +564,12 @@ public class StormWatchService extends Service {
                 line.append(word);
             }
             if (!Double.isNaN(wind) && !Double.isNaN(dir)) {
+                // A second line reads better than a long dot-separated run in
+                // the notification's larger type.
                 if (line.length() > 0) {
-                    line.append(" · ");
+                    line.append('\n');
                 }
-                line.append("wind ").append(compass16(dir))
+                line.append("Wind ").append(compass16(dir))
                         .append(String.format(Locale.US, " %.0f mph", wind));
             }
             return line.length() == 0 ? null : line.toString();

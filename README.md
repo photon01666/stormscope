@@ -2,7 +2,7 @@
 
 A fast native NEXRAD Level II weather-radar for Linux and Windows, built
 in Rust with [egui/eframe](https://github.com/emilk/egui) on wgpu (Vulkan,
-Wayland/X11 on Linux; DX12 on Windows).
+Wayland/X11 on Linux, Android; DX12 on Windows).
 
 Free public data only: NEXRAD Level II (Unidata and NOAA AWS Open Data),
 `api.weather.gov`, SPC, IEM, NOAA MRMS, NASA GIBS, GOES GLM lightning and

@@ -738,11 +738,17 @@ pub fn run(
                 DataCmd::AiTest { config } => {
                     let out = out.clone();
                     std::thread::spawn(move || {
+                        // Unique per test: reusing one fixed session id made
+                        // repeated Test connection taps collide as 409s.
+                        let session = format!(
+                            "stormscope-ai-test-{}",
+                            chrono::Utc::now().timestamp_millis()
+                        );
                         let result = radar_data::ai::complete(
                             &config,
                             "You are a connectivity test.",
                             "Reply with exactly: connected",
-                            "stormscope-ai-test",
+                            &session,
                         )
                         .map_err(|e| format!("{e:#}"));
                         let _ = out.send(DataMsg::AiTest(result));

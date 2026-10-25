@@ -110,7 +110,15 @@ pub fn complete_chat(
     let payload_bytes = body.to_string().len();
     let mut last: Option<Failure> = None;
     for attempt in 0..4u32 {
-        match send_once(&client, config, &body, session) {
+        // Keep the original session for the first try, but give retries their
+        // own session id: some gateways answer 409 Conflict while the previous
+        // attempt with the same session is still in flight.
+        let attempt_session = if attempt == 0 {
+            session.to_string()
+        } else {
+            format!("{session}-retry{attempt}")
+        };
+        match send_once(&client, config, &body, &attempt_session) {
             Ok(text) => {
                 log::debug!(
                     "AI reply: {} bytes -> {} (prompt {} bytes, attempt {})",

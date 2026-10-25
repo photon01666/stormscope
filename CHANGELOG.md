@@ -3,6 +3,14 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.10 — 2026-10-25
+
+**AI**
+- **Fewer 409 Conflict errors from OpenCode Go.** Test connection now uses a
+  fresh `x-opencode-session` for every run, and retries use their own session
+  id instead of reusing one that may still have an in-flight request. This
+  removes the repeated-session collisions behind the 409 spike.
+
 ## v1.5.9 — 2026-10-25
 
 **Android**

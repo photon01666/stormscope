@@ -3,6 +3,22 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.9 — 2026-10-25
+
+**Android**
+- **Storm Watch notification redesign.** Large, transparent current-conditions
+  text in two clean lines (`51°F · Overcast` / `Wind NNE 3 mph`), an animated
+  weather glyph that matches the condition (sun, moon, cloud, rain, snow,
+  storm or fog), no redundant Stormscope title and no “watching for…” text.
+- **Tapping the persistent notification opens the NWS forecast** for the
+  spotter's GPS point (or current pin) instead of only recentring the radar.
+
+**Forecast window**
+- Current conditions now lead with a large temperature and condition headline,
+  followed by a scannable label/value list for dew point, humidity, wind,
+  pressure, visibility, precipitation, sky, UV and related values instead of
+  one long dot-separated line.
+
 ## v1.5.8 — 2026-10-25
 
 **Desktop (Linux / Windows)**

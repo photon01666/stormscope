@@ -32,6 +32,15 @@ pub struct LiveConfig {
     pub system: String,
 }
 
+#[derive(Debug, Clone)]
+pub enum LiveCommand {
+    ToolResponse {
+        id: String,
+        name: String,
+        result: Value,
+    },
+}
+
 /// UI-facing session events, sent from the session thread.
 #[derive(Debug, Clone)]
 pub enum LiveEvent {
@@ -49,6 +58,13 @@ pub enum LiveEvent {
     Interrupted,
     /// The model finished its turn.
     TurnComplete,
+    /// The model wants to call a whitelisted tool. The app must answer with
+    /// `LiveSession::respond_tool` using the same `id`.
+    ToolCall {
+        id: String,
+        name: String,
+        args: Value,
+    },
     /// A fatal problem (connection, key, microphone).
     Error(String),
     /// The session thread exited (normal stop or server close).
@@ -59,12 +75,15 @@ pub enum LiveEvent {
 pub struct LiveSession {
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
+    cmd_tx: Sender<LiveCommand>,
 }
 
 impl LiveSession {
     pub fn start(config: LiveConfig, tx: Sender<LiveEvent>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let cmd_tx_thread = cmd_tx.clone();
         let join = std::thread::Builder::new()
             .name("gemini-live".into())
             .spawn(move || {
@@ -82,7 +101,7 @@ impl LiveSession {
                     }
                 };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    rt.block_on(run(config, &tx, &stop_thread))
+                    rt.block_on(run(config, &tx, cmd_rx, &stop_thread))
                 }));
                 // The audio engine is shared Java state; always release it,
                 // even when setup or the WebSocket failed.
@@ -106,7 +125,11 @@ impl LiveSession {
                 let _ = tx.send(LiveEvent::Ended);
             })
             .ok();
-        Self { stop, join }
+        Self {
+            stop,
+            join,
+            cmd_tx: cmd_tx_thread,
+        }
     }
 
     pub fn stop(&mut self) {
@@ -114,6 +137,12 @@ impl LiveSession {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
+    }
+
+    pub fn respond_tool(&self, id: String, name: String, result: Value) {
+        let _ = self
+            .cmd_tx
+            .send(LiveCommand::ToolResponse { id, name, result });
     }
 }
 
@@ -123,7 +152,12 @@ impl Drop for LiveSession {
     }
 }
 
-async fn run(config: LiveConfig, tx: &Sender<LiveEvent>, stop: &AtomicBool) -> Result<(), String> {
+async fn run(
+    config: LiveConfig,
+    tx: &Sender<LiveEvent>,
+    cmd_rx: std::sync::mpsc::Receiver<LiveCommand>,
+    stop: &AtomicBool,
+) -> Result<(), String> {
     crate::android_live_audio::start();
     let _ = tx.send(LiveEvent::Status("Connecting to the microphone…".into()));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -178,7 +212,7 @@ async fn run(config: LiveConfig, tx: &Sender<LiveEvent>, stop: &AtomicBool) -> R
     } else {
         config.voice.trim()
     };
-    let setup = json!({
+    let mut setup = json!({
         "setup": {
             "model": format!("models/{model}"),
             "generationConfig": {
@@ -193,6 +227,108 @@ async fn run(config: LiveConfig, tx: &Sender<LiveEvent>, stop: &AtomicBool) -> R
             "systemInstruction": {
                 "parts": [{ "text": config.system }]
             },
+            "tools": [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": "move_view",
+                            "description": "Move the radar/map view, switch product, open or close the 3D pane, change tilt or view angles, and mark features. Use to show the spotter something on the map.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "center_lat": { "type": "number" },
+                                    "center_lon": { "type": "number" },
+                                    "zoom": { "type": "number" },
+                                    "product": { "type": "string" },
+                                    "tilt_deg": { "type": "number" },
+                                    "pane": { "type": "string" },
+                                    "view3d_yaw": { "type": "number" },
+                                    "view3d_pitch": { "type": "number" },
+                                    "view3d_dist_km": { "type": "number" },
+                                    "view3d_ve": { "type": "number" },
+                                    "section": { "type": "boolean" },
+                                    "section_az": { "type": "number" },
+                                    "show_melting_layer": { "type": "boolean" },
+                                    "annotations": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "lat": { "type": "number" },
+                                                "lon": { "type": "number" },
+                                                "radius_mi": { "type": "number" },
+                                                "alt_kft": { "type": "number" },
+                                                "label": { "type": "string" },
+                                                "kind": { "type": "string" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "name": "look",
+                            "description": "Inspect up to three other locations: move the map there and sample the radar for those areas. Returns an updated data summary.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "points": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "lat": { "type": "number" },
+                                                "lon": { "type": "number" },
+                                                "label": { "type": "string" },
+                                                "radius_mi": { "type": "number" }
+                                            },
+                                            "required": ["lat", "lon"]
+                                        }
+                                    },
+                                    "product": { "type": "string" }
+                                },
+                                "required": ["points"]
+                            }
+                        },
+                        {
+                            "name": "fetch_data",
+                            "description": "Fetch additional weather data (MRMS, GOES, NWS forecast, station totals, SPC outlook) and update the snapshot.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "mrms": { "type": "boolean" },
+                                    "goes": { "type": "boolean" },
+                                    "forecast": {
+                                        "type": "object",
+                                        "properties": {
+                                            "lat": { "type": "number" },
+                                            "lon": { "type": "number" },
+                                            "label": { "type": "string" }
+                                        },
+                                        "required": ["lat", "lon"]
+                                    },
+                                    "totals": {
+                                        "type": "object",
+                                        "properties": {
+                                            "lat": { "type": "number" },
+                                            "lon": { "type": "number" },
+                                            "label": { "type": "string" }
+                                        },
+                                        "required": ["lat", "lon"]
+                                    },
+                                    "spc": {
+                                        "type": "object",
+                                        "properties": {
+                                            "day": { "type": "integer" },
+                                            "kind": { "type": "string" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            ],
             "realtimeInputConfig": {
                 "automaticActivityDetection": {
                     "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
@@ -207,6 +343,11 @@ async fn run(config: LiveConfig, tx: &Sender<LiveEvent>, stop: &AtomicBool) -> R
             "contextWindowCompression": { "slidingWindow": {} }
         }
     });
+    // The extended-thinking Live model rejects a setup that omits a thinking
+    // level; the base Live model rejects a thinkingConfig it does not support.
+    if model.contains("extended-thinking") {
+        setup["setup"]["generationConfig"]["thinkingConfig"] = json!({ "thinkingLevel": "high" });
+    }
     socket
         .send(Message::Text(setup.to_string().into()))
         .await
@@ -277,7 +418,62 @@ async fn run(config: LiveConfig, tx: &Sender<LiveEvent>, stop: &AtomicBool) -> R
                     Some(Ok(Message::Close(_))) => break,
                     Some(Ok(message)) => {
                         if let Some(text) = text_of(message) {
-                            handle_server_message(&text, tx);
+                            let value: Option<Value> = serde_json::from_str(&text).ok();
+                            if value
+                                .as_ref()
+                                .and_then(|v| v.get("toolCall"))
+                                .is_some()
+                            {
+                                if let Some(calls) = value
+                                    .as_ref()
+                                    .and_then(|v| v.pointer("/toolCall/functionCalls"))
+                                    .and_then(Value::as_array)
+                                {
+                                    for call in calls {
+                                        let id = call
+                                            .get("id")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let name = call
+                                            .get("name")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let args = call
+                                            .get("args")
+                                            .cloned()
+                                            .unwrap_or_else(|| json!({}));
+                                        let _ = tx.send(LiveEvent::ToolCall {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            args,
+                                        });
+                                        let result = wait_for_tool_response(&cmd_rx, stop, &id);
+                                        let response = json!({
+                                            "toolResponse": {
+                                                "functionResponses": [
+                                                    {
+                                                        "id": id,
+                                                        "name": name,
+                                                        "response": {
+                                                            "result": result.unwrap_or_else(|| json!({"error": "no response"}))
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        });
+                                        if let Err(error) = socket
+                                            .send(Message::Text(response.to_string().into()))
+                                            .await
+                                        {
+                                            return Err(format!("Could not send tool response: {error}"));
+                                        }
+                                    }
+                                }
+                            } else {
+                                handle_server_message(&text, tx);
+                            }
                         }
                     }
                 }
@@ -379,6 +575,26 @@ fn handle_server_message(text: &str, tx: &Sender<LiveEvent>) {
         .unwrap_or(false)
     {
         let _ = tx.send(LiveEvent::TurnComplete);
+    }
+}
+
+fn wait_for_tool_response(
+    cmd_rx: &std::sync::mpsc::Receiver<LiveCommand>,
+    stop: &AtomicBool,
+    id: &str,
+) -> Option<Value> {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        match cmd_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(LiveCommand::ToolResponse {
+                id: rid, result, ..
+            }) if rid == id => return Some(result),
+            Ok(_) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+        }
     }
 }
 

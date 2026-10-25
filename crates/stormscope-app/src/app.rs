@@ -257,6 +257,13 @@ pub enum ClearTarget {
     Tiles,
 }
 
+#[cfg(target_os = "android")]
+#[derive(Clone, Debug)]
+pub struct LivePendingTool {
+    pub id: String,
+    pub name: String,
+}
+
 pub struct StormApp {
     pub state: AppState,
     pub tx: Sender<DataCmd>,
@@ -386,6 +393,10 @@ pub struct StormApp {
     pub live: Option<crate::gemini_live::LiveSession>,
     #[cfg(target_os = "android")]
     pub live_rx: Option<Receiver<crate::gemini_live::LiveEvent>>,
+    #[cfg(target_os = "android")]
+    pub live_pending_tool: Option<LivePendingTool>,
+    #[cfg(not(target_os = "android"))]
+    pub live_pending_tool: Option<()>,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -538,6 +549,10 @@ impl StormApp {
             live: None,
             #[cfg(target_os = "android")]
             live_rx: None,
+            #[cfg(target_os = "android")]
+            live_pending_tool: None,
+            #[cfg(not(target_os = "android"))]
+            live_pending_tool: None,
         }
     }
 
@@ -764,7 +779,17 @@ impl StormApp {
                             self.state.ai_pending_site = None;
                             self.state.ai_pending_site_at = None;
                             self.state.ai_pending_site_volumes = 0;
-                            if !points.is_empty() {
+                            if let Some(tool) = self.live_pending_tool.take() {
+                                let _ = points;
+                                #[cfg(target_os = "android")]
+                                self.respond_live_tool(
+                                    tool.id,
+                                    tool.name,
+                                    serde_json::json!({ "ok": true, "summary": self.voice_summary() }),
+                                );
+                                #[cfg(not(target_os = "android"))]
+                                let _ = tool;
+                            } else if !points.is_empty() {
                                 let samples: Vec<LookPointSample> = points
                                     .into_iter()
                                     .map(|(label, lat, lon, radius_mi)| LookPointSample {
@@ -1475,8 +1500,9 @@ impl StormApp {
              Do not invent data. The user may interrupt you; \
              stop immediately if they do. Do not greet or speak until the user speaks first. \
              If the transcription of the user's speech is garbled, ask one short clarifying \
-             question instead of guessing. You cannot move the map in this mode; answer with \
-             words.\n\n\
+             question instead of guessing. You can move the map, inspect other areas, fetch extra \
+             data and mark features with the provided tools when it helps answer; keep spoken \
+             replies short and say what you are showing.\n\n\
              CURRENT SUMMARY:\n",
         );
         prompt.push_str(&summary);
@@ -1620,6 +1646,109 @@ impl StormApp {
         }
     }
 
+    #[cfg(target_os = "android")]
+    fn respond_live_tool(&mut self, id: String, name: String, result: serde_json::Value) {
+        if let Some(live) = &self.live {
+            live.respond_tool(id, name, result);
+        }
+        self.live_pending_tool = None;
+    }
+
+    #[cfg(target_os = "android")]
+    fn live_look(&mut self, id: String, look: crate::ai_actions::LookRequest) {
+        let points: Vec<LookPointSample> = look
+            .points
+            .iter()
+            .take(3)
+            .filter(|p| {
+                p.lat.is_finite()
+                    && p.lon.is_finite()
+                    && (-85.0..=85.0).contains(&p.lat)
+                    && (-180.0..=180.0).contains(&p.lon)
+            })
+            .map(|p| LookPointSample {
+                label: p
+                    .label
+                    .clone()
+                    .filter(|l| !l.trim().is_empty())
+                    .unwrap_or_else(|| format!("{:.2}, {:.2}", p.lat, p.lon)),
+                lat: p.lat,
+                lon: p.lon,
+                radius_mi: p.radius_mi.unwrap_or(20.0).clamp(1.0, 60.0),
+            })
+            .collect();
+        if points.is_empty() {
+            self.respond_live_tool(
+                id,
+                "look".into(),
+                serde_json::json!({ "ok": false, "error": "no valid points" }),
+            );
+            return;
+        }
+        let names = points
+            .iter()
+            .map(|p| p.label.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (center_lat, center_lon, zoom) = self.fit_look_view(&points);
+        let action = crate::ai_actions::MapAction {
+            center_lat: Some(center_lat),
+            center_lon: Some(center_lon),
+            zoom: Some(zoom),
+            product: look.product.clone(),
+            ..Default::default()
+        };
+        let _ = crate::ai_actions::apply(&action, &mut self.state);
+        self.state.ai_compact = true;
+        // Site switch if a closer radar exists.
+        if let Some(best) = self.closest_site_for(&points) {
+            let current_id = self.state.site_id.clone();
+            if best != current_id {
+                self.state.ai_pending_look = Some(
+                    points
+                        .iter()
+                        .map(|p| (p.label.clone(), p.lat, p.lon, p.radius_mi))
+                        .collect(),
+                );
+                self.state.ai_pending_site = Some(best.clone());
+                self.state.ai_pending_site_at = Some(std::time::Instant::now());
+                self.state.ai_looking_at = Some(format!("{names} (nearest radar {best})"));
+                self.state.ai_pending = true;
+                self.state.ai_error = None;
+                self.state.mode = crate::state::Mode::Live;
+                self.state.loop_state = crate::state::LoopState::Paused;
+                self.select_site(&best);
+                self.live_pending_tool = Some(LivePendingTool {
+                    id,
+                    name: "look".into(),
+                });
+                return;
+            }
+        }
+        self.state.ai_looking_at = Some(names);
+        self.respond_live_tool(
+            id,
+            "look".into(),
+            serde_json::json!({ "ok": true, "summary": self.voice_summary() }),
+        );
+    }
+
+    #[cfg(target_os = "android")]
+    fn live_fetch_data(&mut self, id: String, request: crate::ai_actions::DataRequest) {
+        if self.ai_request_data(request) {
+            self.live_pending_tool = Some(LivePendingTool {
+                id,
+                name: "fetch_data".into(),
+            });
+        } else {
+            self.respond_live_tool(
+                id,
+                "fetch_data".into(),
+                serde_json::json!({ "ok": true, "summary": self.voice_summary() }),
+            );
+        }
+    }
+
     /// Drain Gemini Live events and keep the voice footer / mic meter fed.
     #[cfg(target_os = "android")]
     fn pump_gemini_live(&mut self) {
@@ -1721,6 +1850,40 @@ impl StormApp {
                     self.voice_push_turn();
                     self.state.voice_partial.clear();
                 }
+                LiveEvent::ToolCall { id, name, args } => match name.as_str() {
+                    "move_view" => {
+                        let action: crate::ai_actions::MapAction =
+                            serde_json::from_value(args).unwrap_or_default();
+                        let summary = crate::ai_actions::apply(&action, &mut self.state);
+                        self.state.ai_compact = true;
+                        if let Some(live) = &self.live {
+                            live.respond_tool(
+                                id,
+                                name,
+                                serde_json::json!({ "ok": true, "summary": summary }),
+                            );
+                        }
+                    }
+                    "look" => {
+                        let look: crate::ai_actions::LookRequest =
+                            serde_json::from_value(args).unwrap_or_default();
+                        self.live_look(id, look);
+                    }
+                    "fetch_data" => {
+                        let request: crate::ai_actions::DataRequest =
+                            serde_json::from_value(args).unwrap_or_default();
+                        self.live_fetch_data(id, request);
+                    }
+                    _ => {
+                        if let Some(live) = &self.live {
+                            live.respond_tool(
+                                id,
+                                name,
+                                serde_json::json!({ "ok": false, "error": "unknown tool" }),
+                            );
+                        }
+                    }
+                },
                 LiveEvent::Error(error) => {
                     self.ai_note(error);
                     self.end_voice_convo();
@@ -1968,10 +2131,21 @@ impl StormApp {
                 missing.join(", ")
             ));
         }
-        self.state.ai_pending = true;
-        let question = self.state.ai_question_ctx.clone();
-        let look = self.last_look_samples();
-        self.send_ai(question, look);
+        if let Some(tool) = self.live_pending_tool.take() {
+            #[cfg(target_os = "android")]
+            self.respond_live_tool(
+                tool.id,
+                tool.name,
+                serde_json::json!({ "ok": true, "summary": self.voice_summary() }),
+            );
+            #[cfg(not(target_os = "android"))]
+            let _ = tool;
+        } else {
+            self.state.ai_pending = true;
+            let question = self.state.ai_question_ctx.clone();
+            let look = self.last_look_samples();
+            self.send_ai(question, look);
+        }
     }
 
     fn ai_data_ready(&self, layer: &str) -> bool {
@@ -2050,11 +2224,32 @@ impl StormApp {
             self.ai_note(format!(
                 "Only one {site} scan was available, so there is no radar motion yet."
             ));
-            self.send_ai(self.state.ai_question_ctx.clone(), samples);
+            if let Some(tool) = self.live_pending_tool.take() {
+                #[cfg(target_os = "android")]
+                self.respond_live_tool(
+                    tool.id,
+                    tool.name,
+                    serde_json::json!({ "ok": true, "summary": self.voice_summary() }),
+                );
+                #[cfg(not(target_os = "android"))]
+                let _ = tool;
+            } else {
+                self.send_ai(self.state.ai_question_ctx.clone(), samples);
+            }
             return;
         }
         self.state.ai_looking_at = None;
         self.state.ai_pending = false;
+        if let Some(tool) = self.live_pending_tool.take() {
+            #[cfg(target_os = "android")]
+            self.respond_live_tool(
+                tool.id,
+                tool.name,
+                serde_json::json!({ "ok": false, "error": format!("Could not load {site}") }),
+            );
+            #[cfg(not(target_os = "android"))]
+            let _ = tool;
+        }
         self.ai_note(format!(
             "Could not load {site} for a closer look; press Retry."
         ));
@@ -2542,14 +2737,24 @@ impl StormApp {
                 self.state.alerts_focus = Some(id);
                 self.state.alerts_focus_at = ui.ctx().input(|i| i.time);
             }
-            // The persistent notification's content intent: open the AI
-            // window and ask for a brief, exactly like pressing "Write brief".
+            // The persistent notification's content intent only brings the
+            // radar back to the spotter: no AI window, no brief request.
             if crate::android_storm_watch::take_brief_request() {
-                self.state.ai_open = true;
-                let no_markers = self.state.markers.is_empty() && self.state.gps_fix.is_none();
-                if self.state.ai_config().is_configured() && !no_markers && !self.state.ai_pending {
-                    self.ai_request(None);
-                }
+                self.state.ai_open = false;
+                self.state.ai_compact = false;
+                crate::android_location::request(&mut self.state);
+            }
+            // Returning from the background: the live poller may have been
+            // frozen on an old volume. Re-enter live so the newest scan is
+            // fetched immediately instead of waiting for the stream to catch up.
+            if crate::android_lifecycle::take_resume_refresh()
+                && self.state.mode == crate::state::Mode::Live
+                && self
+                    .state
+                    .newest_start()
+                    .is_none_or(|newest| chrono::Utc::now() - newest > chrono::Duration::minutes(6))
+            {
+                let _ = self.tx.send(DataCmd::EnterLive(self.state.site_id.clone()));
             }
             self.pump_gemini_live();
             // Sessions are event-driven, but the footer meter, status and

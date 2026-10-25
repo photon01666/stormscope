@@ -3,6 +3,37 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.7 — 2026-10-25
+
+**Android**
+- **The meteorologist can now control the radar during a live voice
+  conversation.** Gemini Live function calls drive the same map actions as the
+  typed AI: move/zoom the map, switch product, open or close the 3D pane,
+  change tilt/view angles, mark features, inspect other areas (`look`) and
+  fetch MRMS/GOES/forecast/totals/SPC data. The data tools answer with a fresh
+  snapshot, and site switches wait for the new radar before replying.
+- **Gemini Live defaults to `gemini-3.8-live-extended-thinking`.** The setup
+  now sends `thinkingLevel: high`, which that model requires; the API closed
+  every session without it. The model can still be changed in Settings.
+- **New round AI button, always visible at the bottom-left.** It replaces the
+  text “AI Meteorologist” chip, opens/expands the AI window, and glows and
+  pulses while either side is talking (microphone level, model speech, or an
+  in-flight request). The AI window header gained a minimise button.
+- **Notification tap now just restores the radar.** Tapping the persistent
+  Storm Watch notification closes the AI window, requests a fresh GPS fix and
+  recentres the map; it no longer opens the AI or asks for a brief.
+- **Fixed the black screen after swiping Stormscope from Recents.** The old
+  activity blocked in `GameActivity.terminateNativeCode` waiting for the Rust
+  looper thread, ANR'd, and the next launch hung. The process now exits before
+  that call on a real destroy; configuration changes still recreate normally.
+- **Live radar catches up after backgrounding.** Returning to the foreground
+  with a scan older than six minutes re-enters live mode and fetches the newest
+  scan instead of waiting for the frozen live poller.
+
+**Linux / Windows**
+- The round AI button replaces the text chip on desktop as well; the minimised
+  bar remains above the timeline.
+
 ## v1.5.4 — 2026-10-24
 
 **Linux**

@@ -809,7 +809,7 @@ pub struct AppState {
     pub gemini_show_key: bool,
     /// Persist the Gemini key in `ai.json` (0600).
     pub gemini_remember_key: bool,
-    /// Live model name (`gemini-3.8-live` by default).
+    /// Live model name (`gemini-3.8-live-extended-thinking` by default).
     pub gemini_model: String,
     /// Prebuilt voice name (Aoede, Kore, Puck, …).
     pub gemini_voice: String,
@@ -880,8 +880,14 @@ impl Default for AppState {
         let gemini_model = std::env::var("STORMSCOPE_GEMINI_MODEL")
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .or(ai.gemini_model.clone())
-            .unwrap_or_else(|| "gemini-3.8-live".to_string());
+            // The old saved default predates the extended-thinking model; treat
+            // it as "not chosen" so existing configs pick up the new default.
+            .or_else(|| {
+                ai.gemini_model
+                    .clone()
+                    .filter(|model| model.trim() != "gemini-3.8-live")
+            })
+            .unwrap_or_else(|| "gemini-3.8-live-extended-thinking".to_string());
         let gemini_voice = ai
             .gemini_voice
             .clone()

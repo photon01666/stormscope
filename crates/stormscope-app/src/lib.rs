@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 //! Stormscope — app shell.
 //!
 //! Layout: auto-hiding controls sidebar (site, product, tilt, opacity, loop
@@ -11,6 +12,8 @@
 mod ai_actions;
 #[cfg(target_os = "android")]
 pub mod android_ime;
+#[cfg(target_os = "android")]
+pub mod android_lifecycle;
 #[cfg(target_os = "android")]
 pub mod android_live_audio;
 #[cfg(target_os = "android")]

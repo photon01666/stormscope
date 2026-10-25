@@ -249,7 +249,7 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
                     ui.add(
                         egui::TextEdit::singleline(&mut app.state.gemini_model)
                             .desired_width(ui.available_width())
-                            .hint_text("gemini-3.8-live"),
+                            .hint_text("gemini-3.8-live-extended-thinking"),
                     );
                     ui.horizontal(|ui| {
                         ui.label("Voice");
@@ -333,6 +333,10 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         return;
     }
     if app.state.ai_compact {
+        // Android draws the minimised AI as a floating circle above the GPS
+        // chip (see `ui::ai_min_circle`), so it stays anchored to the map
+        // controls instead of floating over the timeline.
+        #[cfg(not(target_os = "android"))]
         compact_bar(ctx, app);
         return;
     }
@@ -412,11 +416,15 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     window.show(ctx, |ui| {
         #[cfg(target_os = "android")]
         if fill {
-            close_requested |= super::ai_phone_header(
+            let (close, minimize) = super::ai_phone_header(
                 ui,
                 "AI meteorologist",
                 &app.state.ai_model.clone(),
             );
+            close_requested |= close;
+            if minimize {
+                app.state.ai_compact = true;
+            }
         }
         super::apply_text_scale(ui, text_scale);
         ui.set_min_width(400.0);
@@ -1036,15 +1044,31 @@ fn voice_meter(ui: &mut egui::Ui, level: f32, listening: bool) {
 
 /// The minimised report: one small bar that keeps the map (which the model may
 /// have just moved) visible, with the report one click away.
+#[cfg(not(target_os = "android"))]
 fn compact_bar(ctx: &egui::Context, app: &mut StormApp) {
     let mut open = app.state.ai_open;
+    // Keep the bar above the timeline/status chrome: it is a floating overlay,
+    // not part of the bottom panels. The phone timeline is taller than the
+    // desktop one (finger-sized scrub strip).
+    let bottom_clearance = if cfg!(target_os = "android") {
+        116.0
+    } else {
+        76.0
+    };
     egui::Window::new("AI meteorologist")
         .id(egui::Id::new("stormscope.ai.compact"))
         .open(&mut open)
         .resizable(false)
         .title_bar(false)
-        .default_pos(egui::pos2(18.0, ctx.content_rect().height() - 106.0))
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, -bottom_clearance),
+        )
+        .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(18)))
         .show(ctx, |ui| {
+            ui.spacing_mut().button_padding = egui::vec2(18.0, 11.0);
+            ui.spacing_mut().item_spacing.x = 12.0;
+            ui.set_min_height(48.0);
             ui.horizontal(|ui| {
                 if app.state.ai_pending {
                     ui.spinner();
@@ -1056,16 +1080,16 @@ fn compact_bar(ctx: &egui::Context, app: &mut StormApp) {
                 } else {
                     "Meteorologist".to_string()
                 };
-                ui.label(egui::RichText::new(status).strong());
-                if ui.small_button("Expand").clicked() {
+                ui.label(egui::RichText::new(status).strong().size(20.0));
+                if ui.button("Expand").clicked() {
                     app.state.ai_compact = false;
                 }
-                if app.state.ai_actions.is_some() && ui.small_button("Restore view").clicked() {
+                if app.state.ai_actions.is_some() && ui.button("Restore view").clicked() {
                     if crate::ai_actions::restore(&mut app.state) {
                         app.state.ai_actions = None;
                     }
                 }
-                if ui.small_button("Hide").clicked() {
+                if ui.button("Hide").clicked() {
                     app.state.ai_open = false;
                 }
             });

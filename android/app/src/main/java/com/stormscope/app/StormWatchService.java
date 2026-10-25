@@ -182,8 +182,8 @@ public class StormWatchService extends Service {
     }
 
     private Notification notification(String line) {
-        // Tapping the persistent notification opens the app's AI window and
-        // asks it for a brief.
+        // Tapping the persistent notification only brings the radar back to
+        // the spotter's GPS position; it must not open the AI or ask for a brief.
         Intent open = new Intent(this, MainActivity.class)
                 .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra(MainActivity.EXTRA_AI_BRIEF, true);

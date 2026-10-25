@@ -48,6 +48,9 @@ public class MainActivity extends GameActivity {
     /** One-shot flag parked by the notification, consumed by Rust's UI loop. */
     private static volatile boolean sPendingAiBrief;
     private static volatile String sPendingAlertId;
+    /** Set when the app returns to the foreground after being paused. */
+    private static volatile boolean sPendingResumeRefresh;
+    private static boolean sHasResumed;
 
     /** Latest fix as {lat, lon}; volatile because Rust reads it on its own thread. */
     private static volatile double[] sLocation;
@@ -97,6 +100,12 @@ public class MainActivity extends GameActivity {
     protected void onResume() {
         super.onResume();
         sForeground = true;
+        // The first onResume is the launch itself. Later ones mean the app was
+        // paused in the background; Rust uses this to catch the live radar up.
+        if (sHasResumed) {
+            sPendingResumeRefresh = true;
+        }
+        sHasResumed = true;
         GeminiLiveAudio.resumeCapture();
     }
 
@@ -141,6 +150,16 @@ public class MainActivity extends GameActivity {
         return pending;
     }
 
+    /**
+     * Called from Rust (JNI, UI thread): consume the "returned to foreground"
+     * flag exactly once. Rust then refreshes the live radar if it is stale.
+     */
+    public boolean stormscopeTakeResumeRefresh() {
+        boolean pending = sPendingResumeRefresh;
+        sPendingResumeRefresh = false;
+        return pending;
+    }
+
     /** True while the game window is resumed; the service stays silent then. */
     public static boolean isAppForeground() {
         return sForeground;
@@ -148,6 +167,13 @@ public class MainActivity extends GameActivity {
 
     @Override
     protected void onDestroy() {
+        // A configuration change recreates this Activity in the same process;
+        // the native eframe thread must survive that. A real destroy (swiped
+        // from Recents, Back, task removed) leaves the old native event loop
+        // and its background threads alive in a process with no window, which
+        // makes the next launch hang on a black screen. End the process so the
+        // next open starts a fresh native loop.
+        boolean recreated = isChangingConfigurations();
         sLivePendingStart = false;
         sLivePermissionPending = false;
         GeminiLiveAudio.stop();
@@ -160,6 +186,15 @@ public class MainActivity extends GameActivity {
                 tts.shutdown();
             } catch (Exception ignored) {
             }
+        }
+        if (!recreated) {
+            // Do this before GameActivity.onDestroy: that call blocks in
+            // terminateNativeCode waiting for the Rust ALooper thread, which
+            // never exits on a task removal — the old code ANR'd here and the
+            // next launch hung on a black screen.
+            Log.i(TAG, "MainActivity destroyed; exiting process for a clean relaunch");
+            android.os.Process.killProcess(android.os.Process.myPid());
+            return;
         }
         super.onDestroy();
     }

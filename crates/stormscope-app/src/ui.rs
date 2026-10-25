@@ -40,15 +40,34 @@ pub(super) fn big_text_scale(app: &StormApp) -> f32 {
 /// Phone header for the AI window: title, the model name to its right, and a
 /// painted ✕ at the far right — and none of the separator rules.
 #[cfg(target_os = "android")]
-fn ai_phone_header(ui: &mut egui::Ui, title: &str, model: &str) -> bool {
+fn ai_phone_header(ui: &mut egui::Ui, title: &str, model: &str) -> (bool, bool) {
     ui.add_space(4.0);
     let mut close = false;
+    let mut minimize = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(title).strong().size(20.0));
         ui.add_space(6.0);
         ui.label(egui::RichText::new(model).small().weak());
-        let gap = (ui.available_width() - 44.0).max(0.0);
+        let gap = (ui.available_width() - 88.0).max(0.0);
         ui.add_space(gap);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::click());
+        let visuals = ui.style().interact(&resp);
+        if resp.hovered() || resp.is_pointer_button_down_on() {
+            ui.painter()
+                .rect_filled(rect.shrink(4.0), 6.0, visuals.weak_bg_fill);
+        }
+        // Painted minus: the bundled fonts have no reliable symbol glyph.
+        let arm = rect.shrink(14.0);
+        let stroke = egui::Stroke::new(2.5, visuals.fg_stroke.color);
+        ui.painter().line_segment(
+            [
+                egui::pos2(arm.left(), rect.center().y),
+                egui::pos2(arm.right(), rect.center().y),
+            ],
+            stroke,
+        );
+        minimize = resp.clicked();
+
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::click());
         let visuals = ui.style().interact(&resp);
         if resp.hovered() || resp.is_pointer_button_down_on() {
@@ -63,7 +82,7 @@ fn ai_phone_header(ui: &mut egui::Ui, title: &str, model: &str) -> bool {
             .line_segment([arm.right_top(), arm.left_bottom()], stroke);
         close = resp.clicked();
     });
-    close
+    (close, minimize)
 }
 
 /// A finger-sized header for the AI/forecast windows on Android: egui's stock
@@ -694,20 +713,6 @@ fn pane_chip_bottom_centered(
     chip_button(ui, rect, label, font)
 }
 
-/// Like [`pane_chip_bottom`], but pinned by its bottom-left corner.
-fn pane_chip_bottom_left(
-    ui: &mut egui::Ui,
-    left_bottom: egui::Pos2,
-    label: &str,
-    scale: f32,
-) -> egui::Response {
-    let font = chip_font_size(ui);
-    let galley = chip_galley(ui, label, font);
-    let size = galley.size() + chip_padding() * scale;
-    let rect = egui::Rect::from_min_size(egui::pos2(left_bottom.x, left_bottom.y - size.y), size);
-    chip_button(ui, rect, label, font)
-}
-
 /// Android: a compact "locate me" button above the map's Controls chip. A
 /// painted crosshair (the bundled fonts have no GPS glyph) that turns amber
 /// while a fix is outstanding.
@@ -769,22 +774,86 @@ fn gps_chip(ui: &mut egui::Ui, right_bottom: egui::Pos2, app: &mut StormApp, sca
 }
 
 /// The AI meteorologist opener, bottom-left of whichever 2D map is on screen.
+/// A round button that pulses while the meteorologist is thinking or speaking.
 fn ai_chip(ui: &mut egui::Ui, rect: egui::Rect, app: &mut StormApp, scale: f32) {
-    let chip = pane_chip_bottom_left(
-        ui,
-        egui::pos2(rect.min.x + 8.0 * scale, rect.max.y - 8.0 * scale),
-        "AI Meteorologist",
-        scale,
-    )
-    .on_hover_text(
-        "An AI meteorologist writes a short now / next-90-minutes brief for every marker, \
-         answers questions, and can move the 2D/3D maps to show its answer. Configure the \
-         endpoint in Settings → AI meteorologist.",
+    let diameter = 58.0 * scale;
+    let bottom_left = egui::pos2(rect.min.x + 8.0 * scale, rect.max.y - 8.0 * scale);
+    let center = egui::pos2(
+        bottom_left.x + diameter * 0.5,
+        bottom_left.y - diameter * 0.5,
     );
-    if chip.clicked() {
-        log::debug!("AI meteorologist window opened from the map chip");
-        app.state.ai_open = true;
+    let circle = egui::Rect::from_center_size(center, egui::vec2(diameter, diameter));
+    let resp = ui
+        .interact(
+            circle,
+            egui::Id::new("stormscope.ai_circle"),
+            egui::Sense::click(),
+        )
+        .on_hover_text(
+            "AI meteorologist: ask about the radar, warnings and forecast. It can move the \
+             2D/3D maps to show its answer.",
+        );
+    // Glow while either side is talking: the spotter's microphone level (or
+    // an in-flight transcript) on one side, the model's audio on the other.
+    let user_talking = app.state.voice_convo
+        && (app.state.voice_level > 0.04 || !app.state.voice_partial.trim().is_empty());
+    let active = app.state.voice_speaking || user_talking || app.state.ai_pending;
+    let time = ui.ctx().input(|i| i.time) as f32;
+    let pulse = 0.5 + 0.5 * (time * 6.0).sin();
+    let accent = egui::Color32::from_rgb(90, 180, 255);
+    if active {
+        ui.painter().circle_filled(
+            center,
+            diameter * 0.5 + 5.0 * scale,
+            accented_alpha(accent, 70.0 * pulse),
+        );
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(60));
     }
+    ui.painter().circle_filled(
+        center,
+        diameter * 0.5,
+        egui::Color32::from_black_alpha(if resp.hovered() { 255 } else { 240 }),
+    );
+    let ring = if active {
+        accent
+    } else {
+        egui::Color32::from_gray(228)
+    };
+    ui.painter()
+        .circle_stroke(center, diameter * 0.5, egui::Stroke::new(2.0 * scale, ring));
+    if active {
+        ui.painter().circle_stroke(
+            center,
+            diameter * 0.5 + 4.0 * scale,
+            egui::Stroke::new(2.0 * scale, ring.gamma_multiply(pulse)),
+        );
+    }
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        "AI",
+        egui::FontId::proportional(20.0 * scale),
+        egui::Color32::from_gray(235),
+    );
+    if resp.clicked() {
+        log::debug!("AI meteorologist circle clicked");
+        if app.state.ai_open && !app.state.ai_compact {
+            app.state.ai_compact = true;
+        } else {
+            app.state.ai_open = true;
+            app.state.ai_compact = false;
+        }
+    }
+}
+
+fn accented_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(
+        color.r(),
+        color.g(),
+        color.b(),
+        alpha.clamp(0.0, 255.0) as u8,
+    )
 }
 
 /// Place a controls window near the matching pane's bottom-right, clamped

@@ -1223,8 +1223,8 @@ impl StormApp {
     /// Build a fresh snapshot and ask the AI. `question` = None writes the
     /// marker brief; Some(_) answers the spotter's question against the same
     /// data. One request chain at a time (a LOOK round may add one more call).
-    /// What "Write brief" asks for: the GPS fix is a sample, so a brief is
-    /// valid (and useful) on a phone with no pins at all.
+    /// The fallback question for a brief: the GPS fix is a sample, so a brief
+    /// is valid (and useful) on a phone with no pins at all.
     fn brief_ask(&self) -> String {
         let markers = self.state.markers.len();
         let pins = format!("{} marker{}", markers, if markers == 1 { "" } else { "s" });
@@ -1355,6 +1355,22 @@ impl StormApp {
 
     fn ai_note(&mut self, text: String) {
         self.ai_push(AiRole::Note, text);
+    }
+
+    /// Undo the AI's map manoeuvre automatically an hour after it happened.
+    fn auto_restore_ai_view(&mut self, ctx: &egui::Context) {
+        let Some(at) = self.state.ai_view_restore_at else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if now < at {
+            ctx.request_repaint_after(at - now);
+            return;
+        }
+        if crate::ai_actions::restore(&mut self.state) {
+            self.state.ai_actions = None;
+            log::info!("AI map view auto-restored after 60 minutes");
+        }
     }
 
     // ---- Android Gemini Live voice conversation ------------------------
@@ -2689,6 +2705,7 @@ impl StormApp {
     }
 
     fn ui_frame(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.auto_restore_ai_view(ui.ctx());
         if !self.state.view3d_open && self.view3d.is_some() {
             // Closing the pane must not leave a renderer/mesh worker alive.
             self.view3d = None;

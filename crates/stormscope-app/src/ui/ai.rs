@@ -96,9 +96,9 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
             .show(ui, |ui| {
                 ui.label(
             egui::RichText::new(
-                "The brief is optional. Nothing is sent until you press Write brief or Ask, \
-                     and then only the compact snapshot built from the decoded radar, warnings, \
-                     forecasts and your markers — no screenshot, no image.",
+                "Nothing is sent until you press Ask, and then only the compact snapshot built \
+                     from the decoded radar, warnings, forecasts and your markers — no \
+                     screenshot, no image.",
             )
             .weak(),
         );
@@ -365,9 +365,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     app.state.ai_window_size = window_size;
     let mut open = app.state.ai_open;
     #[cfg_attr(target_os = "android", allow(unused_mut))]
-    let mut brief = false;
     let mut ask: Option<String> = None;
-    let mut restore = false;
     let mut clear_chat = false;
     let mut clear_marks = false;
     let mut retry = false;
@@ -416,11 +414,8 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     window.show(ctx, |ui| {
         #[cfg(target_os = "android")]
         if fill {
-            let (close, minimize) = super::ai_phone_header(
-                ui,
-                "AI meteorologist",
-                &app.state.ai_model.clone(),
-            );
+            let (close, minimize) =
+                super::ai_phone_header(ui, "AI meteorologist", &app.state.ai_model.clone());
             close_requested |= close;
             if minimize {
                 app.state.ai_compact = true;
@@ -429,33 +424,6 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         super::apply_text_scale(ui, text_scale);
         ui.set_min_width(400.0);
 
-        // Header (desktop): model/endpoint line with Settings + Minimize.
-        // The phone gets the model text in the phone header instead.
-        #[cfg(not(target_os = "android"))]
-        ui.horizontal(|ui| {
-            // The phone keeps only the model name — no endpoint path and no
-            // toolbar buttons (Settings lives in the slide-out; the window's
-            // ✕ closes it).
-            #[cfg(target_os = "android")]
-            let model_line = app.state.ai_model.clone();
-            #[cfg(not(target_os = "android"))]
-            let model_line =
-                format!("{} · {}", short_host(&app.state.ai_base_url), app.state.ai_model);
-            ui.label(egui::RichText::new(model_line).small().weak());
-            #[cfg(not(target_os = "android"))]
-            {
-            if ui.small_button("Settings").clicked() {
-                app.state.ai_settings_open = true;
-            }
-            if ui
-                .small_button("Minimize")
-                .on_hover_text("Shrink this window so the map is fully visible")
-                .clicked()
-            {
-                app.state.ai_compact = true;
-            }
-            }
-        });
         let configured = app.state.ai_config().is_configured();
         // No markers is not an error state: keep the full chat layout and
         // show the hint in the transcript. The unconfigured state keeps
@@ -475,22 +443,6 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 ui.set_max_width((ui.available_width() - 14.0).max(120.0));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    #[cfg(not(target_os = "android"))]
-                    {
-                    let write = ui.add_enabled(
-                        configured && !no_markers && !app.state.ai_pending,
-                        egui::Button::new("Write brief"),
-                    );
-                    if write
-                        .on_hover_text(
-                            "A short now / next-90-minutes report for your GPS location and \
-                                 every marker",
-                        )
-                        .clicked()
-                    {
-                        brief = true;
-                    }
-                    }
                     if app.state.ai_pending {
                         ui.spinner();
                     }
@@ -511,21 +463,11 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     }
                 });
                 if let Some(actions) = &app.state.ai_actions {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("Map: {actions}"))
-                                .small()
-                                .weak(),
-                        );
-                        if ui
-                            .small_button("Restore previous view")
-                            .on_hover_text("Put the map and 3D pane back the way they were")
-                            .clicked()
-                        {
-                            restore = true;
-                        }
-                        ui.label(egui::RichText::new("(behind this window)").small().weak());
-                    });
+                    ui.label(
+                        egui::RichText::new(format!("Map: {actions}"))
+                            .small()
+                            .weak(),
+                    );
                 }
                 ui.add_space(2.0);
             });
@@ -601,8 +543,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                         {
                             let talk = ui.add_enabled(
                                 !no_markers,
-                                egui::Button::new("Talk")
-                                    .min_size(egui::vec2(64.0, 44.0)),
+                                egui::Button::new("Talk").min_size(egui::vec2(64.0, 44.0)),
                             );
                             if talk
                                 .on_hover_text(
@@ -617,67 +558,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                         }
                     });
                 }
-                #[cfg(not(target_os = "android"))]
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Show me:").small().weak());
-                    if ui
-                        .small_button("the worst hazard")
-                        .on_hover_text("Point the map at the most dangerous feature and explain it")
-                        .clicked()
-                        && configured
-                        && !no_markers
-                        && !app.state.ai_pending
-                    {
-                        ask = Some(
-                            "Show me the worst hazard right now on the map and explain what I am \
-                                 looking at."
-                                .into(),
-                        );
-                    }
-                    if ui
-                        .small_button("the 3D structure")
-                        .on_hover_text("Open the 3D pane on the most dangerous cell")
-                        .clicked()
-                        && configured
-                        && !no_markers
-                        && !app.state.ai_pending
-                    {
-                        ask = Some(
-                            "Show me the 3D structure of the most dangerous cell, with a \
-                                 cross-section if it helps, and explain it."
-                                .into(),
-                        );
-                    }
-                    if ui
-                        .small_button("what happens next")
-                        .on_hover_text("Focus the storm that arrives next and show its motion")
-                        .clicked()
-                        && configured
-                        && !no_markers
-                        && !app.state.ai_pending
-                    {
-                        ask = Some(
-                            "Show me on the map what happens in the next 60 minutes at my \
-                                 current location and markers."
-                                .into(),
-                        );
-                    }
-                });
-                #[cfg(not(target_os = "android"))]
-                {
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Sends decoded radar samples, coordinates, alerts and forecast text to {}. \
-                                 No screenshot is taken, no image is sent, no session history.",
-                            short_host(&app.state.ai_base_url)
-                        ))
-                        .small()
-                        .weak(),
-                    );
-                }
-                // Leave the bottom edge to the resize grip: without this,
-                // the privacy text sits inside its band.
+                // Leave the bottom edge to the resize grip.
                 ui.add_space(16.0);
             });
 
@@ -839,18 +720,12 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if kbd {
         app.state.text_focus_text = app.state.ai_question.clone();
     }
-    if brief {
-        app.ai_request(None);
-    }
     if let Some(question) = ask {
         app.state.ai_question.clear();
         app.ai_request(Some(question));
     }
     if retry {
         app.ai_retry();
-    }
-    if restore && crate::ai_actions::restore(&mut app.state) {
-        app.state.ai_actions = None;
     }
     if clear_marks && !app.state.ai_annotations.is_empty() {
         app.state.ai_annotations.clear();
@@ -1084,11 +959,6 @@ fn compact_bar(ctx: &egui::Context, app: &mut StormApp) {
                 if ui.button("Expand").clicked() {
                     app.state.ai_compact = false;
                 }
-                if app.state.ai_actions.is_some() && ui.button("Restore view").clicked() {
-                    if crate::ai_actions::restore(&mut app.state) {
-                        app.state.ai_actions = None;
-                    }
-                }
                 if ui.button("Hide").clicked() {
                     app.state.ai_open = false;
                 }
@@ -1097,17 +967,6 @@ fn compact_bar(ctx: &egui::Context, app: &mut StormApp) {
     if !open {
         app.state.ai_open = false;
     }
-}
-
-/// Host (and path when it is not the default `/v1`) for the small header line.
-#[cfg_attr(target_os = "android", allow(dead_code))]
-fn short_host(url: &str) -> String {
-    let trimmed = url.trim().trim_end_matches('/');
-    let without_scheme = trimmed
-        .strip_prefix("https://")
-        .or_else(|| trimmed.strip_prefix("http://"))
-        .unwrap_or(trimmed);
-    without_scheme.to_string()
 }
 
 /// The model's prose is plain text; strip the few markdown ornaments it may
@@ -1143,17 +1002,5 @@ mod tests {
         assert!(!clean.contains("```"));
         assert!(clean.contains("Home"));
         assert!(clean.contains("Rain, 45 dBZ."));
-    }
-
-    #[test]
-    fn host_shortening_is_readable() {
-        assert_eq!(
-            short_host("https://opencode.ai/inference/go/v1"),
-            "opencode.ai/inference/go/v1"
-        );
-        assert_eq!(
-            short_host("http://localhost:11434/v1/"),
-            "localhost:11434/v1"
-        );
     }
 }

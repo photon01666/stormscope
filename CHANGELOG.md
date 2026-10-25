@@ -3,6 +3,21 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.8 — 2026-10-25
+
+**Desktop (Linux / Windows)**
+- Removed the AI window's **“Show me:”** quick prompts and the privacy line
+  beneath them.
+- Removed the desktop AI header (endpoint/model and the Settings + Minimize
+  buttons). AI settings remain available from the sidebar.
+- Removed the **Write brief** button.
+- Removed the **Restore previous view** button.
+
+**All platforms**
+- After the AI moves the map or 3D pane, the previous view is now restored
+  automatically **60 minutes** later. The manual Restore button is gone.
+  Android keeps the rest of its AI UI unchanged.
+
 ## v1.5.7 — 2026-10-25
 
 **Android**

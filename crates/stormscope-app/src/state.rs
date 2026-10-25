@@ -795,8 +795,11 @@ pub struct AppState {
     /// What the model changed on the map ("VEL · 3D split · slice 90°"), if the
     /// last answer carried a `MAP:` directive.
     pub ai_actions: Option<String>,
-    /// The view from before that manoeuvre, for "Restore previous view".
+    /// The view from before that manoeuvre, restored automatically after an
+    /// hour (there is no manual Restore button any more).
     pub ai_view_before: Option<AiViewSaved>,
+    /// When an AI map manoeuvre should be undone automatically (60 minutes).
+    pub ai_view_restore_at: Option<std::time::Instant>,
     /// Marks the model placed on the 2D and 3D maps (a suspected tornado, a
     /// hail core, an updraft top…). Replaced by each answer that marks.
     pub ai_annotations: Vec<AiAnnotation>,
@@ -1149,6 +1152,7 @@ impl Default for AppState {
             ai_test_status: None,
             ai_actions: None,
             ai_view_before: None,
+            ai_view_restore_at: None,
             ai_annotations: Vec::new(),
             gemini_api_key,
             gemini_show_key: false,

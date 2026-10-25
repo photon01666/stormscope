@@ -4,7 +4,8 @@
 //! brief when a view would explain it better — focus the marker, switch to
 //! velocity, open the 3D pane on a cross-section. Only the fields below are
 //! parsed; everything is clamped to ranges the UI itself uses, and the previous
-//! view is saved so "Restore previous view" undoes the whole manoeuvre.
+//! view is saved so the whole manoeuvre can be undone automatically after an
+//! hour.
 
 use crate::state::{AiAnnotation, AiAnnotationKind, AiViewSaved, AppState, PaneMax};
 use radar_core::Moment;
@@ -218,6 +219,8 @@ pub fn apply(action: &MapAction, state: &mut AppState) -> String {
         view3d_section_az: state.view3d_section_az,
         show_melting_layer: state.show_melting_layer,
     });
+    state.ai_view_restore_at =
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(60 * 60));
 
     let mut parts: Vec<String> = Vec::new();
     let moved = action.center_lat.is_some() || action.center_lon.is_some() || action.zoom.is_some();
@@ -356,6 +359,7 @@ pub fn apply(action: &MapAction, state: &mut AppState) -> String {
 
 /// Restore the view saved before the model's last manoeuvre.
 pub fn restore(state: &mut AppState) -> bool {
+    state.ai_view_restore_at = None;
     let Some(saved) = state.ai_view_before.take() else {
         return false;
     };
@@ -483,7 +487,9 @@ mod tests {
         assert_eq!(state.ai_annotations[0].label, "possible tornado");
         assert!(summary.contains("mark: possible tornado"), "{summary}");
         assert!(state.ai_view_before.is_some());
+        assert!(state.ai_view_restore_at.is_some());
         assert!(restore(&mut state));
+        assert!(state.ai_view_restore_at.is_none());
         assert_eq!(state.moment, Moment::Reflectivity);
         assert!(!state.view3d_open || state.pane_max == PaneMax::None);
     }

@@ -13,7 +13,7 @@ No accounts, API keys or telemetry.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/photon01666/stormscope)](https://github.com/photon01666/stormscope/releases)
 
-![Stormscope: KFSX with the 3D pane, map controls and 3D controls](docs/screenshot.png)
+
 
 ## Features
 

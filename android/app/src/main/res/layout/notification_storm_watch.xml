@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Persistent Storm Watch notification: animated current-conditions glyph
+     and a large weather line. No title or background, so it blends into the
+     system notification surface. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="@android:color/transparent"
+    android:paddingStart="16dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="16dp"
+    android:paddingBottom="8dp">
+
+    <ViewFlipper
+        android:id="@+id/storm_watch_flipper"
+        android:layout_width="46dp"
+        android:layout_height="46dp"
+        android:autoStart="true"
+        android:flipInterval="700"
+        android:inAnimation="@android:anim/fade_in"
+        android:outAnimation="@android:anim/fade_out">
+
+        <ImageView
+            android:id="@+id/storm_watch_icon_a"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@string/storm_watch_weather_icon"
+            android:scaleType="fitCenter" />
+
+        <ImageView
+            android:id="@+id/storm_watch_icon_b"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@string/storm_watch_weather_icon"
+            android:scaleType="fitCenter" />
+    </ViewFlipper>
+
+    <TextView
+        android:id="@+id/storm_watch_body"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="12dp"
+        android:ellipsize="end"
+        android:maxLines="2"
+        android:textColor="#FFFFFFFF"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+</LinearLayout>

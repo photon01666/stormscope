@@ -2754,12 +2754,19 @@ impl StormApp {
                 self.state.alerts_focus = Some(id);
                 self.state.alerts_focus_at = ui.ctx().input(|i| i.time);
             }
-            // The persistent notification's content intent only brings the
-            // radar back to the spotter: no AI window, no brief request.
+            // The persistent notification's content intent opens the NWS
+            // forecast for the spotter's GPS point (or the current pin).
             if crate::android_storm_watch::take_brief_request() {
                 self.state.ai_open = false;
                 self.state.ai_compact = false;
-                crate::android_location::request(&mut self.state);
+                self.state.forecast_pick_mode = false;
+                if (self.state.forecast_point.is_none() || self.state.forecast_point_gps)
+                    && let Some((lat, lon)) = self.state.gps_fix
+                {
+                    self.state.forecast_point = Some((lat, lon));
+                    self.state.forecast_point_gps = true;
+                }
+                self.state.forecast_open = true;
             }
             // Returning from the background: the live poller may have been
             // frozen on an old volume. Re-enter live so the newest scan is

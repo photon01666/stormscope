@@ -141,8 +141,9 @@ public class MainActivity extends GameActivity {
     }
 
     /**
-     * Called from Rust (JNI, UI thread): consume the notification's "write a
-     * brief" request exactly once and return whether it was pending.
+     * Called from Rust (JNI, UI thread): consume the persistent notification's
+     * tap request exactly once and return whether it was pending. Rust opens
+     * the forecast page for it.
      */
     public boolean stormscopeTakeAiBriefRequest() {
         boolean pending = sPendingAiBrief;

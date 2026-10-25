@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Stormscope</string>
+    <string name="storm_watch_weather_icon">Current weather</string>
 </resources>

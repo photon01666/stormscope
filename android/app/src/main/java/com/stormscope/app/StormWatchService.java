@@ -14,6 +14,8 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
+import android.view.View;
+import android.widget.RemoteViews;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -65,6 +67,9 @@ public class StormWatchService extends Service {
     private final ArrayDeque<String> pendingSpeech = new ArrayDeque<>();
     /** Last successful current-weather line, shown in the notification. */
     private volatile String weatherLine;
+    /** Latest Open-Meteo condition, used to pick the animated notification glyph. */
+    private volatile int lastWeatherCode = -1;
+    private volatile boolean lastIsDay = true;
 
     private SharedPreferences prefs;
     private Handler main;
@@ -88,7 +93,7 @@ public class StormWatchService extends Service {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         main = new Handler(Looper.getMainLooper());
         createChannel();
-        startForeground(NOTIFICATION_ID, notification("Watching for severe warnings in the background"));
+        startForeground(NOTIFICATION_ID, notification(""));
         initTts();
         poller = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "storm-watch");
@@ -182,25 +187,70 @@ public class StormWatchService extends Service {
     }
 
     private Notification notification(String line) {
-        // Tapping the persistent notification only brings the radar back to
-        // the spotter's GPS position; it must not open the AI or ask for a brief.
+        // Tapping the persistent notification opens the NWS forecast page.
         Intent open = new Intent(this, MainActivity.class)
                 .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra(MainActivity.EXTRA_AI_BRIEF, true);
         PendingIntent content = PendingIntent.getActivity(
                 this, 0, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+        // A custom layout is the only way to make the notification text
+        // substantially larger than the platform default. The ViewFlipper
+        // alternates two frames of the current-conditions glyph.
+        RemoteViews views = new RemoteViews(getPackageName(), R.layout.notification_storm_watch);
+        int[] frames = weatherFrames(lastWeatherCode, lastIsDay);
+        views.setImageViewResource(R.id.storm_watch_icon_a, frames[0]);
+        views.setImageViewResource(R.id.storm_watch_icon_b, frames[1]);
+        views.setTextViewText(R.id.storm_watch_body, line == null ? "" : line);
+        views.setViewVisibility(
+                R.id.storm_watch_body,
+                line == null || line.trim().isEmpty() ? View.GONE : View.VISIBLE);
+
         // No Stop action: the watcher is turned off from Settings -> Voice
         // alerts ("Storm Watch in the background"), and an ongoing
         // foreground-service notification is not dismissible anyway.
         return new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setContentTitle("Stormscope Storm Watch")
-                .setContentText(line)
+                .setContentTitle(" ")
+                .setContentText(line == null ? "" : line)
+                .setStyle(new Notification.DecoratedCustomViewStyle())
+                .setCustomContentView(views)
+                .setCustomBigContentView(views)
                 .setContentIntent(content)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .build();
+    }
+
+    /** Two frames for the notification glyph, keyed off the Open-Meteo code. */
+    private static int[] weatherFrames(int code, boolean isDay) {
+        if (code == 0) {
+            return isDay
+                    ? new int[]{R.drawable.wx_clear_0, R.drawable.wx_clear_1}
+                    : new int[]{R.drawable.wx_night_0, R.drawable.wx_night_1};
+        }
+        if (code <= 2) {
+            return isDay
+                    ? new int[]{R.drawable.wx_partly_0, R.drawable.wx_partly_1}
+                    : new int[]{R.drawable.wx_night_0, R.drawable.wx_night_1};
+        }
+        if (code == 3) {
+            return new int[]{R.drawable.wx_cloudy_0, R.drawable.wx_cloudy_1};
+        }
+        if (code <= 48) {
+            return new int[]{R.drawable.wx_fog_0, R.drawable.wx_fog_1};
+        }
+        if (code <= 67 || (code >= 80 && code <= 82)) {
+            return new int[]{R.drawable.wx_rain_0, R.drawable.wx_rain_1};
+        }
+        if (code <= 77 || (code >= 85 && code <= 86)) {
+            return new int[]{R.drawable.wx_snow_0, R.drawable.wx_snow_1};
+        }
+        if (code >= 95) {
+            return new int[]{R.drawable.wx_storm_0, R.drawable.wx_storm_1};
+        }
+        return new int[]{R.drawable.wx_cloudy_0, R.drawable.wx_cloudy_1};
     }
 
     /** Refresh the persistent notification's line (current weather…). */
@@ -341,7 +391,7 @@ public class StormWatchService extends Service {
         }
         if (Double.isNaN(lat) || Double.isNaN(lon)) {
             Log.i(TAG, "Storm Watch waiting for a GPS fix");
-            updateNotification("Waiting for a GPS fix · watching for warnings");
+            updateNotification("Waiting for a GPS fix");
             return;
         }
         // The persistent notification doubles as a current-conditions readout;
@@ -350,8 +400,7 @@ public class StormWatchService extends Service {
         if (weather != null) {
             weatherLine = weather;
         }
-        String line = (weatherLine != null ? weatherLine : "Current weather unavailable")
-                + " · watching for warnings";
+        String line = weatherLine != null ? weatherLine : "Current weather unavailable";
         updateNotification(line);
 
         VoicePrefs voice = readVoicePrefs();
@@ -489,7 +538,7 @@ public class StormWatchService extends Service {
             String url = String.format(Locale.US,
                     "https://api.open-meteo.com/v1/forecast"
                             + "?latitude=%.4f&longitude=%.4f"
-                            + "&current=temperature_2m,weather_code,wind_speed_10m,"
+                            + "&current=temperature_2m,weather_code,is_day,wind_speed_10m,"
                             + "wind_direction_10m&temperature_unit=fahrenheit"
                             + "&wind_speed_unit=mph",
                     lat, lon);
@@ -501,6 +550,8 @@ public class StormWatchService extends Service {
             double wind = current.optDouble("wind_speed_10m", Double.NaN);
             double dir = current.optDouble("wind_direction_10m", Double.NaN);
             int code = current.optInt("weather_code", -1);
+            lastWeatherCode = code;
+            lastIsDay = current.optInt("is_day", 1) != 0;
             StringBuilder line = new StringBuilder();
             if (!Double.isNaN(temp)) {
                 line.append(String.format(Locale.US, "%.0f°F", temp));

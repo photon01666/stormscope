@@ -3085,7 +3085,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radar-core"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "chrono",
  "serde",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "radar-data"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3115,7 +3115,7 @@ dependencies = [
 
 [[package]]
 name = "radar-decode"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3129,7 +3129,7 @@ dependencies = [
 
 [[package]]
 name = "radar-render"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3851,7 +3851,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stormscope-android"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "android_logger",
  "eframe",
@@ -3864,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "stormscope-app"
-version = "1.5.10"
+version = "1.5.11"
 dependencies = [
  "android-activity",
  "anyhow",

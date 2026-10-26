@@ -3,6 +3,20 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.11 — 2026-10-25
+
+**Android**
+- The Settings drawer now fills the map width, with larger text and buttons
+  and wrapped labels so nothing runs off the right edge.
+- Archive and AI meteorologist buttons close Settings and open their window.
+- AI settings fills the screen, cannot be moved or resized, and its form spacing
+  fills the panel instead of leaving a large blank band at the bottom.
+- The soft keyboard no longer flashes while editing AI settings; the form
+  scrolls clear of the keyboard.
+
+**Linux / Windows**
+- AI settings and Archive remain fixed-size, non-resizable windows.
+
 ## v1.5.10 — 2026-10-25
 
 **AI**

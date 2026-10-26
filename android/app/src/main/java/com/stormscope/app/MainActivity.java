@@ -13,6 +13,7 @@ import android.location.LocationManager;
 import android.media.AudioAttributes;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.view.View;
@@ -162,6 +163,28 @@ public class MainActivity extends GameActivity {
         boolean pending = sPendingResumeRefresh;
         sPendingResumeRefresh = false;
         return pending;
+    }
+
+    /** Called from Rust: can this app request package installs? */
+    public boolean stormscopeCanInstallPackages() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return getPackageManager().canRequestPackageInstalls();
+        }
+        return true;
+    }
+
+    /** Called from Rust: open the "install unknown apps" page for Stormscope. */
+    public void stormscopeOpenInstallSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                Intent intent = new Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            } catch (Exception e) {
+                Log.e(TAG, "stormscopeOpenInstallSettings failed", e);
+            }
+        }
     }
 
     /** Called from Rust (JNI, UI thread): hand an APK to the system installer. */

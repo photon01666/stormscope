@@ -797,6 +797,7 @@ pub struct AppState {
     pub update_dialog_open: bool,
     pub update_check_pending: bool,
     pub update_download_pending: bool,
+    pub update_downloaded: Option<std::path::PathBuf>,
     pub update_status: Option<String>,
     pub update_checked_at: Option<std::time::Instant>,
     /// What the model changed on the map ("VEL · 3D split · slice 90°"), if the
@@ -1161,6 +1162,7 @@ impl Default for AppState {
             update_dialog_open: false,
             update_check_pending: false,
             update_download_pending: false,
+            update_downloaded: None,
             update_status: None,
             update_checked_at: None,
             ai_actions: None,

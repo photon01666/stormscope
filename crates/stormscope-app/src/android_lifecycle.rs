@@ -18,6 +18,54 @@ pub fn register(app: AndroidApp) {
     let _ = ANDROID_APP.set(app);
 }
 
+/// Does Android allow this app to request package installs?
+pub fn can_install_packages() -> bool {
+    let Some(app) = ANDROID_APP.get() else {
+        return false;
+    };
+    let vm_ptr = app.vm_as_ptr() as usize;
+    let activity_ptr = app.activity_as_ptr() as usize;
+    let vm = unsafe { jni::JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) };
+    let res = vm.attach_current_thread(|env| {
+        let activity =
+            unsafe { jni::objects::JObject::from_raw(env, activity_ptr as jni::sys::jobject) };
+        let value = env.call_method(
+            &activity,
+            jni::jni_str!("stormscopeCanInstallPackages"),
+            jni::jni_sig!("()Z"),
+            &[],
+        )?;
+        value.z()
+    });
+    res.unwrap_or(false)
+}
+
+/// Open the system "install unknown apps" page for Stormscope.
+pub fn open_install_settings() {
+    let Some(app) = ANDROID_APP.get() else {
+        return;
+    };
+    let vm_ptr = app.vm_as_ptr() as usize;
+    let activity_ptr = app.activity_as_ptr() as usize;
+    app.run_on_java_main_thread(Box::new(move || {
+        let vm = unsafe { jni::JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) };
+        let res = vm.attach_current_thread(|env| {
+            let activity =
+                unsafe { jni::objects::JObject::from_raw(env, activity_ptr as jni::sys::jobject) };
+            env.call_method(
+                &activity,
+                jni::jni_str!("stormscopeOpenInstallSettings"),
+                jni::jni_sig!("()V"),
+                &[],
+            )?;
+            Ok::<(), jni::errors::Error>(())
+        });
+        if let Err(error) = res {
+            log::warn!("opening install settings failed: {error}");
+        }
+    }));
+}
+
 /// Hand an APK to Android's package installer.
 pub fn install_apk(path: &std::path::Path) {
     let Some(app) = ANDROID_APP.get() else {

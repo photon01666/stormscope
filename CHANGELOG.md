@@ -3,6 +3,13 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.14 — 2026-10-25
+
+**Android**
+- The update modal now stays open while the user grants "install unknown
+  apps", downloads, and launches the system installer. An **Install** button
+  retries the installer after the permission is granted.
+
 ## v1.5.13 — 2026-10-25
 
 **Android**

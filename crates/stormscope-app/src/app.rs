@@ -1061,11 +1061,11 @@ impl StormApp {
                     self.state.update_download_pending = false;
                     match result {
                         Ok(path) => {
+                            self.state.update_downloaded = Some(path.clone());
+                            self.state.update_dialog_open = true;
                             self.state.update_status =
-                                Some(format!("Downloaded {}.", path.display()));
-                            self.state.update_dialog_open = false;
-                            #[cfg(target_os = "android")]
-                            crate::android_lifecycle::install_apk(&path);
+                                Some("Downloaded. Complete the Android install prompt.".into());
+                            self.try_install_update(path);
                         }
                         Err(error) => {
                             self.state.update_status =
@@ -1401,6 +1401,29 @@ impl StormApp {
 
     fn ai_note(&mut self, text: String) {
         self.ai_push(AiRole::Note, text);
+    }
+
+    /// Start the Android installer, first sending the user to the
+    /// "install unknown apps" page when that permission is missing. The update
+    /// modal stays open either way so the user can try again after granting it.
+    pub(crate) fn try_install_update(&mut self, path: std::path::PathBuf) {
+        #[cfg(target_os = "android")]
+        {
+            if crate::android_lifecycle::can_install_packages() {
+                crate::android_lifecycle::install_apk(&path);
+                self.state.update_status =
+                    Some("Opening the installer — finish the system prompt.".into());
+            } else {
+                self.state.update_status = Some(
+                    "Allow Stormscope to install unknown apps, then tap Install again.".into(),
+                );
+                crate::android_lifecycle::open_install_settings();
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = path;
+        }
     }
 
     /// Undo the AI's map manoeuvre automatically an hour after it happened.

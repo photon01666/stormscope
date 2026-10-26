@@ -3040,6 +3040,17 @@ pub fn update_dialog(ctx: &egui::Context, app: &mut StormApp) {
                 if app.state.update_download_pending {
                     ui.spinner();
                     ui.label("Downloading update…");
+                } else if let Some(path) = app.state.update_downloaded.clone() {
+                    let install =
+                        ui.add(egui::Button::new("Install").min_size(egui::vec2(120.0, 44.0)));
+                    if install.clicked() {
+                        app.try_install_update(path);
+                    }
+                    let later =
+                        ui.add(egui::Button::new("Later").min_size(egui::vec2(120.0, 44.0)));
+                    if later.clicked() {
+                        app.state.update_dialog_open = false;
+                    }
                 } else {
                     let update =
                         ui.add(egui::Button::new("Update").min_size(egui::vec2(120.0, 44.0)));

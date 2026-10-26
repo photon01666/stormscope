@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <cache-path name="updates" path="stormscope/updates/" />
+    <!-- Android's XDG cache is the app's files/cache directory, not the
+         platform cacheDir: root it under files-path accordingly. -->
+    <files-path name="updates" path="cache/stormscope/updates/" />
 </paths>

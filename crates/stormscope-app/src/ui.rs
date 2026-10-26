@@ -426,7 +426,7 @@ fn forecast_pick_hint(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rec
 /// The central area: 2D map alone, or side-by-side with the 3D volume pane.
 ///
 /// Panes carry small chips in their top-right corner ("Max" / "Split" /
-/// "Fit" / "3D") drawn *after* the panes so they sit on top of the map's
+/// "Fit") drawn *after* the panes so they sit on top of the map's
 /// interaction widget — the pointer lands on the chip, not the map. The
 /// split divider is a drag strip between the two panes.
 fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
@@ -435,36 +435,35 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
     let chip_y = |rect: egui::Rect| rect.min.y + 8.0 * scale;
 
     match (app.state.view3d_open, app.state.pane_max) {
-        // 3D closed: the map, with a small opener chip for discoverability.
+        // 3D closed: the map. The 3D pane is opened from the sidebar's
+        // "3D radar pane" checkbox; no map chip competes with the map.
         (false, _) => {
             crate::ui::map::map(ui, app);
             app.map_rect_at = Some(full);
-            let chip = pane_chip_bottom_centered(
-                ui,
-                full.center().x,
-                full.max.y - 8.0 * scale,
-                "3D",
-                scale,
-            )
-            .on_hover_text("Show the 3D volume of this scan beside the map");
-            if chip.clicked() {
-                app.state.view3d_open = true;
-                app.state.pane_max = PaneMax::None;
-            }
+            #[cfg(target_os = "android")]
+            let controls = {
+                // Phone stack, bottom to top: Settings, Controls, GPS.
+                let settings = settings_chip(ui, bottom_right(full, scale), app, scale);
+                let controls = pane_chip_bottom(
+                    ui,
+                    egui::pos2(settings.rect.max.x, settings.rect.min.y - 6.0 * scale),
+                    "Controls",
+                    scale,
+                )
+                .on_hover_text("Map display controls (Min dBZ, opacity)");
+                gps_chip(
+                    ui,
+                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 60.0 * scale),
+                    app,
+                    scale,
+                );
+                controls
+            };
+            #[cfg(not(target_os = "android"))]
             let controls = pane_chip_bottom(ui, bottom_right(full, scale), "Controls", scale)
                 .on_hover_text("Map display controls (Min dBZ, opacity)");
             if controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
-            }
-            #[cfg(target_os = "android")]
-            {
-                gps_chip(
-                    ui,
-                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 8.0 * scale),
-                    app,
-                    scale,
-                );
-                settings_chip(ui, controls.rect, app, scale);
             }
             ai_chip(ui, full, app, scale);
         }
@@ -514,20 +513,29 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             if split.clicked() {
                 app.state.pane_max = PaneMax::None;
             }
+            #[cfg(target_os = "android")]
+            let controls = {
+                let settings = settings_chip(ui, bottom_right(full, scale), app, scale);
+                let controls = pane_chip_bottom(
+                    ui,
+                    egui::pos2(settings.rect.max.x, settings.rect.min.y - 6.0 * scale),
+                    "Controls",
+                    scale,
+                )
+                .on_hover_text("Map display controls (Min dBZ, opacity)");
+                gps_chip(
+                    ui,
+                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 60.0 * scale),
+                    app,
+                    scale,
+                );
+                controls
+            };
+            #[cfg(not(target_os = "android"))]
             let controls = pane_chip_bottom(ui, bottom_right(full, scale), "Controls", scale)
                 .on_hover_text("Map display controls (Min dBZ, opacity)");
             if controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
-            }
-            #[cfg(target_os = "android")]
-            {
-                gps_chip(
-                    ui,
-                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 8.0 * scale),
-                    app,
-                    scale,
-                );
-                settings_chip(ui, controls.rect, app, scale);
             }
             ai_chip(ui, full, app, scale);
         }
@@ -632,22 +640,28 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             }
             app.map_rect_at = Some(map_rect);
             app.view3d_rect_at = Some(v3_rect);
-            let map_controls =
-                pane_chip_bottom(ui, bottom_right(map_rect, scale), "Controls", scale)
-                    .on_hover_text("Map display controls (Min dBZ, opacity)");
             #[cfg(target_os = "android")]
-            {
+            let map_controls = {
+                let settings = settings_chip(ui, bottom_right(map_rect, scale), app, scale);
+                let controls = pane_chip_bottom(
+                    ui,
+                    egui::pos2(settings.rect.max.x, settings.rect.min.y - 6.0 * scale),
+                    "Controls",
+                    scale,
+                )
+                .on_hover_text("Map display controls (Min dBZ, opacity)");
                 gps_chip(
                     ui,
-                    egui::pos2(
-                        map_controls.rect.max.x,
-                        map_controls.rect.min.y - 8.0 * scale,
-                    ),
+                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 60.0 * scale),
                     app,
                     scale,
                 );
-                settings_chip(ui, map_controls.rect, app, scale);
-            }
+                controls
+            };
+            #[cfg(not(target_os = "android"))]
+            let map_controls =
+                pane_chip_bottom(ui, bottom_right(map_rect, scale), "Controls", scale)
+                    .on_hover_text("Map display controls (Min dBZ, opacity)");
             let v3_controls = pane_chip_bottom(ui, bottom_right(v3_rect, scale), "Controls", scale)
                 .on_hover_text("3D display controls (echo, opacity, height, tilt, altitude)");
             if map_controls.clicked() {
@@ -669,18 +683,19 @@ fn bottom_right(rect: egui::Rect, scale: f32) -> egui::Pos2 {
 /// has no hover, so the auto-hide sidebar needs an explicit opener next to the
 /// map's own Controls chip.
 #[cfg(target_os = "android")]
-fn settings_chip(ui: &mut egui::Ui, left_of: egui::Rect, app: &mut StormApp, scale: f32) {
-    let chip = pane_chip_bottom(
-        ui,
-        egui::pos2(left_of.min.x - 6.0 * scale, left_of.max.y),
-        "Settings",
-        scale,
-    )
-    .on_hover_text("Open or hide the controls sidebar");
+fn settings_chip(
+    ui: &mut egui::Ui,
+    right_bottom: egui::Pos2,
+    app: &mut StormApp,
+    scale: f32,
+) -> egui::Response {
+    let chip = pane_chip_bottom(ui, right_bottom, "Settings", scale)
+        .on_hover_text("Open or hide the controls sidebar");
     if chip.clicked() {
         // Toggle: tapping again (or the ✕ in the header) closes it.
         app.state.sidebar_pinned = !app.state.sidebar_pinned;
     }
+    chip
 }
 
 /// Like [`pane_chip`], but pinned by its bottom-right corner.
@@ -1142,7 +1157,14 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     // Compact on the phone. The content scrolls only if a small screen or a
     // larger system font makes it overflow; at the default size the window
     // ends just below the warning-fill row instead of leaving an empty band.
-    let size = egui::vec2(270.0 * scale, 238.0 * scale);
+    let size = if cfg!(target_os = "android") {
+        // The window now carries the radar, MRMS/GOES and FutureCast sliders
+        // plus the probe/lightning/warning controls. A taller phone window
+        // shows them all without a hidden scroll tail.
+        egui::vec2(300.0 * scale, 420.0 * scale)
+    } else {
+        egui::vec2(290.0 * scale, 300.0 * scale)
+    };
     let mut open = true;
     let mut window = egui::Window::new("Map controls")
         .id(egui::Id::new("stormscope.map_controls"))
@@ -1230,11 +1252,37 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                         });
                 });
             }
+            if app.state.show_futurecast {
+                let r = ui.add(
+                    egui::Slider::new(&mut app.state.futurecast_opacity, 0.05..=1.0)
+                        .text("FutureCast"),
+                );
+                sliders.push((13, r.rect));
+                ui.checkbox(
+                    &mut app.state.futurecast_precip_type,
+                    "Color by precip type",
+                )
+                .on_hover_text(
+                    "Use HRRR's categorical type field: snow blue, ice pellets purple, freezing rain pink; rain keeps the reflectivity ramp.",
+                );
+                if app.state.futurecast_precip_type {
+                    futurecast_type_legend(ui);
+                }
+            }
+            #[cfg(not(target_os = "android"))]
             ui.checkbox(&mut app.state.map_probe, "Data probe")
                 .on_hover_text(
                     "Hover the map for the value under the cursor: product value, \
                      beam height, distance and bearing from the radar",
                 );
+            #[cfg(target_os = "android")]
+            ui.label(
+                egui::RichText::new(
+                    "dBZ crosshair: tap dBZ on the radar timeline, then drag the map.",
+                )
+                .weak()
+                .small(),
+            );
             ui.checkbox(&mut app.state.show_melting_layer, "0 °C level")
                 .on_hover_text(
                     "Isohypses of the melting-layer product (the radar's 0 °C level, \
@@ -1301,6 +1349,10 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                     app.state.alerts_fill =
                         (app.state.alerts_fill + 0.05 * steps).clamp(0.0, 1.0);
                 }
+                13 => {
+                    app.state.futurecast_opacity =
+                        (app.state.futurecast_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                }
                 _ => {}
             });
             });
@@ -1311,6 +1363,22 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     if !open {
         app.state.map_controls_open = false;
     }
+}
+
+/// Small key for FutureCast's winter palette.
+fn futurecast_type_legend(ui: &mut egui::Ui) {
+    ui.horizontal_wrapped(|ui| {
+        for (label, color) in [
+            ("rain", egui::Color32::from_rgb(0, 200, 0)),
+            ("snow", egui::Color32::from_rgb(100, 160, 255)),
+            ("ice", egui::Color32::from_rgb(170, 80, 230)),
+            ("freezing rain", egui::Color32::from_rgb(230, 50, 170)),
+        ] {
+            let (swatch, _) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+            ui.painter().rect_filled(swatch, 2.0, color);
+            ui.label(egui::RichText::new(label).small().weak());
+        }
+    });
 }
 
 /// The 3D pane's display controls (its bottom-right "Controls" chip).
@@ -2125,6 +2193,43 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
                      downloads on enable."
                 .to_string(),
         });
+    let futurecast_before = app.state.show_futurecast;
+    ui.checkbox(&mut app.state.show_futurecast, "FutureCast (HRRR)")
+        .on_hover_text(match &app.state.futurecast {
+            Some(fc) => format!(
+                "HRRR {}Z run — {} of {} frames loaded; showing f{:02} valid {}.                  Simulated composite reflectivity: a model forecast, not observed radar.",
+                fc.init.format("%H"),
+                fc.loaded(),
+                fc.plan.len(),
+                fc.selected_info().map_or(0, |i| i.hour),
+                fc.selected_info().map_or_else(
+                    || "--".to_string(),
+                    |i| i.valid
+                        .with_timezone(crate::timefmt::central())
+                        .format("%-I:%M %p")
+                        .to_string()
+                )
+            ),
+            None if app.state.futurecast_pending => {
+                "Downloading the full 18-hour HRRR simulated reflectivity run…".to_string()
+            }
+            None => concat!(
+                "The complete simulated composite reflectivity run from NOAA's HRRR ",
+                "model, over the whole CONUS. The bar's 48 hr button loads ",
+                "the extended cycle; both are model forecasts, not live radar."
+            )
+            .to_string(),
+        });
+    if app.state.show_futurecast != futurecast_before {
+        if app.state.show_futurecast {
+            app.state.loop_state = crate::state::LoopState::Paused;
+            app.state.futurecast_playing = true;
+            app.state.futurecast_last_step = ui.input(|i| i.time);
+            app.state.futurecast_requested_at = None;
+        } else {
+            app.state.futurecast_playing = false;
+        }
+    }
     ui.checkbox(&mut app.state.show_goes, "GOES satellite")
         .on_hover_text(match &app.state.goes {
             Some((img, at)) => {
@@ -2818,6 +2923,13 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             ui.label(egui::RichText::new(engine_note).weak().small());
         }
     }
+    ui.add_space(8.0);
+    ui.separator();
+    ui.label(
+        egui::RichText::new("Map tiles © OpenStreetMap contributors")
+            .weak()
+            .small(),
+    );
 }
 
 /// The Archive popup (opened from Settings): day + time-of-day pickers, the

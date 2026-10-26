@@ -614,6 +614,138 @@ pub fn run(
                         }
                     });
                 }
+                DataCmd::LoadFuturecast { bbox, extended } => {
+                    // HRRR frame fetch + GRIB decode is network + CPU work;
+                    // never let it sit in front of radar commands. Frames are
+                    // sent as they decode, so the UI can show f01 immediately
+                    // while the rest of the run streams in.
+                    let out = out.clone();
+                    std::thread::Builder::new()
+                        .name("futurecast".into())
+                        .spawn(move || {
+                            let source = match radar_data::futurecast::FuturecastSource::new() {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    let _ = out.send(DataMsg::FuturecastDone {
+                                        received: 0,
+                                        total: 0,
+                                        error: Some(format!("{e:#}")),
+                                        extended,
+                                    });
+                                    return;
+                                }
+                            };
+                            let plan = match source.plan(Utc::now(), bbox, extended) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    let _ = out.send(DataMsg::FuturecastDone {
+                                        received: 0,
+                                        total: 0,
+                                        error: Some(format!("{e:#}")),
+                                        extended,
+                                    });
+                                    return;
+                                }
+                            };
+                            let total = plan.frames.len();
+                            let _ = out.send(DataMsg::FuturecastRun {
+                                init: plan.init,
+                                bbox,
+                                frames: plan.frames.clone(),
+                                extended,
+                            });
+                            // Fetching a whole run sequentially took ~15 s
+                            // for 18 frames (and much longer for 48). A small
+                            // worker pool keeps NOMADS happy (four at a
+                            // time) while cutting the wait to roughly one
+                            // round-trip per wave. Start at the first frame
+                            // that is still in the future, then wrap to the
+                            // already-valid head, so the map gets useful data
+                            // on the first wave instead of waiting for f01.
+                            let now = Utc::now();
+                            let first_future = plan
+                                .frames
+                                .iter()
+                                .position(|info| info.valid >= now)
+                                .unwrap_or(0);
+                            let order: Vec<usize> = (first_future..plan.frames.len())
+                                .chain(0..first_future)
+                                .collect();
+                            let next = std::sync::atomic::AtomicUsize::new(0);
+                            let received = std::sync::atomic::AtomicUsize::new(0);
+                            let first_error: std::sync::Mutex<Option<String>> =
+                                std::sync::Mutex::new(None);
+                            let workers = total.min(4).max(1);
+                            std::thread::scope(|scope| {
+                                for _ in 0..workers {
+                                    let out = out.clone();
+                                    let source = &source;
+                                    let plan = &plan;
+                                    let order = &order;
+                                    let next = &next;
+                                    let received = &received;
+                                    let first_error = &first_error;
+                                    scope.spawn(move || {
+                                        loop {
+                                            let index = next
+                                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                            let Some(&frame_index) = order.get(index) else {
+                                                break;
+                                            };
+                                            let info = &plan.frames[frame_index];
+                                            let _ = out.send(DataMsg::Status(format!(
+                                                "FutureCast · loading f{:02}",
+                                                info.hour
+                                            )));
+                                            match source.fetch(plan, info, bbox) {
+                                                Ok(frame) => {
+                                                    log::debug!(
+                                                        "FutureCast f{:02}: {}x{} max {:?} dBZ",
+                                                        frame.hour,
+                                                        frame.width,
+                                                        frame.height,
+                                                        frame.max_dbz()
+                                                    );
+                                                    received.fetch_add(
+                                                        1,
+                                                        std::sync::atomic::Ordering::Relaxed,
+                                                    );
+                                                    if out
+                                                        .send(DataMsg::FuturecastFrame(
+                                                            std::sync::Arc::new(frame),
+                                                        ))
+                                                        .is_err()
+                                                    {
+                                                        break;
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    log::warn!(
+                                                        "FutureCast f{:02} failed: {e:#}",
+                                                        info.hour
+                                                    );
+                                                    let mut slot = first_error
+                                                        .lock()
+                                                        .unwrap_or_else(|e| e.into_inner());
+                                                    slot.get_or_insert_with(|| format!("{e:#}"));
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                            source.sweep_cache();
+                            let received = received.load(std::sync::atomic::Ordering::Relaxed);
+                            let error = first_error.into_inner().unwrap_or_else(|e| e.into_inner());
+                            let _ = out.send(DataMsg::FuturecastDone {
+                                received,
+                                total,
+                                error,
+                                extended,
+                            });
+                        })
+                        .ok();
+                }
                 DataCmd::LoadTotals(lat, lon) => {
                     // Its own worker: up to eight observation series is
                     // seconds of network work and must not sit in front of

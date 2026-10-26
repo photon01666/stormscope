@@ -60,6 +60,8 @@ pub struct BriefInputs<'a> {
     pub srm_volume: Option<&'a Volume>,
     /// GOES windows (CONUS first, the sharp radar window last).
     pub goes: Option<&'a [std::sync::Arc<radar_data::goes::GoesImage>]>,
+    /// HRRR FutureCast frames, when the model layer is loaded.
+    pub futurecast: Option<&'a crate::state::FuturecastState>,
     /// Minutes between the two scans the tracks came from, when known.
     pub scan_interval_min: Option<i64>,
     pub now: DateTime<Utc>,
@@ -108,6 +110,10 @@ pub fn system_prompt() -> String {
      - `current_location` is the spotter's own GPS fix, sampled exactly like a marker. Include it \
      in every brief when present, even when no markers exist, and never ask the spotter to place \
      a marker while it is present.\n\
+     - `futurecast` is NOAA HRRR model-simulated reflectivity for future hours, not observed \
+     radar. Use it for arrival timing and storm evolution, always call it a forecast, and never \
+     present it as a current observation. Its per-point `frames` list has `valid_utc` and `dbz`; \
+     a future time is useful even when the current radar is clear.\n\
      - Lead with the answer in the first sentence: is anything dangerous coming, when, and what \
      should the reader do? For `current_location` and each marker write 2-4 short sentences: what \
      is happening now, what the next 30-90 minutes look like, the specific hazard \
@@ -322,6 +328,14 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             "mrms_time_utc": input.mrms.and_then(|m| m.first()).map(|m| m.time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
             "goes_loaded": input.goes.is_some(),
             "goes_time_utc": input.goes.and_then(|g| g.first()).map(|g| g.time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            "futurecast_loaded": input.futurecast.is_some_and(|f| f.loaded() > 0),
+            "futurecast_run_utc": input.futurecast.map(|f| f.init.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            "futurecast_frames_loaded": input.futurecast.map(|f| f.loaded()),
+            "futurecast_horizon_hours": input.futurecast.map(|f| f.plan.len()),
+            "futurecast_extended": input.futurecast.map(|f| f.extended),
+            "futurecast_type_colors": input.futurecast.is_some_and(|f| {
+                f.frames.iter().flatten().any(|frame| frame.ptype.iter().any(|t| *t != 0))
+            }),
             "forecast_loaded": input.forecast.is_some(),
             "forecast_place": input.forecast.map(|f| f.place.clone()),
             "observation_loaded": input.observation.is_some(),
@@ -332,7 +346,7 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             "spc_day": input.outlook.map(|o| o.day),
             "spc_type": input.outlook.map(|o| o.ty.label()),
             "srm_loaded": input.srm_volume.is_some(),
-            "note": "MRMS/GOES/forecast/totals/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them. Rain/snow values are in `rain_snow_totals`, in inches.",
+            "note": "MRMS/GOES/futurecast/forecast/totals/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them. `futurecast` is HRRR simulated reflectivity, a model forecast, not observed radar. Rain/snow values are in `rain_snow_totals`, in inches.",
         }),
     );
 
@@ -1199,6 +1213,41 @@ fn marker_snapshot(input: &BriefInputs<'_>, marker: &MapMarker, index: usize) ->
         );
     }
 
+    if let Some(fc) = input.futurecast {
+        let frames: Vec<Value> = fc
+            .plan
+            .iter()
+            .zip(fc.frames.iter())
+            .filter_map(|(info, frame)| {
+                let frame = frame.as_ref()?;
+                let dbz = frame.dbz_at(lat, lon)?;
+                let ptype = match frame.ptype_at(lat, lon) {
+                    Some(2) => "snow",
+                    Some(3) => "ice pellets",
+                    Some(4) => "freezing rain",
+                    Some(1) => "rain",
+                    _ => "unknown",
+                };
+                Some(json!({
+                    "hour": info.hour,
+                    "valid_utc": info.valid.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "dbz": round(dbz),
+                    "type": ptype,
+                }))
+            })
+            .collect();
+        if !frames.is_empty() {
+            root.insert(
+                "futurecast".into(),
+                json!({
+                    "run_utc": fc.init.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "frames": frames,
+                    "note": "HRRR simulated composite reflectivity forecast at this point — a model forecast, not observed radar; use for arrival timing",
+                }),
+            );
+        }
+    }
+
     Value::Object(root)
 }
 
@@ -1842,6 +1891,7 @@ mod tests {
             }],
             srm_volume: None,
             goes: None,
+            futurecast: None,
             scan_interval_min: Some(5),
             now: chrono::Utc::now(),
         });
@@ -1983,6 +2033,7 @@ mod tests {
             look_points: &[],
             srm_volume: None,
             goes: None,
+            futurecast: None,
             scan_interval_min: None,
             now: chrono::Utc::now(),
         });

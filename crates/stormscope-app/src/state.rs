@@ -120,9 +120,79 @@ pub enum BadgeKind {
     Age,
     Alerts,
     Forecast,
-    /// The "go live" pill: red and pulsing while browsing history, a dim
-    /// green status dot while already live.
-    Live,
+    /// The "FutureCast" pill: HRRR simulated reflectivity. While it is
+    /// active the same pill says "Live Radar" and turns the layer off.
+    Futurecast,
+}
+
+/// Loaded HRRR FutureCast run: its plan, the frames received so far, and the
+/// frame the user is looking at. Frames arrive progressively from the data
+/// thread; a missing slot is still downloading.
+pub struct FuturecastState {
+    pub init: DateTime<Utc>,
+    pub bbox: [f64; 4],
+    pub plan: Vec<radar_data::futurecast::FrameInfo>,
+    pub frames: Vec<Option<Arc<radar_data::futurecast::Frame>>>,
+    pub selected: usize,
+    /// True for the 48-hour extended cycle, false for the latest 18-hour run.
+    pub extended: bool,
+    /// When the run finished downloading; the overlay refreshes after 30 min.
+    pub received_at: std::time::Instant,
+}
+
+impl FuturecastState {
+    pub fn new(
+        init: DateTime<Utc>,
+        bbox: [f64; 4],
+        plan: Vec<radar_data::futurecast::FrameInfo>,
+        extended: bool,
+    ) -> Self {
+        let frames = vec![None; plan.len()];
+        Self {
+            init,
+            bbox,
+            plan,
+            frames,
+            selected: 0,
+            extended,
+            received_at: std::time::Instant::now(),
+        }
+    }
+
+    pub fn selected_info(&self) -> Option<&radar_data::futurecast::FrameInfo> {
+        self.plan.get(self.selected)
+    }
+
+    pub fn selected_frame(&self) -> Option<&Arc<radar_data::futurecast::Frame>> {
+        self.frames.get(self.selected).and_then(Option::as_ref)
+    }
+
+    /// Store a frame in its plan slot. Returns whether it was useful.
+    pub fn insert(&mut self, frame: Arc<radar_data::futurecast::Frame>) -> bool {
+        let Some(index) = self.plan.iter().position(|info| info.hour == frame.hour) else {
+            return false;
+        };
+        if let Some(slot) = self.frames.get_mut(index) {
+            *slot = Some(frame);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn loaded(&self) -> usize {
+        self.frames.iter().filter(|f| f.is_some()).count()
+    }
+
+    /// First/last slot with a decoded frame, for the jump buttons and the
+    /// auto-loop (missing frames just extend the wait).
+    pub fn first_loaded(&self) -> Option<usize> {
+        self.frames.iter().position(Option::is_some)
+    }
+
+    pub fn last_loaded(&self) -> Option<usize> {
+        self.frames.iter().rposition(Option::is_some)
+    }
 }
 
 /// An in-flight bulk radar load (a live prime refill or an archive window):
@@ -567,6 +637,9 @@ pub struct AppState {
     /// The 2D map's hover probe: the value of the displayed product at the
     /// pointer, with its beam height and distance from the radar.
     pub map_probe: bool,
+    /// Android-only touch crosshair for reading dBZ without a finger tooltip.
+    pub dbz_crosshair: bool,
+    pub dbz_crosshair_pos: Option<(f64, f64)>,
     /// Draw the 0 °C level overlay: isohypses of the melting-layer product
     /// (the CC bright band) every 2 kft. Off by default; one tap in the
     /// layers menu when the rain/snow line matters.
@@ -605,6 +678,25 @@ pub struct AppState {
     /// The (layer, satellite) request in flight, and when it was sent.
     pub goes_pending: Option<(radar_data::goes::GoesLayer, bool)>,
     pub goes_requested_at: Option<std::time::Instant>,
+    /// Draw the HRRR FutureCast layer: simulated composite reflectivity for
+    /// the next hours. This is a model forecast, not observed radar.
+    pub show_futurecast: bool,
+    pub futurecast_opacity: f32,
+    pub futurecast: Option<FuturecastState>,
+    pub futurecast_pending: bool,
+    pub futurecast_requested_at: Option<std::time::Instant>,
+    /// Site whose box the in-flight/loaded run belongs to; a change means
+    /// the old request must not be allowed to repaint the new radar.
+    pub futurecast_site: String,
+    /// True = the 48-hour extended HRRR cycle; false = latest 18-hour run.
+    pub futurecast_extended: bool,
+    /// Colour FutureCast by HRRR's categorical precipitation type (snow
+    /// blue, ice purple, freezing rain magenta) instead of pure reflectivity.
+    pub futurecast_precip_type: bool,
+    /// Auto-loop through the forecast frames while the layer is active.
+    pub futurecast_playing: bool,
+    /// Last frame advance time (egui's input time, seconds).
+    pub futurecast_last_step: f64,
     /// NWS warning polygons draped on the 3D ground. Its own switch and its
     /// own wash strength, so the 3D scene can keep the warnings even when the
     /// 2D map's alert layer is off (and vice versa). The fill reads like the
@@ -1051,6 +1143,8 @@ impl Default for AppState {
             view3d_shell_preset: ShellPreset::Convective,
             view3d_probe: true,
             map_probe: true,
+            dbz_crosshair: false,
+            dbz_crosshair_pos: None,
             show_melting_layer: false,
             show_mrms: layers.contains("mrms"),
             mrms_opacity: 0.55,
@@ -1070,6 +1164,16 @@ impl Default for AppState {
             goes: None,
             goes_pending: None,
             goes_requested_at: None,
+            show_futurecast: layers.contains("futurecast"),
+            futurecast_opacity: 0.8,
+            futurecast: None,
+            futurecast_pending: false,
+            futurecast_requested_at: None,
+            futurecast_site: String::new(),
+            futurecast_extended: std::env::var_os("STORMSCOPE_FUTURECAST_48").is_some(),
+            futurecast_precip_type: true,
+            futurecast_playing: layers.contains("futurecast"),
+            futurecast_last_step: 0.0,
             view3d_alerts: true,
             view3d_alerts_fill: 0.45,
             view3d_alerts_top_kft: 30.0,
@@ -1629,6 +1733,25 @@ impl AppState {
 
     pub fn step_back(&mut self) {
         self.playhead = self.playhead.saturating_sub(1);
+    }
+
+    /// Step the FutureCast scrubber by `delta` frames, clamping at the ends.
+    /// A manual step pauses playback so the arrow key result is not
+    /// immediately overwritten by the auto-loop.
+    pub fn futurecast_step(&mut self, delta: isize) {
+        let Some(fc) = self.futurecast.as_mut() else {
+            return;
+        };
+        if fc.plan.is_empty() {
+            return;
+        }
+        let last = fc.plan.len() - 1;
+        let next = (fc.selected as isize + delta).clamp(0, last as isize) as usize;
+        if next != fc.selected {
+            fc.selected = next;
+            self.futurecast_playing = false;
+            self.futurecast_last_step = 0.0;
+        }
     }
 
     /// Advance the playhead on a timer when playing. Called each frame with

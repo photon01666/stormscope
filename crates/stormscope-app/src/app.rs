@@ -112,6 +112,23 @@ pub enum DataMsg {
     Goes {
         images: Vec<Arc<radar_data::goes::GoesImage>>,
     },
+    /// A new HRRR FutureCast run: its init time, box and frame plan. Frames
+    /// follow one by one so the first one appears while the rest download.
+    FuturecastRun {
+        init: chrono::DateTime<chrono::Utc>,
+        bbox: [f64; 4],
+        frames: Vec<radar_data::futurecast::FrameInfo>,
+        extended: bool,
+    },
+    /// One decoded HRRR simulated-reflectivity frame.
+    FuturecastFrame(Arc<radar_data::futurecast::Frame>),
+    /// The FutureCast fetch finished (possibly with a partial set of frames).
+    FuturecastDone {
+        received: usize,
+        total: usize,
+        error: Option<String>,
+        extended: bool,
+    },
     /// GOES GLM flashes from one 20-second file.
     Lightning {
         strikes: Vec<radar_data::glm::GlmStrike>,
@@ -212,6 +229,12 @@ pub enum DataCmd {
     LoadGoes {
         layer: radar_data::goes::GoesLayer,
         west_satellite: bool,
+    },
+    /// Fetch the complete HRRR FutureCast run for a box: latest 18-hour
+    /// cycle, or the 48-hour extended cycle.
+    LoadFuturecast {
+        bbox: [f64; 4],
+        extended: bool,
     },
     /// Fetch the newest GOES GLM lightning file for the chosen satellite.
     LoadGlm {
@@ -330,6 +353,8 @@ pub struct StormApp {
     pub mrms_tex: Vec<(usize, egui::TextureHandle)>,
     /// Cached GOES textures, one per window.
     pub goes_tex: Vec<(usize, egui::TextureHandle)>,
+    /// Cached FutureCast textures, keyed by frame Arc identity.
+    pub futurecast_tex: Vec<(usize, egui::TextureHandle)>,
     /// Geometry key of the cross-section curtain currently uploaded (the
     /// pane rebuilds it when the azimuth, product or volume changes).
     pub view3d_section_key: Option<u64>,
@@ -531,6 +556,7 @@ impl StormApp {
             srm_requested_at: None,
             mrms_tex: Vec::new(),
             goes_tex: Vec::new(),
+            futurecast_tex: Vec::new(),
             view3d_section_key: None,
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
@@ -936,6 +962,21 @@ impl StormApp {
                     // let the smoothing blend across the switch.
                     self.prev_tracks.clear();
                     self.marker_etas.clear();
+                    self.state.dbz_crosshair = false;
+                    self.state.dbz_crosshair_pos = None;
+                    // FutureCast is tied to the site's box. Only a site
+                    // change invalidates it; the startup/return-to-live
+                    // prime also sends ClearFrames, and clearing there made
+                    // the UI issue a duplicate download.
+                    if !self.state.futurecast_site.is_empty()
+                        && self.state.futurecast_site != self.state.site_id
+                    {
+                        self.state.futurecast = None;
+                        self.state.futurecast_pending = false;
+                        self.state.futurecast_requested_at = None;
+                        self.state.futurecast_playing = false;
+                        self.state.futurecast_site.clear();
+                    }
                 }
                 DataMsg::ArchiveCrawl(status) => {
                     self.state.archive_crawl = Some(status);
@@ -994,6 +1035,100 @@ impl StormApp {
                         );
                     }
                     self.state.goes = Some((images, std::time::Instant::now()));
+                    self.pump_ai_data();
+                }
+                DataMsg::FuturecastRun {
+                    init,
+                    bbox,
+                    frames,
+                    extended,
+                } => {
+                    // A late message from a previous site or horizon must not
+                    // replace the current run.
+                    let wanted = radar_core::sites::site(&self.state.site_id).map(|site| {
+                        radar_data::futurecast::forecast_box(site.latitude, site.longitude)
+                    });
+                    if wanted.is_some_and(|wanted| wanted != bbox)
+                        || extended != self.state.futurecast_extended
+                    {
+                        log::debug!("FutureCast: ignoring a stale run");
+                        return;
+                    }
+                    self.state.futurecast_pending = true;
+                    let previous_hour = self
+                        .state
+                        .futurecast
+                        .as_ref()
+                        .and_then(|fc| fc.selected_info().map(|info| info.hour));
+                    let mut futurecast =
+                        crate::state::FuturecastState::new(init, bbox, frames, extended);
+                    if let Some(hour) = previous_hour
+                        && let Some(index) = futurecast.plan.iter().position(|p| p.hour == hour)
+                    {
+                        futurecast.selected = index;
+                    } else if let Some(index) = futurecast
+                        .plan
+                        .iter()
+                        .position(|info| info.valid >= chrono::Utc::now())
+                    {
+                        // The strip exposes the whole model run, but open on the
+                        // first frame that is actually in the future.
+                        futurecast.selected = index;
+                    }
+                    log::info!(
+                        "FutureCast: HRRR {} run, {}-hour {} frames ({}..{}Z)",
+                        init.format("%Y-%m-%d %HZ"),
+                        if extended { 48 } else { 18 },
+                        futurecast.plan.len(),
+                        futurecast
+                            .plan
+                            .first()
+                            .map_or("?".into(), |f| f.valid.format("%H").to_string()),
+                        futurecast
+                            .plan
+                            .last()
+                            .map_or("?".into(), |f| f.valid.format("%H").to_string()),
+                    );
+                    self.state.futurecast = Some(futurecast);
+                    self.state.status_text =
+                        format!("FutureCast · HRRR {}Z run", init.format("%H"));
+                }
+                DataMsg::FuturecastFrame(frame) => {
+                    let hour = frame.hour;
+                    if let Some(futurecast) = self.state.futurecast.as_mut()
+                        && frame.init == futurecast.init
+                    {
+                        futurecast.insert(frame);
+                        // Keep the slot chosen when the run arrived (the
+                        // first future hour). Frames download in order, so
+                        // auto-selecting "the first loaded" here would snap
+                        // the view back to f01 — often an hour already past.
+                        log::debug!("FutureCast: f{hour:02} ready");
+                    }
+                    self.pump_ai_data();
+                }
+                DataMsg::FuturecastDone {
+                    received,
+                    total,
+                    error,
+                    extended,
+                } => {
+                    if extended != self.state.futurecast_extended {
+                        log::debug!("FutureCast: ignoring a done message for the other horizon");
+                        return;
+                    }
+                    self.state.futurecast_pending = false;
+                    if let Some(futurecast) = self.state.futurecast.as_mut() {
+                        futurecast.received_at = std::time::Instant::now();
+                    }
+                    if let Some(error) = error {
+                        log::warn!("FutureCast: {error}");
+                        self.state.status_text =
+                            format!("FutureCast · {received}/{total} frames ({error})");
+                    } else {
+                        self.state.status_text =
+                            format!("FutureCast · HRRR · {received}/{total} frames");
+                    }
                     self.pump_ai_data();
                 }
                 DataMsg::AiBrief(result) => match result {
@@ -1194,26 +1329,45 @@ impl StormApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        let futurecast_active = self.state.show_futurecast && self.state.futurecast.is_some();
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-            self.state.loop_state = match self.state.loop_state {
-                LoopState::Playing => {
-                    // Stopping means "show me now": jump to the newest scan,
-                    // same as the timeline's Pause button.
-                    self.state.playhead = self.state.ring.len().saturating_sub(1);
-                    LoopState::Paused
+            if futurecast_active {
+                // Space controls the forecast loop while FutureCast owns the
+                // bottom bar.
+                self.state.futurecast_playing = !self.state.futurecast_playing;
+                self.state.futurecast_last_step = ctx.input(|i| i.time);
+                if self.state.futurecast_playing {
+                    self.state.loop_state = LoopState::Paused;
                 }
-                LoopState::Paused => LoopState::Playing,
-            };
+            } else {
+                self.state.loop_state = match self.state.loop_state {
+                    LoopState::Playing => {
+                        // Stopping means "show me now": jump to the newest scan,
+                        // same as the timeline's Pause button.
+                        self.state.playhead = self.state.ring.len().saturating_sub(1);
+                        LoopState::Paused
+                    }
+                    LoopState::Paused => LoopState::Playing,
+                };
+            }
         }
         if ctx.input(|i| i.key_pressed(egui::Key::L)) {
             // Same as the timeline's "GO LIVE" pill.
             self.snap_to_live();
         }
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
-            self.state.step_forward();
+            if futurecast_active {
+                self.state.futurecast_step(1);
+            } else {
+                self.state.step_forward();
+            }
         }
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
-            self.state.step_back();
+            if futurecast_active {
+                self.state.futurecast_step(-1);
+            } else {
+                self.state.step_back();
+            }
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.state.measure_mode {
             self.state.measure_mode = false;
@@ -2182,6 +2336,32 @@ impl StormApp {
             waiting.push("goes".into());
             notes.push("GOES".into());
         }
+        if request.futurecast == Some(true)
+            && self
+                .state
+                .futurecast
+                .as_ref()
+                .is_none_or(|fc| fc.loaded() == 0 || fc.extended != self.state.futurecast_extended)
+        {
+            let Some(site) = radar_core::sites::site(&self.state.site_id) else {
+                return false;
+            };
+            if !radar_data::futurecast::supported(site.latitude, site.longitude) {
+                self.ai_note("HRRR FutureCast covers the CONUS only.".into());
+                return false;
+            }
+            self.state.show_futurecast = true;
+            self.state.futurecast_pending = true;
+            self.state.futurecast_requested_at = Some(std::time::Instant::now());
+            self.state.futurecast_site = self.state.site_id.clone();
+            let bbox = radar_data::futurecast::forecast_box(site.latitude, site.longitude);
+            let _ = self.tx.send(DataCmd::LoadFuturecast {
+                bbox,
+                extended: self.state.futurecast_extended,
+            });
+            waiting.push("futurecast".into());
+            notes.push("HRRR FutureCast".into());
+        }
         if let Some(point) = &request.forecast {
             self.state.forecast = None;
             self.state.uv_index = None;
@@ -2291,6 +2471,11 @@ impl StormApp {
         match layer {
             "mrms" => self.state.mrms.is_some(),
             "goes" => self.state.goes.is_some(),
+            "futurecast" => {
+                self.state.futurecast.as_ref().is_some_and(|fc| {
+                    fc.loaded() > 0 && fc.extended == self.state.futurecast_extended
+                })
+            }
             "forecast" => self.state.forecast.is_some(),
             "totals" => !self.state.totals.is_empty(),
             "spc" => self.state.outlook.is_some(),
@@ -2529,6 +2714,7 @@ impl StormApp {
             look_points: look,
             srm_volume: srm,
             goes,
+            futurecast: self.state.futurecast.as_ref(),
             scan_interval_min,
             now: chrono::Utc::now(),
         }))
@@ -2778,6 +2964,111 @@ impl StormApp {
         });
     }
 
+    /// Switch FutureCast between the latest 18-hour cycle and the older
+    /// 48-hour extended cycle. Clearing the loaded run makes the switch
+    /// explicit; the next UI frame asks the data thread for the new horizon.
+    pub fn toggle_futurecast_horizon(&mut self) {
+        self.state.futurecast_extended = !self.state.futurecast_extended;
+        self.state.futurecast = None;
+        self.state.futurecast_pending = false;
+        self.state.futurecast_requested_at = None;
+        self.state.futurecast_playing = true;
+        self.state.futurecast_last_step = 0.0;
+    }
+
+    /// Advance the FutureCast animation. This lives on the app, not in the
+    /// timeline widget: fullscreen hides the bottom panel, and playback must
+    /// keep running there.
+    fn advance_futurecast_playback(&mut self, ctx: &egui::Context) {
+        if !self.state.show_futurecast || !self.state.futurecast_playing {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        if self.state.futurecast_last_step <= 0.0 {
+            self.state.futurecast_last_step = now;
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+        if now - self.state.futurecast_last_step < 0.35 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+        if let Some(fc) = self.state.futurecast.as_mut() {
+            let start = fc.selected;
+            let mut next = None;
+            for step in 1..=fc.plan.len() {
+                let i = (start + step) % fc.plan.len();
+                if fc.frames[i].is_some() {
+                    next = Some(i);
+                    break;
+                }
+            }
+            if let Some(i) = next
+                && i != start
+            {
+                fc.selected = i;
+            }
+        }
+        self.state.futurecast_last_step = now;
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    /// Keep the HRRR FutureCast layer fresh while it is on. HRRR cycles
+    /// hourly; a 30-minute refresh catches a new run without polling NOAA
+    /// per frame. The 120 s retry floor keeps a failure from becoming a loop.
+    fn pump_futurecast(&mut self) {
+        use std::time::Duration;
+        if !self.state.show_futurecast {
+            return;
+        }
+        let Some(site) = radar_core::sites::site(&self.state.site_id) else {
+            return;
+        };
+        if !radar_data::futurecast::supported(site.latitude, site.longitude) {
+            return;
+        }
+        let bbox = radar_data::futurecast::forecast_box(site.latitude, site.longitude);
+        if self.state.futurecast_pending {
+            let stale = self
+                .state
+                .futurecast_requested_at
+                .is_some_and(|at| at.elapsed() > Duration::from_secs(180));
+            if !stale {
+                return;
+            }
+            log::warn!("FutureCast fetch stalled; re-requesting");
+            self.state.futurecast_pending = false;
+        }
+        let fresh = self.state.futurecast.as_ref().is_some_and(|fc| {
+            fc.bbox == bbox
+                && fc.extended == self.state.futurecast_extended
+                && fc.loaded() > 0
+                && fc.received_at.elapsed() < Duration::from_secs(30 * 60)
+        });
+        if fresh {
+            return;
+        }
+        let retry = if self.state.futurecast.is_some() {
+            Duration::from_secs(120)
+        } else {
+            Duration::from_secs(15)
+        };
+        if self
+            .state
+            .futurecast_requested_at
+            .is_some_and(|at| at.elapsed() < retry)
+        {
+            return;
+        }
+        self.state.futurecast_requested_at = Some(std::time::Instant::now());
+        self.state.futurecast_pending = true;
+        self.state.futurecast_site = self.state.site_id.clone();
+        let _ = self.tx.send(DataCmd::LoadFuturecast {
+            bbox,
+            extended: self.state.futurecast_extended,
+        });
+    }
+
     /// Ask the data thread for the storm-relative volume the current frame +
     /// motion setting needs. One derivation is in flight at a time: while it
     /// builds (and on playback, where every frame wants its own), the panes
@@ -2855,6 +3146,8 @@ impl StormApp {
         self.pump();
         self.pump_srm();
         self.pump_mrms();
+        self.pump_futurecast();
+        self.advance_futurecast_playback(ui.ctx());
         self.pump_goes();
         self.pump_lightning();
         self.pump_ai_site();

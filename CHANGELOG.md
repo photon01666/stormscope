@@ -3,7 +3,28 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.18 — 2026-10-26
+
+**FutureCast and live radar**
+- FutureCast now covers the whole CONUS (no more local square), with a
+  512 MB cache cap.
+- Precipitation-type colouring: HRRR `CSNOW/CICEP/CFRZR/CRAIN` recolour
+  snow blue, ice purple and freezing rain pink; rain keeps the reflectivity
+  ramp. Toggle in the FutureCast bar and Map controls, with a winter legend.
+- Live radar has an Android-only dBZ crosshair: tap **dBZ** on the timeline,
+  drag the map, and read the value in a card above the crosshair. The finger
+  tooltip is disabled on touch.
+- FutureCast playback keeps running in fullscreen.
+- Left/right arrows navigate the scrub bar for FutureCast on Windows/Linux.
+- 18/48-hour switch is smaller on desktop and only appears once loaded.
+- Forecast and FutureCast share one row of larger action buttons.
+- Map tile attribution moved into Settings.
+- Map controls window now fits all controls on a phone.
+- Settings/GPS chips stacked so the date/time card is not obscured.
+- Removed the map's 3D opener chip (3D opens from the sidebar only).
+
 ## v1.5.17 — 2026-10-25
+
 
 **Linux**
 - **AppImage release with self-update.** The Linux artifact is now a

@@ -292,12 +292,13 @@ async fn run(
                         },
                         {
                             "name": "fetch_data",
-                            "description": "Fetch additional weather data (MRMS, GOES, NWS forecast, station totals, SPC outlook) and update the snapshot.",
+                            "description": "Fetch additional weather data (MRMS, GOES, HRRR FutureCast, NWS forecast, station totals, SPC outlook) and update the snapshot.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
                                     "mrms": { "type": "boolean" },
                                     "goes": { "type": "boolean" },
+                                    "futurecast": { "type": "boolean" },
                                     "forecast": {
                                         "type": "object",
                                         "properties": {

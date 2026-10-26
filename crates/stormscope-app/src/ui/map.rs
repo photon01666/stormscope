@@ -44,7 +44,20 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // measure mode, where drags draw the distance line instead.
     // While the name popup is open, measure clicks are ignored with the rest.
     let measuring = app.state.measure_mode && app.state.pending_marker.is_none();
-    if response.dragged() && !measuring {
+    let crosshair_mode = app.state.dbz_crosshair && !app.state.show_futurecast;
+    if crosshair_mode {
+        // Android dBZ inspect mode: the map becomes a drag surface for the
+        // crosshair instead of panning or opening site/warning actions.
+        if (response.dragged() || response.clicked())
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let (cx, cy) = viewport_pos(rect, p);
+            let cy = (cy - f64::from(DBZ_FINGER_OFFSET_PX)).max(0.0);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            app.state.dbz_crosshair_pos = Some((lat, lon));
+        }
+    }
+    if response.dragged() && !measuring && !crosshair_mode {
         let drag = response.drag_delta();
         if drag != egui::Vec2::ZERO {
             pan_view(&mut app.state.view, view, drag.x as f64, drag.y as f64);
@@ -64,7 +77,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // (Measure mode handles its own clicks in `measure_interaction` above.)
     // Forecast point picking owns the click while armed: the user explicitly
     // asked for "that spot", so nothing else should react to it.
-    if app.state.forecast_pick_mode && response.clicked() {
+    if app.state.forecast_pick_mode && response.clicked() && !crosshair_mode {
         if let Some(click) = response.interact_pointer_pos() {
             let (cx, cy) = viewport_pos(rect, click);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
@@ -81,7 +94,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             }
             let _ = app.tx.send(crate::app::DataCmd::LoadForecast(lat, lon));
         }
-    } else if response.clicked() && !measuring && app.state.pending_marker.is_none() {
+    } else if response.clicked()
+        && !measuring
+        && !crosshair_mode
+        && app.state.pending_marker.is_none()
+    {
         if let Some(click) = response.interact_pointer_pos() {
             // Viewport-relative click position -> same frame of reference as
             // `draw_sites` marker positions.
@@ -267,7 +284,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // the first one is the click target, and clicking the same spot again
     // steps to the next. Only when the map itself is hovered (panel overlays
     // are higher layers, so this goes quiet while the pointer is on them).
-    let map_pointer = response.hover_pos();
+    let map_pointer = if crosshair_mode {
+        None
+    } else {
+        response.hover_pos()
+    };
     let mut map_stack: Vec<String> = if app.state.show_alerts
         && super::alerts::showing_live_radar(&app.state)
         && !response.dragged()
@@ -469,7 +490,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // paint it as a texture covering the viewport. The texture is cached and
     // only re-rasterized when something that affects pixels changes (frame,
     // moment, tilt, view, opacity) — never per frame.
-    if let Some(frame) = app.state.current() {
+    if !app.state.show_futurecast
+        && let Some(frame) = app.state.current()
+    {
         // Derived products are read through the display volume: the column
         // products ride in the frame, SRM comes from the motion-keyed cache.
         let volume = app.state.display_volume();
@@ -724,6 +747,12 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         }
     }
 
+    // --- Layer 3.3: HRRR FutureCast ---------------------------------------
+    // When FutureCast is on it replaces the live radar sweep (that is a
+    // forecast loop, not a live layer), but warnings/tracks/labels still
+    // draw above it.
+    draw_futurecast(&painter, origin, &view, app);
+
     // --- Layer 3.4: the 0 °C level -----------------------------------------
     draw_melting_layer(&painter, origin, &view, app);
 
@@ -782,16 +811,27 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Station totals: diamonds with their strongest number --------------
     super::totals::draw_totals(&painter, origin, &view, app);
 
+    // --- Android dBZ touch crosshair ---------------------------------------
+    let dbz_finger = if app.state.dbz_crosshair
+        && (response.is_pointer_button_down_on() || response.dragged())
+    {
+        response.interact_pointer_pos()
+    } else {
+        None
+    };
+    draw_dbz_crosshair(&painter, tile_resp.rect, &view, app, dbz_finger);
+
+    // --- FutureCast's big valid-time card ----------------------------------
+    // The bottom strip is a compact transport control; the exact valid
+    // time/day belongs on the map where it cannot be missed.
+    draw_futurecast_valid_time(&painter, tile_resp.rect, app);
+
     // --- Measure tool line + draggable blue bubble (topmost) ---------------
     if app.state.measure_mode {
         draw_measure(&painter, origin, &view, app);
     } else {
         app.state.measure_bubble_rect = None;
     }
-
-    // --- Attribution (required by OSM/Wikimedia tile usage policies) ------
-    let show_spc = app.state.show_outlook && app.state.outlook.is_some();
-    draw_attribution(&painter, tile_resp.rect, show_spc);
 
     // --- Top-center badge row: scan mode, scan age, alerts ---------------
     if !app.state.fullscreen {
@@ -804,7 +844,12 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Hover probe: the value under the pointer --------------------------
     // Compute it before the tooltips: over an actual echo the data readout
     // wins, or a warning tooltip covers the dBZ the user is trying to read.
-    let probe = if app.state.map_probe && !response.dragged() && !app.state.measure_mode {
+    let probe = if !cfg!(target_os = "android")
+        && app.state.map_probe
+        && !crosshair_mode
+        && !response.dragged()
+        && !app.state.measure_mode
+    {
         response.hover_pos().and_then(|p| {
             let site = radar_core::sites::site(&app.state.site_id)?;
             let volume = app.state.display_volume()?;
@@ -1385,12 +1430,473 @@ fn prune_textures(
     });
 }
 
+/// Android-only dBZ crosshair: a touch-friendly inspect point that replaces
+/// the hover probe (which is disabled on touch). Drag anywhere on the map
+/// while the mode is active to move it; the readout is drawn in a fixed card
+/// at the bottom, never under the finger.
+fn draw_dbz_crosshair(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    view: &MapView,
+    app: &StormApp,
+    finger: Option<egui::Pos2>,
+) {
+    if !cfg!(target_os = "android") || !app.state.dbz_crosshair || app.state.show_futurecast {
+        return;
+    }
+    let (lat, lon) = app
+        .state
+        .dbz_crosshair_pos
+        .unwrap_or((view.center_lat, view.center_lon));
+    let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+    let center = egui::pos2(rect.min.x + vx as f32, rect.min.y + vy as f32);
+    let scale = app.sidebar_scale.max(1.0);
+    let radius = 21.0 * scale;
+    let arm = 30.0 * scale;
+    let color = egui::Color32::from_rgb(120, 215, 255);
+    // Dark halo first so the crosshair reads over bright echoes.
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(4.5 * scale, egui::Color32::from_black_alpha(160)),
+    );
+    painter.circle_stroke(center, radius, egui::Stroke::new(1.8 * scale, color));
+    for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        painter.line_segment(
+            [
+                egui::pos2(
+                    center.x + dx * (radius + 4.0 * scale),
+                    center.y + dy * (radius + 4.0 * scale),
+                ),
+                egui::pos2(center.x + dx * arm, center.y + dy * arm),
+            ],
+            egui::Stroke::new(2.4 * scale, egui::Color32::from_black_alpha(170)),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(
+                    center.x + dx * (radius + 4.0 * scale),
+                    center.y + dy * (radius + 4.0 * scale),
+                ),
+                egui::pos2(center.x + dx * arm, center.y + dy * arm),
+            ],
+            egui::Stroke::new(1.4 * scale, color),
+        );
+    }
+    painter.circle_filled(center, 3.0 * scale, color);
+
+    let mut lines = Vec::new();
+    if let (Some(site), Some(volume)) = (
+        radar_core::sites::site(&app.state.site_id),
+        app.state.display_volume(),
+    ) {
+        if let Some(read) = map_probe_at(
+            &volume,
+            radar_core::Moment::Reflectivity,
+            app.state.tilt_deg,
+            site.latitude,
+            site.longitude,
+            lat,
+            lon,
+            app.state.min_dbz,
+            app.state.show_melting_layer,
+        ) {
+            lines = read.lines(radar_core::Moment::Reflectivity);
+        }
+    }
+    if lines.is_empty() {
+        lines.push("no echo at this point".into());
+    }
+    if let Some(finger) = finger {
+        // Touch point stays visible below the lifted crosshair; the dashed
+        // stem makes the offset obvious while dragging.
+        draw_dashed(
+            painter,
+            egui::pos2(center.x, center.y + radius + 2.0 * scale),
+            egui::pos2(finger.x, finger.y - 8.0 * scale),
+            egui::Color32::from_rgba_unmultiplied(120, 215, 255, 150),
+            5.0 * scale,
+            4.0 * scale,
+        );
+        painter.circle_filled(finger, 12.0 * scale, egui::Color32::from_black_alpha(150));
+        painter.circle_stroke(finger, 9.0 * scale, egui::Stroke::new(2.0 * scale, color));
+        painter.circle_filled(finger, 3.5 * scale, color);
+    }
+    draw_crosshair_readout(painter, rect, center, &lines, scale);
+}
+
+/// Readout card anchored above the dBZ crosshair, with a solid black
+/// background so it reads over bright echoes and is never under the finger.
+fn draw_crosshair_readout(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    center: egui::Pos2,
+    lines: &[String],
+    scale: f32,
+) {
+    let galley = painter.layout(
+        lines.join(
+            "
+",
+        ),
+        egui::FontId::proportional(13.0 * scale),
+        egui::Color32::from_rgb(235, 240, 245),
+        (rect.width() - 60.0 * scale).max(120.0),
+    );
+    let pad = egui::vec2(9.0, 7.0) * scale;
+    let size = galley.size() + pad * 2.0;
+    // Above the crosshair by default; if there is no room at the top, drop
+    // it below instead of hiding it behind the badges.
+    let above = center.y - 34.0 * scale - size.y;
+    let top = if above >= rect.top() + 8.0 * scale {
+        above
+    } else {
+        (center.y + 34.0 * scale).min(rect.max.y - size.y - 8.0 * scale)
+    };
+    let plate = egui::Rect::from_min_size(
+        egui::pos2(
+            (center.x - size.x / 2.0)
+                .max(rect.min.x + 6.0 * scale)
+                .min(rect.max.x - size.x - 6.0 * scale),
+            top,
+        ),
+        size,
+    );
+    painter.rect_filled(
+        plate,
+        5.0 * scale,
+        egui::Color32::BLACK.gamma_multiply(0.92),
+    );
+    painter.rect_stroke(
+        plate,
+        5.0 * scale,
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(120, 215, 255, 140),
+        ),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(plate.min + pad, galley, egui::Color32::WHITE);
+}
+
+/// A large "valid at" card just above the bottom timeline: FutureCast's
+/// whole point is *when* the picture is for, so the time/day is not buried
+/// in 12-point controls. The small line also says it is a model forecast and
+/// shows the lead time from now.
+fn draw_futurecast_valid_time(painter: &egui::Painter, rect: egui::Rect, app: &StormApp) {
+    if !app.state.show_futurecast {
+        return;
+    }
+    let Some(futurecast) = app.state.futurecast.as_ref() else {
+        return;
+    };
+    let Some(info) = futurecast.selected_info() else {
+        return;
+    };
+    let local = info.valid.with_timezone(crate::timefmt::central());
+    let time = local.format("%-I:%M %p").to_string();
+    let day = local.format("%A, %B %-d").to_string();
+    let zone = local.format("%Z").to_string();
+    let mins = (info.valid - chrono::Utc::now()).num_minutes();
+    let lead = if mins >= 0 {
+        let h = mins / 60;
+        let m = mins % 60;
+        if h > 0 {
+            format!("+{h}h {m:02}m")
+        } else {
+            format!("+{m}m")
+        }
+    } else {
+        let a = mins.abs();
+        let h = a / 60;
+        let m = a % 60;
+        if h > 0 {
+            format!("{h}h {m:02}m ago")
+        } else {
+            format!("{m}m ago")
+        }
+    };
+    let peak = futurecast
+        .selected_frame()
+        .and_then(|frame| frame.max_dbz());
+    let small = if cfg!(target_os = "android") {
+        10.0
+    } else {
+        12.0
+    };
+    let big = if cfg!(target_os = "android") {
+        34.0
+    } else {
+        46.0
+    };
+    let medium = if cfg!(target_os = "android") {
+        15.0
+    } else {
+        21.0
+    };
+    let mode = if app.state.futurecast_precip_type {
+        "TYPE"
+    } else {
+        "REFL"
+    };
+    let header = if let Some(peak) = peak {
+        format!(
+            "FUTURECAST · {}H · {mode} · {lead} · peak {peak:.0} dBZ",
+            if futurecast.extended { 48 } else { 18 }
+        )
+    } else {
+        format!(
+            "FUTURECAST · {}H · {mode} · {lead}",
+            if futurecast.extended { 48 } else { 18 }
+        )
+    };
+    let c_small = egui::Color32::from_rgb(150, 220, 255);
+    let c_time = egui::Color32::WHITE;
+    let c_day = egui::Color32::from_gray(225);
+    let (header_gal, time_gal, day_gal) = painter.ctx().fonts_mut(|fonts| {
+        (
+            fonts.layout_no_wrap(header, egui::FontId::proportional(small), c_small),
+            fonts.layout_no_wrap(time, egui::FontId::proportional(big), c_time),
+            fonts.layout_no_wrap(
+                format!("{day} · {zone}"),
+                egui::FontId::proportional(medium),
+                c_day,
+            ),
+        )
+    });
+    let gap = if cfg!(target_os = "android") {
+        1.0
+    } else {
+        2.0
+    };
+    let pad = if cfg!(target_os = "android") {
+        egui::vec2(14.0, 8.0)
+    } else {
+        egui::vec2(22.0, 11.0)
+    };
+    let content_w = time_gal
+        .size()
+        .x
+        .max(day_gal.size().x)
+        .max(header_gal.size().x);
+    let content_h = header_gal.size().y + gap + time_gal.size().y + gap + day_gal.size().y;
+    let w = content_w + pad.x * 2.0;
+    let h = content_h + pad.y * 2.0;
+    // Phone stack above the timeline: Settings, Controls, GPS. Keep the
+    // time/day card above all three so no chip covers it.
+    let bottom = rect.max.y
+        - if cfg!(target_os = "android") {
+            20.0
+        } else {
+            14.0
+        };
+    let bg = egui::Rect::from_min_size(
+        egui::pos2(rect.center().x - w / 2.0, bottom - h),
+        egui::vec2(w, h),
+    );
+    painter.rect_filled(
+        bg.expand(2.0),
+        egui::CornerRadius::same(12),
+        egui::Color32::from_black_alpha(90),
+    );
+    painter.rect_filled(
+        bg,
+        egui::CornerRadius::same(10),
+        egui::Color32::from_black_alpha(215),
+    );
+    painter.rect_stroke(
+        bg,
+        egui::CornerRadius::same(10),
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(120, 215, 255, 130),
+        ),
+        egui::StrokeKind::Outside,
+    );
+    let mut y = bg.min.y + pad.y;
+    painter.galley(
+        egui::pos2(bg.center().x - header_gal.size().x / 2.0, y),
+        header_gal.clone(),
+        c_small,
+    );
+    y += header_gal.size().y + gap;
+    painter.galley(
+        egui::pos2(bg.center().x - time_gal.size().x / 2.0, y),
+        time_gal.clone(),
+        c_time,
+    );
+    y += time_gal.size().y + gap;
+    painter.galley(
+        egui::pos2(bg.center().x - day_gal.size().x / 2.0, y),
+        day_gal.clone(),
+        c_day,
+    );
+}
+
+/// The HRRR FutureCast layer. Frames are already rasterized into a
+/// Web-Mercator texture by `radar-data`; this is a plain georeferenced rect,
+/// exactly like the GOES WMS overlay. It replaces the live radar sweep while
+/// active (the timeline makes the forecast mode explicit).
+fn draw_futurecast(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &mut StormApp,
+) {
+    if !app.state.show_futurecast {
+        return;
+    }
+    let Some(futurecast) = app.state.futurecast.as_ref() else {
+        painter.text(
+            painter.clip_rect().center(),
+            egui::Align2::CENTER_CENTER,
+            "FutureCast · waiting for the HRRR run…",
+            egui::FontId::proportional(13.0),
+            egui::Color32::from_gray(175),
+        );
+        return;
+    };
+    let Some(frame) = futurecast.selected_frame().cloned() else {
+        let info = futurecast.selected_info();
+        let label = info.map_or_else(
+            || "FutureCast · loading…".to_string(),
+            |info| {
+                format!(
+                    "FutureCast · loading {}",
+                    info.valid
+                        .with_timezone(crate::timefmt::central())
+                        .format("%-I:%M %p")
+                )
+            },
+        );
+        painter.text(
+            painter.clip_rect().center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(13.0),
+            egui::Color32::from_gray(175),
+        );
+        return;
+    };
+    let type_mode = app.state.futurecast_precip_type;
+    let texture = futurecast_texture(app, painter.ctx(), &frame);
+    let (x0, y0) = view.lonlat_to_view_px(frame.west, frame.north);
+    let (x1, y1) = view.lonlat_to_view_px(frame.east, frame.south);
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+        egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+    );
+    let alpha = (app.state.futurecast_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    painter.image(
+        texture.id(),
+        rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::from_white_alpha(alpha),
+    );
+    prune_textures(
+        painter.ctx(),
+        &mut app.futurecast_tex,
+        "stormscope-futurecast",
+        [futurecast_texture_key(&frame, type_mode)]
+            .into_iter()
+            .collect(),
+    );
+}
+
+/// Stable texture cache key: frame identity plus the colour mode.
+fn futurecast_texture_key(
+    frame: &std::sync::Arc<radar_data::futurecast::Frame>,
+    type_mode: bool,
+) -> usize {
+    (std::sync::Arc::as_ptr(frame) as usize) * 2 + usize::from(type_mode)
+}
+
+/// Convert one quantized FutureCast frame to RGBA once. In normal mode this
+/// is the same reflectivity ramp as live radar; in type mode the HRRR
+/// categorical field recolours snow blue, ice purple and freezing rain pink.
+fn futurecast_texture(
+    app: &mut StormApp,
+    ctx: &egui::Context,
+    frame: &std::sync::Arc<radar_data::futurecast::Frame>,
+) -> egui::TextureHandle {
+    let type_mode = app.state.futurecast_precip_type;
+    let key = futurecast_texture_key(frame, type_mode);
+    if let Some((_, texture)) = app.futurecast_tex.iter().find(|(k, _)| *k == key) {
+        return texture.clone();
+    }
+    let table = radar_render::ColorTable::for_moment(radar_core::Moment::Reflectivity);
+    let snow = &[
+        (5.0, [180, 215, 255]),
+        (15.0, [100, 160, 255]),
+        (25.0, [45, 95, 225]),
+        (35.0, [230, 245, 255]),
+    ];
+    let ice = &[
+        (5.0, [225, 195, 255]),
+        (20.0, [170, 80, 230]),
+        (35.0, [255, 255, 255]),
+    ];
+    let fzra = &[
+        (5.0, [255, 195, 235]),
+        (20.0, [230, 50, 170]),
+        (35.0, [255, 255, 255]),
+    ];
+    let mut rgba = Vec::with_capacity(frame.dbz.len() * 4);
+    for (i, q) in frame.dbz.iter().enumerate() {
+        let value = if *q == 0 {
+            f32::NEG_INFINITY
+        } else {
+            *q as f32 - 32.0
+        };
+        let color = if type_mode && value.is_finite() && value >= 5.0 {
+            let ptype = frame.ptype.get(i).copied().unwrap_or(0);
+            match ptype {
+                2 => type_ramp(value, snow),
+                3 => type_ramp(value, ice),
+                4 => type_ramp(value, fzra),
+                _ => table.map(value),
+            }
+        } else {
+            table.map(value)
+        };
+        rgba.extend_from_slice(&color);
+    }
+    let image = egui::ColorImage::from_rgba_unmultiplied([frame.width, frame.height], &rgba);
+    let texture = ctx.load_texture(
+        format!("stormscope-futurecast-{key}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    );
+    app.futurecast_tex.push((key, texture.clone()));
+    texture
+}
+
+/// Opaque precipitation-type ramp; below the first stop is transparent.
+fn type_ramp(value: f32, stops: &[(f32, [u8; 3])]) -> [u8; 4] {
+    if stops.is_empty() || value < stops[0].0 {
+        return [0, 0, 0, 0];
+    }
+    if value >= stops[stops.len() - 1].0 {
+        let c = stops[stops.len() - 1].1;
+        return [c[0], c[1], c[2], 255];
+    }
+    let i = stops
+        .windows(2)
+        .position(|w| value >= w[0].0 && value < w[1].0)
+        .unwrap_or(0);
+    let (v0, c0) = stops[i];
+    let (v1, c1) = stops[i + 1];
+    let t = ((value - v0) / (v1 - v0)).clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    [mix(c0[0], c1[0]), mix(c0[1], c1[1]), mix(c0[2], c1[2]), 255]
+}
+
 /// The MRMS multi-radar composite: convert the decoded grid to an egui
 /// texture once per window, then draw it georeferenced (it is a regular
 /// lat/lon grid, so the screen rect is just its corners). The CONUS-wide
 /// image goes down first, the native-resolution radar window on top.
 fn draw_mrms(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &mut StormApp) {
-    if !app.state.show_mrms {
+    if !app.state.show_mrms || app.state.show_futurecast {
         return;
     }
     let Some(mosaics) = app.state.mrms.as_ref().map(|(m, _)| m.clone()) else {
@@ -2118,8 +2624,6 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
     }
 }
 
-/// Bottom-right tile attribution. Both Wikimedia and OSM tile policies
-/// require "© OpenStreetMap contributors" to stay visible.
 /// Recompute storm tracks when the frame pair or tilt changes. Cheap enough
 /// to redo per frame change (~30k gate projections), but cached anyway.
 fn update_tracks(app: &mut StormApp) {
@@ -2455,24 +2959,22 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
         pulse: false,
     });
 
-    // Back to live radar, right next to Forecast: red and pulsing while
-    // browsing archive/replay (it wants the click), dim green "● LIVE" as a
-    // status pill while already on the newest scan.
-    let live = app.state.mode == crate::state::Mode::Live
-        && app.state.playhead + 1 >= app.state.ring.len().max(1);
+    // FutureCast toggles the model layer; once active this same pill says
+    // "Live Radar" and returns to the newest observed scan. There is no
+    // separate LIVE pill.
     badges.push(TopBadge {
-        text: if live {
-            "● LIVE".to_string()
+        text: if app.state.show_futurecast {
+            "● Live Radar".to_string()
         } else {
-            "GO LIVE".to_string()
+            "⏩ FutureCast".to_string()
         },
-        color: if live {
+        color: if app.state.show_futurecast {
             egui::Color32::from_rgb(120, 230, 140)
         } else {
-            egui::Color32::from_rgb(255, 130, 130)
+            egui::Color32::from_white_alpha(220)
         },
-        kind: BadgeKind::Live,
-        pulse: !live,
+        kind: BadgeKind::Futurecast,
+        pulse: false,
     });
 
     // Flash phase for pulsing badges (also drives the repaint below).
@@ -2483,30 +2985,46 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
             .request_repaint_after(std::time::Duration::from_millis(120));
     }
 
-    let font = if cfg!(target_os = "android") {
-        egui::FontId::proportional(11.0)
-    } else {
-        egui::FontId::proportional(15.0)
+    // Forecast and FutureCast are the two primary actions: bigger text and
+    // padding, and on Android they get their own row under the status pills.
+    let is_action = |kind: BadgeKind| matches!(kind, BadgeKind::Forecast | BadgeKind::Futurecast);
+    let font_for = |kind: BadgeKind| {
+        if cfg!(target_os = "android") {
+            egui::FontId::proportional(if is_action(kind) { 15.0 } else { 11.0 })
+        } else {
+            egui::FontId::proportional(15.0)
+        }
+    };
+    let pad_for = |kind: BadgeKind| {
+        if cfg!(target_os = "android") && is_action(kind) {
+            egui::vec2(30.0, 16.0)
+        } else {
+            egui::vec2(24.0, 12.0)
+        }
     };
     let galleys: Vec<_> = badges
         .iter()
         .map(|b| {
             ui.ctx()
-                .fonts_mut(|f| f.layout_no_wrap(b.text.clone(), font.clone(), b.color))
+                .fonts_mut(|f| f.layout_no_wrap(b.text.clone(), font_for(b.kind), b.color))
         })
         .collect();
-    let pad = egui::vec2(24.0, 12.0);
     let gap = 8.0;
     let top = rect.min.y + 8.0;
-    let row_h = galleys.iter().map(|g| g.size().y).fold(0.0_f32, f32::max) + pad.y;
-    // Lay the pills out into rows that fit, then centre each row. On a phone
-    // the full set cannot fit on one line; the old code restarted wrapped
-    // rows at the left edge, which stranded the lone LIVE pill top-left.
+    // Lay the pills out into rows that fit, then centre each row. Force the
+    // Forecast pill to start a fresh row on Android so Forecast and
+    // FutureCast always share one row.
     let avail = (rect.width() - 8.0).max(1.0);
     let mut rows: Vec<Vec<usize>> = Vec::new();
     let mut row: Vec<usize> = Vec::new();
     let mut row_w = 0.0;
     for (i, g) in galleys.iter().enumerate() {
+        let badge = &badges[i];
+        let pad = pad_for(badge.kind);
+        if cfg!(target_os = "android") && badge.kind == BadgeKind::Forecast && !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+            row_w = 0.0;
+        }
         let w = g.size().x + pad.x;
         let extra = if row.is_empty() { w } else { w + gap };
         if !row.is_empty() && row_w + extra > avail {
@@ -2523,9 +3041,13 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     let mut y = top;
     let mut rects: Vec<(BadgeKind, egui::Rect)> = Vec::new();
     for row in &rows {
+        let row_h = row
+            .iter()
+            .map(|&i| galleys[i].size().y + pad_for(badges[i].kind).y)
+            .fold(0.0_f32, f32::max);
         let base_total: f32 = row
             .iter()
-            .map(|&i| galleys[i].size().x + pad.x)
+            .map(|&i| galleys[i].size().x + pad_for(badges[i].kind).x)
             .sum::<f32>()
             + gap * row.len().saturating_sub(1) as f32;
         // On the phone the chips used to sit in a centred block, leaving a
@@ -2548,6 +3070,7 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
             let badge = &badges[i];
             let galley = &galleys[i];
             let size = galley.size();
+            let pad = pad_for(badge.kind);
             let w = size.x + pad.x + share;
             let bg = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, size.y + pad.y));
             let hovered = app.top_badge_hovered == Some(badge.kind);
@@ -2593,7 +3116,7 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
     for (kind, bg) in rects {
         if !matches!(
             kind,
-            BadgeKind::Alerts | BadgeKind::Forecast | BadgeKind::Live
+            BadgeKind::Alerts | BadgeKind::Forecast | BadgeKind::Futurecast
         ) {
             continue;
         }
@@ -2616,11 +3139,14 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
             BadgeKind::Forecast => {
                 "NWS forecast for the selected station — click to open".to_string()
             }
-            BadgeKind::Live => {
-                if live {
-                    "Watching the newest scan".to_string()
+            BadgeKind::Futurecast => {
+                if app.state.show_futurecast {
+                    "FutureCast is showing — click to return to the newest live radar scan"
+                        .to_string()
+                } else if app.state.futurecast_extended {
+                    "Show the 48-hour HRRR simulated-reflectivity run — a model forecast, not live radar".to_string()
                 } else {
-                    "Leave archive/replay and snap to the newest radar (L)".to_string()
+                    "Show the 18-hour HRRR simulated-reflectivity run — a model forecast, not live radar".to_string()
                 }
             }
             _ => String::new(),
@@ -2634,9 +3160,21 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
                     // show (station follow, or a stale point).
                     super::forecast::request_forecast_if_stale(app);
                 }
-                BadgeKind::Live => {
-                    if !live {
-                        app.snap_to_live();
+                BadgeKind::Futurecast => {
+                    let show = !app.state.show_futurecast;
+                    app.state.show_futurecast = show;
+                    if show {
+                        app.state.loop_state = crate::state::LoopState::Paused;
+                        app.state.futurecast_playing = true;
+                        app.state.futurecast_last_step = ui.input(|i| i.time);
+                        app.state.futurecast_requested_at = None;
+                    } else {
+                        app.state.futurecast_playing = false;
+                        if app.state.mode != crate::state::Mode::Live
+                            || app.state.playhead + 1 < app.state.ring.len().max(1)
+                        {
+                            app.snap_to_live();
+                        }
                     }
                 }
                 _ => {}
@@ -2652,7 +3190,7 @@ fn badge_id(kind: BadgeKind) -> &'static str {
         BadgeKind::Age => "age",
         BadgeKind::Alerts => "alerts",
         BadgeKind::Forecast => "forecast",
-        BadgeKind::Live => "live",
+        BadgeKind::Futurecast => "futurecast",
     }
 }
 
@@ -2926,6 +3464,9 @@ pub(super) fn warning_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
 /// what a click opens" holds for both. It is what keeps a warning drawn under
 /// another one reachable where their borders cross.
 pub(super) const WARNING_EDGE_PX: f64 = 8.0;
+/// Lift the Android dBZ crosshair above the finger so the touch target does
+/// not hide the edge being inspected.
+const DBZ_FINGER_OFFSET_PX: f32 = 72.0;
 
 /// How close (px) two clicks must be to count as "the same spot" when walking
 /// a stack of overlapping warnings.
@@ -3466,37 +4007,6 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
         app.state.pending_marker = None;
         app.state.pending_marker_label.clear();
     }
-}
-
-fn draw_attribution(painter: &egui::Painter, rect: egui::Rect, spc: bool) {
-    let text = if spc {
-        "© OpenStreetMap contributors · SPC/NWS outlook"
-    } else {
-        "© OpenStreetMap contributors"
-    };
-    let font = egui::FontId::proportional(10.0);
-    // Clear the bottom chip row: on Android the GPS button stacks above the
-    // Controls chip, so lift it past both.
-    let lift = if cfg!(target_os = "android") {
-        104.0
-    } else {
-        46.0
-    };
-    let pos = egui::pos2(rect.right() - 6.0, rect.bottom() - lift);
-    painter.text(
-        pos,
-        egui::Align2::RIGHT_BOTTOM,
-        text,
-        font.clone(),
-        egui::Color32::BLACK.gamma_multiply(0.7),
-    );
-    painter.text(
-        pos - egui::vec2(1.0, 1.0),
-        egui::Align2::RIGHT_BOTTOM,
-        text,
-        font,
-        egui::Color32::from_white_alpha(160),
-    );
 }
 
 #[cfg(test)]

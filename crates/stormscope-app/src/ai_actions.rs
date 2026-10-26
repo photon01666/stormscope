@@ -127,6 +127,8 @@ pub struct DataRequest {
     #[serde(default)]
     pub goes: Option<bool>,
     #[serde(default)]
+    pub futurecast: Option<bool>,
+    #[serde(default)]
     pub forecast: Option<DataPoint>,
     #[serde(default)]
     pub totals: Option<DataPoint>,

@@ -24,6 +24,9 @@ flate2 = "1"
 # GOES GLM Level 2 is NetCDF-4/HDF5. This reader is pure Rust (no libhdf5 /
 # libnetcdf), so the binary stays self-contained.
 netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }
+# HRRR simulated reflectivity ("Futurecast") is GRIB2 with complex packing
+# and a Lambert-conformal grid; grib handles both, pure Rust.
+grib = { version = "0.20.2", default-features = false }
 # MRMS ships PNG-packed GRIB2 (template 5.41): the data section is a 16-bit
 # grayscale PNG. Only the PNG decoder is needed.
 image = { version = "0.25", default-features = false, features = ["png"] }

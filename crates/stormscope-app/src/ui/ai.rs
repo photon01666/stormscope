@@ -49,21 +49,19 @@ pub fn ai_windows(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     };
     #[cfg(not(target_os = "android"))]
     let area = area;
-    settings_window(ctx, app);
+    settings_window(ctx, app, area);
     report_window(ctx, app, area);
 }
 
-fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
+fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if !app.state.ai_settings_open {
         return;
     }
-    let screen = ctx.content_rect().size();
     let text_scale = super::big_text_scale(app);
-    let size = egui::vec2(
-        (screen.x * 0.32).clamp(440.0, 640.0),
-        (screen.y * 0.46).clamp(320.0, 560.0),
-    );
-    let max_h = (screen.y * 0.8).max(300.0);
+    let fill = cfg!(target_os = "android");
+    // Desktop is a fixed panel sized for the full form; the phone fills the
+    // map area edge to edge and cannot be dragged or resized.
+    let size = super::popup_size(ctx, text_scale, 620.0, 720.0);
     let mut open = app.state.ai_settings_open;
     let mut save = false;
     let mut test = false;
@@ -72,14 +70,21 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut window = egui::Window::new("AI meteorologist — settings")
         .id(egui::Id::new("stormscope.ai.settings"))
-        .default_size(size)
-        .max_height(max_h)
-        .min_size(egui::vec2(380.0, 300.0))
         .default_pos(super::centered_popup_pos(ctx, size));
     #[cfg(target_os = "android")]
     {
         window = window.title_bar(false);
     }
+    let window = if fill {
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
+        window
+            .fixed_rect(inset)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(inset)
+    } else {
+        window.fixed_size(size).resizable(false)
+    };
     let window = window.open(&mut open);
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close_requested = false;
@@ -89,7 +94,12 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp) {
             close_requested |= super::phone_header(ui, "AI meteorologist — settings");
         }
         super::apply_text_scale(ui, text_scale);
-        ui.set_width((size.x - 40.0).max(320.0));
+        let width = if fill {
+            ui.available_width()
+        } else {
+            (size.x - 40.0).max(320.0)
+        };
+        ui.set_width(width.max(320.0));
         egui::ScrollArea::vertical()
             .id_salt("stormscope.ai.settings.scroll")
             .auto_shrink([false, false])

@@ -295,7 +295,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     totals::totals_window(ui.ctx(), app, pane_area);
 
     // Archive popup (opened from Settings).
-    archive_window(ui.ctx(), app);
+    archive_window(ui.ctx(), app, pane_area);
 
     // Per-pane control windows (opened from each pane's bottom-right chip).
     map_controls_window(ui.ctx(), app);
@@ -1776,7 +1776,14 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     let scale = hidpi_text_scale(mon_h, nppp, ppp, middle.height());
     app.sidebar_scale = scale;
     let panel_w = if cfg!(target_os = "android") {
-        (middle.width() * 0.5).max(220.0)
+        // The map's Settings chip pins the sidebar; on a phone that is the
+        // settings page, so give it the full map area instead of a narrow
+        // half-width drawer. Hover/edge peeks keep the compact width.
+        if app.state.sidebar_pinned {
+            middle.width()
+        } else {
+            (middle.width() * 0.5).max(220.0)
+        }
     } else {
         SIDEBAR_WIDTH * scale
     };
@@ -2777,163 +2784,182 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
 /// The Archive popup (opened from Settings): day + time-of-day pickers, the
 /// load actions, paging, and real feedback — the times of what is loaded and
 /// where the window sits in the day, instead of bare "earlier/later".
-fn archive_window(ctx: &egui::Context, app: &mut StormApp) {
+fn archive_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if !app.state.archive_popup_open {
         return;
     }
     // Feedback stays fresh while a load streams in.
     ctx.request_repaint_after(std::time::Duration::from_millis(400));
     let scale = app.sidebar_scale.max(1.0);
-    let size = popup_size(ctx, scale, 430.0, 470.0);
+    let fill = cfg!(target_os = "android");
+    let size = popup_size(ctx, scale, 560.0, 520.0);
     let mut open = app.state.archive_popup_open;
 
-    egui::Window::new("Archive")
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut window = egui::Window::new("Archive")
         .id(egui::Id::new("stormscope.archive"))
-        .open(&mut open)
-        .default_size(size)
-        .min_size(egui::vec2(330.0 * scale, 300.0 * scale))
-        .default_pos(centered_popup_pos(ctx, size))
-        .resizable(true)
-        .show(ctx, |ui| {
-            apply_text_scale(ui, scale);
-            // Mode.
-            ui.horizontal(|ui| {
-                let mut live = app.state.mode == Mode::Live;
-                if ui.selectable_value(&mut live, true, "Live").changed() && live {
-                    app.snap_to_live();
-                }
-                let mut arch = app.state.mode == Mode::Archive;
-                if ui.selectable_value(&mut arch, true, "Archive").changed() && arch {
-                    app.state.mode = Mode::Archive;
-                }
-            });
-            ui.add_space(6.0);
+        .default_pos(centered_popup_pos(ctx, size));
+    #[cfg(target_os = "android")]
+    {
+        window = window.title_bar(false);
+    }
+    let window = if fill {
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
+        window
+            .fixed_rect(inset)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(inset)
+    } else {
+        window.fixed_size(size).resizable(false)
+    };
+    let window = window.open(&mut open);
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        {
+            close_requested |= phone_header(ui, "Archive");
+        }
+        apply_text_scale(ui, scale);
+        // Mode.
+        ui.horizontal(|ui| {
+            let mut live = app.state.mode == Mode::Live;
+            if ui.selectable_value(&mut live, true, "Live").changed() && live {
+                app.snap_to_live();
+            }
+            let mut arch = app.state.mode == Mode::Archive;
+            if ui.selectable_value(&mut arch, true, "Archive").changed() && arch {
+                app.state.mode = Mode::Archive;
+            }
+        });
+        ui.add_space(6.0);
 
-            // Day (the same shared archive day as the alerts Archive tab).
-            ui.label("Day (Central)");
-            ui.horizontal(|ui| {
-                if ui.button("◀").clicked() {
+        // Day (the same shared archive day as the alerts Archive tab).
+        ui.label("Day (Central)");
+        ui.horizontal(|ui| {
+            if ui.button("◀").clicked() {
+                app.state.archive_date = app
+                    .state
+                    .archive_date
+                    .pred_opt()
+                    .unwrap_or(app.state.archive_date);
+            }
+            // Clickable date: calendar picking, like the alerts tab.
+            let today = chrono::Utc::now()
+                .with_timezone(crate::timefmt::central())
+                .date_naive();
+            let mut picked = jiff_from_naive(app.state.archive_date);
+            ui.add(egui_extras::DatePickerButton::new(&mut picked))
+                .on_hover_text("Pick a day from the calendar");
+            if let Some(picked) = naive_from_jiff(picked) {
+                if picked != app.state.archive_date {
+                    app.state.archive_date = picked.min(today);
+                }
+            }
+            if ui.button("▶").clicked() {
+                if app.state.archive_date < today {
                     app.state.archive_date = app
                         .state
                         .archive_date
-                        .pred_opt()
+                        .succ_opt()
                         .unwrap_or(app.state.archive_date);
                 }
-                // Clickable date: calendar picking, like the alerts tab.
-                let today = chrono::Utc::now()
-                    .with_timezone(crate::timefmt::central())
-                    .date_naive();
-                let mut picked = jiff_from_naive(app.state.archive_date);
-                ui.add(egui_extras::DatePickerButton::new(&mut picked))
-                    .on_hover_text("Pick a day from the calendar");
-                if let Some(picked) = naive_from_jiff(picked) {
-                    if picked != app.state.archive_date {
-                        app.state.archive_date = picked.min(today);
-                    }
-                }
-                if ui.button("▶").clicked() {
-                    if app.state.archive_date < today {
-                        app.state.archive_date = app
-                            .state
-                            .archive_date
-                            .succ_opt()
-                            .unwrap_or(app.state.archive_date);
-                    }
-                }
-            });
+            }
+        });
 
-            // Time of day.
-            ui.add_space(4.0);
-            ui.label("Time of day (Central)");
-            ui.add(
-                egui::Slider::new(&mut app.state.archive_minute, 0..=1435)
-                    .step_by(5.0)
-                    .custom_formatter(|v, _| {
-                        format!("{:02}:{:02}", (v as u32) / 60, (v as u32) % 60)
-                    }),
-            );
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Load at time")
-                    .on_hover_text("Load the scans around this time")
-                    .clicked()
-                {
-                    app.state.mode = Mode::Archive;
-                    let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
-                        app.state.site_id.clone(),
-                        app.state.archive_date,
-                        Some(app.state.archive_minute),
-                    ));
-                }
-                if ui
-                    .button("Newest first")
-                    .on_hover_text("Load the newest scans of that day")
-                    .clicked()
-                {
-                    app.state.mode = Mode::Archive;
-                    let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
-                        app.state.site_id.clone(),
-                        app.state.archive_date,
-                        None,
-                    ));
-                }
-            });
+        // Time of day.
+        ui.add_space(4.0);
+        ui.label("Time of day (Central)");
+        ui.add(
+            egui::Slider::new(&mut app.state.archive_minute, 0..=1435)
+                .step_by(5.0)
+                .custom_formatter(|v, _| format!("{:02}:{:02}", (v as u32) / 60, (v as u32) % 60)),
+        );
+        ui.horizontal(|ui| {
             if ui
-                .button("⟳ Loop last hour")
-                .on_hover_text("Load the newest hour of scans and loop them")
+                .button("Load at time")
+                .on_hover_text("Load the scans around this time")
                 .clicked()
             {
                 app.state.mode = Mode::Archive;
-                let _ = app.tx.send(crate::app::DataCmd::LoadLastHour(app.state.site_id.clone()));
-            }
-
-            // Feedback.
-            ui.add_space(6.0);
-            ui.separator();
-            ui.label(egui::RichText::new(&app.state.status_text).weak().small());
-            if let (Some(first), Some(last)) = (app.state.ring.front(), app.state.ring.back()) {
-                let tz = crate::timefmt::central();
-                ui.label(format!(
-                    "loaded {} scans · {} → {} (Central)",
-                    app.state.ring.len(),
-                    first.volume_start.with_timezone(tz).format("%H:%M"),
-                    last.volume_start.with_timezone(tz).format("%H:%M"),
+                let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
+                    app.state.site_id.clone(),
+                    app.state.archive_date,
+                    Some(app.state.archive_minute),
                 ));
             }
-            if app.state.archive_total > 0 {
-                let window_len = app.state.archive_len.max(1);
-                let windows = app.state.archive_total.div_ceil(window_len);
-                let window_no = app.state.archive_start / window_len + 1;
-                let first = app.state.archive_start + 1;
-                let last = app.state.archive_start + app.state.archive_len;
-                ui.horizontal(|ui| {
-                    let at_oldest = app.state.archive_start == 0;
-                    if ui
-                        .add_enabled(at_oldest, egui::Button::new("◀ earlier"))
-                        .clicked()
-                    {
-                        let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(-1));
-                    }
-                    if ui
-                        .add_enabled(
-                            last < app.state.archive_total,
-                            egui::Button::new("later ▶"),
-                        )
-                        .clicked()
-                    {
-                        let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(1));
-                    }
-                });
-                ui.label(
-                    egui::RichText::new(format!(
-                        "window {window_no} of {windows} · scans {first}–{last} of {} (newest first)",
-                        app.state.archive_total
-                    ))
-                    .weak()
-                    .small(),
-                );
+            if ui
+                .button("Newest first")
+                .on_hover_text("Load the newest scans of that day")
+                .clicked()
+            {
+                app.state.mode = Mode::Archive;
+                let _ = app.tx.send(crate::app::DataCmd::LoadArchiveDate(
+                    app.state.site_id.clone(),
+                    app.state.archive_date,
+                    None,
+                ));
             }
         });
+        if ui
+            .button("⟳ Loop last hour")
+            .on_hover_text("Load the newest hour of scans and loop them")
+            .clicked()
+        {
+            app.state.mode = Mode::Archive;
+            let _ = app
+                .tx
+                .send(crate::app::DataCmd::LoadLastHour(app.state.site_id.clone()));
+        }
+
+        // Feedback.
+        ui.add_space(6.0);
+        ui.separator();
+        ui.label(egui::RichText::new(&app.state.status_text).weak().small());
+        if let (Some(first), Some(last)) = (app.state.ring.front(), app.state.ring.back()) {
+            let tz = crate::timefmt::central();
+            ui.label(format!(
+                "loaded {} scans · {} → {} (Central)",
+                app.state.ring.len(),
+                first.volume_start.with_timezone(tz).format("%H:%M"),
+                last.volume_start.with_timezone(tz).format("%H:%M"),
+            ));
+        }
+        if app.state.archive_total > 0 {
+            let window_len = app.state.archive_len.max(1);
+            let windows = app.state.archive_total.div_ceil(window_len);
+            let window_no = app.state.archive_start / window_len + 1;
+            let first = app.state.archive_start + 1;
+            let last = app.state.archive_start + app.state.archive_len;
+            ui.horizontal(|ui| {
+                let at_oldest = app.state.archive_start == 0;
+                if ui
+                    .add_enabled(at_oldest, egui::Button::new("◀ earlier"))
+                    .clicked()
+                {
+                    let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(-1));
+                }
+                if ui
+                    .add_enabled(last < app.state.archive_total, egui::Button::new("later ▶"))
+                    .clicked()
+                {
+                    let _ = app.tx.send(crate::app::DataCmd::ArchiveWindowShift(1));
+                }
+            });
+            ui.label(
+                egui::RichText::new(format!(
+                    "window {window_no} of {windows} · scans {first}–{last} of {} (newest first)",
+                    app.state.archive_total
+                ))
+                .weak()
+                .small(),
+            );
+        }
+    });
+    if close_requested {
+        open = false;
+    }
     app.state.archive_popup_open = open;
 }
 

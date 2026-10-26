@@ -93,6 +93,12 @@ fn install_dir() -> PathBuf {
 
 #[cfg(windows)]
 fn install(update: bool) -> Result<(), String> {
+    if APP_EXE.is_empty() {
+        return Err(
+            "This installer was built without the Stormscope app payload. Rebuild it with              STORMSCOPE_APP_EXE pointing at the release executable."
+                .into(),
+        );
+    }
     // The running app locks its exe. The installer is a different process, so
     // it can terminate the old copy and replace it.
     if update {

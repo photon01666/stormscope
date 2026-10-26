@@ -10,17 +10,34 @@ fn main() {
     println!("cargo:rerun-if-env-changed=STORMSCOPE_APP_EXE");
     println!("cargo:rerun-if-changed={}", app.display());
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
-    std::fs::copy(&app, out.join("stormscope-app.exe")).unwrap_or_else(|error| {
-        panic!(
-            "cannot embed {} in the installer: {error}. Build the app first or set STORMSCOPE_APP_EXE.",
-            app.display()
+
+    // Workspace `cargo check/test` runs on CI before the Windows app exists.
+    // The setup crate is a stub off Windows and is only *run* on Windows in a
+    // release build, so an empty payload is enough to let check/clippy pass;
+    // the installer refuses to run without a real embedded app.
+    if app.is_file() {
+        std::fs::copy(&app, out.join("stormscope-app.exe")).unwrap_or_else(|error| {
+            panic!(
+                "cannot embed {} in the installer: {error}. Build the app first or set STORMSCOPE_APP_EXE.",
+                app.display()
+            )
+        });
+        std::fs::write(
+            out.join("app_embed.rs"),
+            "pub static APP_EXE: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/stormscope-app.exe\"));\n",
         )
-    });
-    std::fs::write(
-        out.join("app_embed.rs"),
-        "pub static APP_EXE: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/stormscope-app.exe\"));\n",
-    )
-    .expect("write app_embed.rs");
+        .expect("write app_embed.rs");
+    } else {
+        println!(
+            "cargo:warning=stormscope-setup: no app executable at {}; building a payload-less installer stub for check/test",
+            app.display()
+        );
+        std::fs::write(
+            out.join("app_embed.rs"),
+            "pub static APP_EXE: &[u8] = &[];\n",
+        )
+        .expect("write app_embed.rs");
+    }
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();

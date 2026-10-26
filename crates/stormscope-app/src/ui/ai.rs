@@ -118,6 +118,13 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
             .id_salt("stormscope.ai.settings.scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                if fill {
+                    // The phone form is tall but the map area is taller; a
+                    // roomier rhythm fills the panel instead of leaving a
+                    // big blank band at the bottom.
+                    let y = ui.spacing().item_spacing.y;
+                    ui.spacing_mut().item_spacing.y = (y * 2.2).max(10.0);
+                }
                 ui.label(
             egui::RichText::new(
                 "Nothing is sent until you press Ask, and then only the compact snapshot built \

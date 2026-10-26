@@ -3,6 +3,14 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.12 — 2026-10-25
+
+**Android**
+- **In-app updater.** Stormscope checks GitHub Releases on launch and shows a
+  centred modal when a newer release is available. One tap on **Update**
+  downloads the APK and hands it to the Android installer.
+- Added the current version number to the top status bar on all platforms.
+
 ## v1.5.11 — 2026-10-25
 
 **Android**

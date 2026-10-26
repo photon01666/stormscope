@@ -64,8 +64,11 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     }
     let text_scale = super::big_text_scale(app);
     let fill = cfg!(target_os = "android");
-    // Desktop is a fixed panel sized for the full form; the phone fills the
-    // map area edge to edge and cannot be dragged or resized.
+    // Desktop pins the width and caps the height at 620×720 but hugs
+    // whatever the form actually needs — a hard-fixed panel left a huge
+    // blank band under the footer once the Gemini block became Android-only.
+    // The phone fills the map area edge to edge and cannot be dragged or
+    // resized.
     let size = super::popup_size(ctx, text_scale, 620.0, 720.0);
     let mut open = app.state.ai_settings_open;
     let mut save = false;
@@ -74,8 +77,7 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
 
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut window = egui::Window::new("AI meteorologist — settings")
-        .id(egui::Id::new("stormscope.ai.settings"))
-        .default_pos(super::centered_popup_pos(ctx, size));
+        .id(egui::Id::new("stormscope.ai.settings"));
     #[cfg(target_os = "android")]
     {
         window = window.title_bar(false);
@@ -88,7 +90,15 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
             .resizable(false)
             .constrain_to(inset)
     } else {
-        window.fixed_size(size).resizable(false)
+        // Pin the width, cap the height at 620×720, but let the panel hug
+        // the form. Pivot on the centre so the window stays centred as its
+        // content-driven height changes — and, unlike `anchor`, it stays
+        // draggable.
+        window
+            .fixed_size(size)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .resizable(false)
     };
     let window = window.open(&mut open);
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
@@ -116,7 +126,11 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         };
         egui::ScrollArea::vertical()
             .id_salt("stormscope.ai.settings.scroll")
-            .auto_shrink([false, false])
+            // Desktop: shrink to the form's height so the window hugs its
+            // content instead of filling the fixed 620×720 box with a blank
+            // band (the Gemini block is Android-only now). The phone keeps
+            // filling its fixed panel edge to edge.
+            .auto_shrink([false, !fill])
             .show(ui, |ui| {
                 if fill {
                     // The phone form is tall but the map area is taller; a

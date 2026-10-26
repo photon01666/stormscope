@@ -3,6 +3,8 @@ package com.stormscope.app;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
+import java.io.File;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.location.Location;
@@ -18,6 +20,7 @@ import android.view.View;
 import java.util.ArrayDeque;
 import java.util.Locale;
 
+import androidx.core.content.FileProvider;
 import androidx.core.view.WindowInsetsCompat;
 
 import com.google.androidgamesdk.GameActivity;
@@ -159,6 +162,21 @@ public class MainActivity extends GameActivity {
         boolean pending = sPendingResumeRefresh;
         sPendingResumeRefresh = false;
         return pending;
+    }
+
+    /** Called from Rust (JNI, UI thread): hand an APK to the system installer. */
+    public void stormscopeInstallApk(String path) {
+        try {
+            File file = new File(path);
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+            Intent intent = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            Log.e(TAG, "stormscopeInstallApk failed", e);
+        }
     }
 
     /** True while the game window is resumed; the service stays silent then. */

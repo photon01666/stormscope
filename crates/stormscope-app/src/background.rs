@@ -755,6 +755,24 @@ pub fn run(
                     });
                 }
                 DataCmd::Shutdown => break,
+                DataCmd::CheckUpdate { current } => {
+                    log::info!("update check: current {current}");
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let result = radar_data::update::check_latest(&current)
+                            .map_err(|e| format!("{e:#}"));
+                        log::info!("update check result: {result:?}");
+                        let _ = out.send(DataMsg::UpdateCheck(result));
+                    });
+                }
+                DataCmd::DownloadUpdate { url, version } => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let result = radar_data::update::download_apk(&url, &version)
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = out.send(DataMsg::UpdateDownload(result));
+                    });
+                }
             },
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,

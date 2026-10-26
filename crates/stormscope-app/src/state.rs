@@ -792,6 +792,13 @@ pub struct AppState {
     pub ai_generated_at: Option<std::time::Instant>,
     pub ai_test_pending: bool,
     pub ai_test_status: Option<String>,
+    /// Android self-update: latest release, modal state and transfer status.
+    pub update_available: Option<radar_data::update::UpdateInfo>,
+    pub update_dialog_open: bool,
+    pub update_check_pending: bool,
+    pub update_download_pending: bool,
+    pub update_status: Option<String>,
+    pub update_checked_at: Option<std::time::Instant>,
     /// What the model changed on the map ("VEL · 3D split · slice 90°"), if the
     /// last answer carried a `MAP:` directive.
     pub ai_actions: Option<String>,
@@ -1150,6 +1157,12 @@ impl Default for AppState {
             ai_generated_at: None,
             ai_test_pending: false,
             ai_test_status: None,
+            update_available: None,
+            update_dialog_open: false,
+            update_check_pending: false,
+            update_download_pending: false,
+            update_status: None,
+            update_checked_at: None,
             ai_actions: None,
             ai_view_before: None,
             ai_view_restore_at: None,

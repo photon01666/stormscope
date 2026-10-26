@@ -129,6 +129,9 @@ pub enum DataMsg {
     AiBrief(Result<String, String>),
     /// Result of the Settings popup's connectivity test.
     AiTest(Result<String, String>),
+    /// Android self-update: latest release lookup / APK download.
+    UpdateCheck(Result<Option<radar_data::update::UpdateInfo>, String>),
+    UpdateDownload(Result<std::path::PathBuf, String>),
     /// One historical warning's raw NWS product text (`None` = the fetch
     /// failed; an Error message accompanies it).
     ArchiveText {
@@ -235,6 +238,15 @@ pub enum DataCmd {
     /// Connectivity test for the Settings popup.
     AiTest {
         config: radar_data::ai::AiConfig,
+    },
+    /// Android self-update: look for a newer GitHub release.
+    CheckUpdate {
+        current: String,
+    },
+    /// Android self-update: download the selected APK asset.
+    DownloadUpdate {
+        url: String,
+        version: String,
     },
     /// Delete every downloaded radar volume from disk (`l2/`).
     ClearRadar,
@@ -1026,6 +1038,40 @@ impl StormApp {
                         ),
                         Err(error) => format!("Failed: {error}"),
                     });
+                }
+                DataMsg::UpdateCheck(result) => {
+                    log::info!("UpdateCheck received: {result:?}");
+                    self.state.update_check_pending = false;
+                    self.state.update_checked_at = Some(std::time::Instant::now());
+                    match result {
+                        Ok(Some(info)) => {
+                            self.state.update_available = Some(info);
+                            self.state.update_dialog_open = true;
+                        }
+                        Ok(None) => {
+                            self.state.update_status = Some("Stormscope is up to date.".into());
+                        }
+                        Err(error) => {
+                            self.state.update_status =
+                                Some(format!("Update check failed: {error}"));
+                        }
+                    }
+                }
+                DataMsg::UpdateDownload(result) => {
+                    self.state.update_download_pending = false;
+                    match result {
+                        Ok(path) => {
+                            self.state.update_status =
+                                Some(format!("Downloaded {}.", path.display()));
+                            self.state.update_dialog_open = false;
+                            #[cfg(target_os = "android")]
+                            crate::android_lifecycle::install_apk(&path);
+                        }
+                        Err(error) => {
+                            self.state.update_status =
+                                Some(format!("Update download failed: {error}"));
+                        }
+                    }
                 }
                 DataMsg::Lightning {
                     strikes,
@@ -2779,6 +2825,18 @@ impl StormApp {
                     .is_none_or(|newest| chrono::Utc::now() - newest > chrono::Duration::minutes(6))
             {
                 let _ = self.tx.send(DataCmd::EnterLive(self.state.site_id.clone()));
+            }
+            // Background update check: once a day, ask GitHub for a newer
+            // release and surface it as a centred modal when one exists.
+            if !self.state.update_check_pending
+                && self.state.update_checked_at.is_none_or(|last| {
+                    last.elapsed() >= std::time::Duration::from_secs(24 * 60 * 60)
+                })
+            {
+                self.state.update_check_pending = true;
+                let _ = self.tx.send(DataCmd::CheckUpdate {
+                    current: env!("CARGO_PKG_VERSION").to_string(),
+                });
             }
             self.pump_gemini_live();
             // Sessions are event-driven, but the footer meter, status and

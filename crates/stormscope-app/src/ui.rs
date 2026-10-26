@@ -297,6 +297,10 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Archive popup (opened from Settings).
     archive_window(ui.ctx(), app, pane_area);
 
+    // Android self-update: centred modal offering a newer release.
+    #[cfg(target_os = "android")]
+    crate::ui::update_dialog(ui.ctx(), app);
+
     // Per-pane control windows (opened from each pane's bottom-right chip).
     map_controls_window(ui.ctx(), app);
     view3d_controls_window(ui.ctx(), app);
@@ -1935,6 +1939,19 @@ fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(app.state.status_text.clone());
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .weak()
+                        .small(),
+                );
+            });
+        } else {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .weak()
+                        .small(),
+                );
             });
         }
     });
@@ -2983,6 +3000,69 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         open = false;
     }
     app.state.archive_popup_open = open;
+}
+
+/// Android: centred modal offering a newer release and running the whole
+/// update (download + system installer) from one button.
+#[cfg(target_os = "android")]
+pub fn update_dialog(ctx: &egui::Context, app: &mut StormApp) {
+    if !app.state.update_dialog_open {
+        return;
+    }
+    let Some(info) = app.state.update_available.clone() else {
+        app.state.update_dialog_open = false;
+        return;
+    };
+    let current = env!("CARGO_PKG_VERSION");
+    let response = egui::Modal::new(egui::Id::new("stormscope.update"))
+        .backdrop_color(egui::Color32::from_black_alpha(150))
+        .show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.heading("Update available");
+            ui.label(format!(
+                "Stormscope {} is available (you have {}).",
+                info.version, current
+            ));
+            if !info.notes.is_empty() {
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        ui.label(info.notes.clone());
+                    });
+            }
+            if let Some(status) = &app.state.update_status {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(status).small().weak());
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if app.state.update_download_pending {
+                    ui.spinner();
+                    ui.label("Downloading update…");
+                } else {
+                    let update =
+                        ui.add(egui::Button::new("Update").min_size(egui::vec2(120.0, 44.0)));
+                    if update.clicked() {
+                        app.state.update_download_pending = true;
+                        app.state.update_status =
+                            Some(format!("Downloading Stormscope {}…", info.version));
+                        let _ = app.tx.send(crate::app::DataCmd::DownloadUpdate {
+                            url: info.asset_url.clone(),
+                            version: info.version.clone(),
+                        });
+                    }
+                    let later =
+                        ui.add(egui::Button::new("Later").min_size(egui::vec2(120.0, 44.0)));
+                    if later.clicked() {
+                        app.state.update_dialog_open = false;
+                    }
+                }
+            });
+        });
+    // The backdrop swallows input; if the user clicks outside we keep the
+    // modal open so the choice is explicit.
+    let _ = response;
 }
 
 /// The 2D warning-polygon fill slider, in the map's Controls window (the 3D

@@ -1431,7 +1431,50 @@ impl StormApp {
                 .spawn();
             std::process::exit(0);
         }
-        #[cfg(not(any(target_os = "android", windows)))]
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let Some(appimage) = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from) else {
+                self.state.update_status = Some(
+                    "This build is not an AppImage. Download the new release from GitHub.".into(),
+                );
+                return;
+            };
+            let file_name = appimage
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "stormscope.AppImage".into());
+            let temp = appimage.with_file_name(format!(".{file_name}.new"));
+            let old = appimage.with_file_name(format!(".{file_name}.old"));
+            let install = (|| -> std::io::Result<()> {
+                std::fs::copy(&path, &temp)?;
+                std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
+                if old.exists() {
+                    let _ = std::fs::remove_file(&old);
+                }
+                std::fs::rename(&appimage, &old)?;
+                if let Err(error) = std::fs::rename(&temp, &appimage) {
+                    let _ = std::fs::rename(&old, &appimage);
+                    return Err(error);
+                }
+                let _ = std::fs::remove_file(&old);
+                Ok(())
+            })();
+            match install {
+                Ok(()) => {
+                    self.state.update_status = Some("Restarting into the new version…".into());
+                    let _ = std::process::Command::new(&appimage).spawn();
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    self.state.update_status = Some(format!(
+                        "Could not replace the AppImage ({}). Download it from GitHub instead.",
+                        error
+                    ));
+                }
+            }
+        }
+        #[cfg(not(any(target_os = "android", windows, target_os = "linux")))]
         {
             let _ = path;
         }
@@ -2894,6 +2937,20 @@ impl StormApp {
             let _ = self.tx.send(DataCmd::CheckUpdate {
                 current: env!("CARGO_PKG_VERSION").to_string(),
                 asset_suffix: "-windows-x86_64-setup.exe".into(),
+            });
+        }
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("APPIMAGE").is_some()
+            && !self.state.update_check_pending
+            && self
+                .state
+                .update_checked_at
+                .is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(24 * 60 * 60))
+        {
+            self.state.update_check_pending = true;
+            let _ = self.tx.send(DataCmd::CheckUpdate {
+                current: env!("CARGO_PKG_VERSION").to_string(),
+                asset_suffix: "-linux-x86_64.AppImage".into(),
             });
         }
         self.handle_input(ui.ctx());

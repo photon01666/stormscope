@@ -298,7 +298,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     archive_window(ui.ctx(), app, pane_area);
 
     // Self-update: centred modal offering a newer release.
-    #[cfg(any(target_os = "android", windows))]
+    #[cfg(any(target_os = "android", windows, target_os = "linux"))]
     crate::ui::update_dialog(ui.ctx(), app);
 
     // Per-pane control windows (opened from each pane's bottom-right chip).
@@ -3004,7 +3004,7 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
 
 /// Android: centred modal offering a newer release and running the whole
 /// update (download + system installer) from one button.
-#[cfg(any(target_os = "android", windows))]
+#[cfg(any(target_os = "android", windows, target_os = "linux"))]
 pub fn update_dialog(ctx: &egui::Context, app: &mut StormApp) {
     if !app.state.update_dialog_open {
         return;
@@ -3060,6 +3060,8 @@ pub fn update_dialog(ctx: &egui::Context, app: &mut StormApp) {
                             Some(format!("Downloading Stormscope {}…", info.version));
                         let asset_suffix = if cfg!(windows) {
                             "-windows-x86_64-setup.exe"
+                        } else if cfg!(target_os = "linux") {
+                            "-linux-x86_64.AppImage"
                         } else {
                             "-android.apk"
                         };

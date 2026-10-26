@@ -3,6 +3,14 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.17 — 2026-10-25
+
+**Linux**
+- **AppImage release with self-update.** The Linux artifact is now a
+  `stormscope-1.5.17-linux-x86_64.AppImage` that bundles the Piper runtime and
+  voice. An installed AppImage detects a newer release from GitHub, downloads
+  it, replaces itself atomically and relaunches.
+
 ## v1.5.16 — 2026-10-25
 
 **Windows**

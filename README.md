@@ -93,21 +93,21 @@ No accounts, API keys or telemetry.
 All three builds ship with the
 [latest release](https://github.com/photon01666/stormscope/releases):
 
-- `stormscope-<version>-linux-x86_64` — x86_64 Linux binary
-- `stormscope-<version>-windows-x86_64.exe` — Windows 10/11, a single file
-  with the Piper neural voice embedded (first launch extracts it to
-  `%LOCALAPPDATA%\stormscope\piper`)
-- `stormscope-<version>-android.apk` — Android 8+, arm64-v8a (sideload;
-  versionCode 2)
-
-CI also uploads a `stormscope-windows-x86_64` artifact on every green run.
+- `stormscope-<version>-linux-x86_64.AppImage` — x86_64 Linux AppImage with
+  the Piper neural voice bundled; self-updates from GitHub Releases
+- `stormscope-<version>-windows-x86_64-setup.exe` — Windows 10/11 per-user
+  installer (Desktop/Start Menu shortcuts and uninstall entry)
+- `stormscope-<version>-android.apk` — Android 8+, arm64-v8a (sideload)
 
 Linux:
 
 ```sh
-chmod +x stormscope-*-linux-x86_64
-./stormscope-*-linux-x86_64
+chmod +x stormscope-*-linux-x86_64.AppImage
+./stormscope-*-linux-x86_64.AppImage
 ```
+
+Move the AppImage somewhere writable (for example `~/Applications/`) so the
+in-app updater can replace it.
 
 From source (Rust stable ≥ 1.85, edition 2024):
 

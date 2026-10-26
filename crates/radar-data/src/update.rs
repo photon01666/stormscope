@@ -106,6 +106,8 @@ pub fn download_asset(url: &str, version: &str, suffix: &str) -> Result<PathBuf>
         bytes.starts_with(b"PK\x03\x04")
     } else if suffix.ends_with(".exe") {
         bytes.starts_with(b"MZ")
+    } else if suffix.ends_with(".AppImage") {
+        bytes.starts_with(b"\x7fELF")
     } else {
         true
     };

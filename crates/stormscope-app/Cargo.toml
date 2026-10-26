@@ -58,7 +58,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
 
 # Embeds the .ico into stormscope.exe (Explorer/taskbar icon) on Windows.
-[target.'cfg(windows)'.build-dependencies]
+[build-dependencies]
+# Also used when cross-compiling the Windows release from Linux; the build
+# script gates on CARGO_CFG_TARGET_OS, not the host.
 winresource = "0.1"
 
 # Force the native window frame dark (the app itself is always dark).

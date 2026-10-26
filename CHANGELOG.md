@@ -3,6 +3,14 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.16 — 2026-10-25
+
+**Windows**
+- End-to-end update test release for the Windows installer/updater. An
+  installed 1.5.15 build should detect 1.5.16, download the setup executable
+  and relaunch into the new version.
+- The setup and app executables now carry the Stormscope icon.
+
 ## v1.5.15 — 2026-10-25
 
 **Windows**

@@ -38,8 +38,10 @@ pub fn ai_windows(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         }
     }
     #[cfg(target_os = "android")]
+    let raw_area = area;
+    #[cfg(target_os = "android")]
     let area = {
-        let mut lifted = area;
+        let mut lifted = raw_area;
         let inset = app.state.ime_inset_pt;
         if inset > 1.0 {
             // Never collapse past a couple of message rows.
@@ -48,8 +50,11 @@ pub fn ai_windows(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         lifted
     };
     #[cfg(not(target_os = "android"))]
-    let area = area;
-    settings_window(ctx, app, area);
+    let (raw_area, area) = (area, area);
+    // Settings is a full-screen form with its own scroll area. Keeping it on
+    // the raw map area means the IME opening does not resize/relayout the
+    // window and bounce focus (which made the keyboard flash on and off).
+    settings_window(ctx, app, raw_area);
     report_window(ctx, app, area);
 }
 
@@ -100,6 +105,15 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
             (size.x - 40.0).max(320.0)
         };
         ui.set_width(width.max(320.0));
+        // Pad the scroll content (not the viewport) by the keyboard height:
+        // the window and focused widget do not resize, so focus stays put,
+        // but the form has room to scroll clear of the keyboard. When the
+        // keyboard is closed the pad is zero and the page keeps its space.
+        let ime_pad = if fill {
+            app.state.ime_inset_pt.max(0.0)
+        } else {
+            0.0
+        };
         egui::ScrollArea::vertical()
             .id_salt("stormscope.ai.settings.scroll")
             .auto_shrink([false, false])
@@ -330,6 +344,7 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
             .weak()
             .small(),
         );
+                ui.add_space(16.0 + ime_pad);
             });
     });
     if close_requested {

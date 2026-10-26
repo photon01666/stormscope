@@ -1775,6 +1775,14 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     });
     let scale = hidpi_text_scale(mon_h, nppp, ppp, middle.height());
     app.sidebar_scale = scale;
+    // The phone sidebar is the Settings page; the desktop-sized type is hard
+    // to read and tap. Keep the base scale for popups, but enlarge the drawer
+    // itself on Android.
+    let ui_scale = if cfg!(target_os = "android") {
+        (scale * 1.22).max(1.22)
+    } else {
+        scale
+    };
     let panel_w = if cfg!(target_os = "android") {
         // The map's Settings chip pins the sidebar; on a phone that is the
         // settings page, so give it the full map area instead of a narrow
@@ -1839,12 +1847,18 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
         .fade_in(false)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            apply_text_scale(ui, scale);
+            apply_text_scale(ui, ui_scale);
             let frame = egui::Frame::side_top_panel(ui.style());
             let frame_v = f32::from(frame.inner_margin.top) + f32::from(frame.inner_margin.bottom);
+            let frame_h = f32::from(frame.inner_margin.left) + f32::from(frame.inner_margin.right);
             frame.show(ui, |ui| {
-                ui.set_min_width(panel_w);
-                ui.set_max_width(panel_w);
+                // panel_w includes the frame padding. Constraining the content
+                // to the inside width stops long labels/buttons running off
+                // the right edge of a phone screen.
+                let inner_w = (panel_w - frame_h).max(1.0);
+                ui.set_min_width(inner_w);
+                ui.set_max_width(inner_w);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 // Pin the middle height: a bare Area sizes to its content,
                 // which left the sidebar as a short floating box. Subtracting
                 // the frame's own padding makes the visible panel reach the
@@ -2585,7 +2599,12 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             )
             .clicked()
         {
+            // Settings is a drawer, not a stack: open the requested window
+            // and close the drawer so the map/window is visible.
             app.state.archive_popup_open = true;
+            app.state.ai_settings_open = false;
+            app.state.sidebar_pinned = false;
+            app.state.sidebar_dismissed = true;
         }
         ui.label(
             egui::RichText::new(match app.state.mode {
@@ -2604,6 +2623,9 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             .clicked()
         {
             app.state.ai_settings_open = true;
+            app.state.archive_popup_open = false;
+            app.state.sidebar_pinned = false;
+            app.state.sidebar_dismissed = true;
         }
         ui.label(
             egui::RichText::new("OpenCode Go · deepseek-v4.1-flash by default")

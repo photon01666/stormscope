@@ -3,6 +3,13 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.13 — 2026-10-25
+
+**Android**
+- Remote-update release for end-to-end testing of the in-app updater: an
+  installed 1.5.12 build should detect this release, download the APK and hand
+  it to the system installer.
+
 ## v1.5.12 — 2026-10-25
 
 **Android**

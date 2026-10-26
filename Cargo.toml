@@ -7,10 +7,11 @@ members = [
     "crates/radar-render",
     "crates/stormscope-app",
     "crates/stormscope-android",
+    "crates/stormscope-setup",
 ]
 
 [workspace.package]
-version = "1.5.14"
+version = "1.5.15"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/photon01666/stormscope"

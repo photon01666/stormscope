@@ -242,11 +242,13 @@ pub enum DataCmd {
     /// Android self-update: look for a newer GitHub release.
     CheckUpdate {
         current: String,
+        asset_suffix: String,
     },
-    /// Android self-update: download the selected APK asset.
+    /// Self-update: download the selected installer asset.
     DownloadUpdate {
         url: String,
         version: String,
+        asset_suffix: String,
     },
     /// Delete every downloaded radar volume from disk (`l2/`).
     ClearRadar,
@@ -1420,7 +1422,16 @@ impl StormApp {
                 crate::android_lifecycle::open_install_settings();
             }
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(windows)]
+        {
+            self.state.update_status = Some("Restarting to install the update…".into());
+            let _ = std::process::Command::new(&path)
+                .arg("--silent")
+                .arg("--update")
+                .spawn();
+            std::process::exit(0);
+        }
+        #[cfg(not(any(target_os = "android", windows)))]
         {
             let _ = path;
         }
@@ -2859,6 +2870,7 @@ impl StormApp {
                 self.state.update_check_pending = true;
                 let _ = self.tx.send(DataCmd::CheckUpdate {
                     current: env!("CARGO_PKG_VERSION").to_string(),
+                    asset_suffix: "-android.apk".into(),
                 });
             }
             self.pump_gemini_live();
@@ -2870,6 +2882,19 @@ impl StormApp {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(100));
             }
+        }
+        #[cfg(windows)]
+        if !self.state.update_check_pending
+            && self
+                .state
+                .update_checked_at
+                .is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(24 * 60 * 60))
+        {
+            self.state.update_check_pending = true;
+            let _ = self.tx.send(DataCmd::CheckUpdate {
+                current: env!("CARGO_PKG_VERSION").to_string(),
+                asset_suffix: "-windows-x86_64-setup.exe".into(),
+            });
         }
         self.handle_input(ui.ctx());
 

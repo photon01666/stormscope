@@ -22,7 +22,7 @@ pub struct UpdateInfo {
 
 /// Check GitHub for a newer release. `None` means the running version is
 /// current. Errors are returned for the UI to show (offline, rate limit, …).
-pub fn check_latest(current: &str) -> Result<Option<UpdateInfo>> {
+pub fn check_latest(current: &str, asset_suffix: &str) -> Result<Option<UpdateInfo>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent(USER_AGENT)
@@ -56,9 +56,9 @@ pub fn check_latest(current: &str) -> Result<Option<UpdateInfo>> {
             asset
                 .get("name")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|name| name.ends_with("-android.apk") || name.ends_with(".apk"))
+                .is_some_and(|name| name.ends_with(asset_suffix))
         })
-        .context("the latest release has no Android APK asset")?;
+        .with_context(|| format!("the latest release has no {asset_suffix} asset"))?;
     let asset_url = asset
         .get("browser_download_url")
         .and_then(serde_json::Value::as_str)
@@ -82,13 +82,13 @@ pub fn check_latest(current: &str) -> Result<Option<UpdateInfo>> {
     }))
 }
 
-/// Download an APK into the app cache and return its path. The ZIP magic check
-/// stops an HTML error page or truncated file from being handed to the
+/// Download an update asset into the app cache and return its path. The magic
+/// check stops an HTML error page or truncated file from being handed to an
 /// installer.
-pub fn download_apk(url: &str, version: &str) -> Result<PathBuf> {
+pub fn download_asset(url: &str, version: &str, suffix: &str) -> Result<PathBuf> {
     let dir = crate::cache::DiskCache::default_root().join("updates");
     std::fs::create_dir_all(&dir).context("creating the update directory")?;
-    let path = dir.join(format!("stormscope-{version}-android.apk"));
+    let path = dir.join(format!("stormscope-{version}-{suffix}"));
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(300))
         .user_agent(USER_AGENT)
@@ -97,15 +97,22 @@ pub fn download_apk(url: &str, version: &str) -> Result<PathBuf> {
     let response = client
         .get(url)
         .send()
-        .context("downloading the Android APK")?;
+        .context("downloading the update asset")?;
     if !response.status().is_success() {
-        bail!("APK download failed (HTTP {})", response.status());
+        bail!("update download failed (HTTP {})", response.status());
     }
-    let bytes = response.bytes().context("reading the APK")?;
-    if bytes.len() < 1_000_000 || !bytes.starts_with(b"PK\x03\x04") {
-        bail!("the downloaded file is not a valid APK");
+    let bytes = response.bytes().context("reading the update asset")?;
+    let valid_magic = if suffix.ends_with(".apk") {
+        bytes.starts_with(b"PK\x03\x04")
+    } else if suffix.ends_with(".exe") {
+        bytes.starts_with(b"MZ")
+    } else {
+        true
+    };
+    if bytes.len() < 1_000_000 || !valid_magic {
+        bail!("the downloaded file is not a valid installer");
     }
-    std::fs::write(&path, &bytes).context("writing the APK to the cache")?;
+    std::fs::write(&path, &bytes).context("writing the update to the cache")?;
     Ok(path)
 }
 

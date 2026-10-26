@@ -755,21 +755,29 @@ pub fn run(
                     });
                 }
                 DataCmd::Shutdown => break,
-                DataCmd::CheckUpdate { current } => {
-                    log::info!("update check: current {current}");
+                DataCmd::CheckUpdate {
+                    current,
+                    asset_suffix,
+                } => {
+                    log::info!("update check: current {current} ({asset_suffix})");
                     let out = out.clone();
                     std::thread::spawn(move || {
-                        let result = radar_data::update::check_latest(&current)
+                        let result = radar_data::update::check_latest(&current, &asset_suffix)
                             .map_err(|e| format!("{e:#}"));
                         log::info!("update check result: {result:?}");
                         let _ = out.send(DataMsg::UpdateCheck(result));
                     });
                 }
-                DataCmd::DownloadUpdate { url, version } => {
+                DataCmd::DownloadUpdate {
+                    url,
+                    version,
+                    asset_suffix,
+                } => {
                     let out = out.clone();
                     std::thread::spawn(move || {
-                        let result = radar_data::update::download_apk(&url, &version)
-                            .map_err(|e| format!("{e:#}"));
+                        let result =
+                            radar_data::update::download_asset(&url, &version, &asset_suffix)
+                                .map_err(|e| format!("{e:#}"));
                         let _ = out.send(DataMsg::UpdateDownload(result));
                     });
                 }

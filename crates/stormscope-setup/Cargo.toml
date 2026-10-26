@@ -1,0 +1,15 @@
+[package]
+name = "stormscope-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "stormscope-setup"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }

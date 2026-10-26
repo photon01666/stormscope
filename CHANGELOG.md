@@ -3,6 +3,16 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.15 — 2026-10-25
+
+**Windows**
+- **Per-user installer.** `stormscope-1.5.15-windows-x86_64-setup.exe`
+  installs to `%LOCALAPPDATA%\Programs\Stormscope`, creates Desktop and Start
+  Menu shortcuts, registers an uninstall entry, and keeps `Uninstall.exe`.
+- **In-app Windows updater.** The same centred update modal now checks GitHub
+  for a newer Windows installer, downloads it, runs it silently, and relaunches
+  Stormscope.
+
 ## v1.5.14 — 2026-10-25
 
 **Android**

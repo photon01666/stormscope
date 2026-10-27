@@ -588,13 +588,17 @@ pub fn run(
                         synoptic_token = Some(t);
                     }
                 }
-                DataCmd::LoadSynoptic { bbox } => {
+                DataCmd::LoadSynoptic {
+                    bbox,
+                    width,
+                    height,
+                } => {
                     if let Some(tok) = synoptic_token.clone() {
                         let out = out.clone();
                         std::thread::spawn(move || {
                             let src = radar_data::synoptic::SynopticSource::new(USER_AGENT, &tok);
                             match src {
-                                Ok(s) => match s.latest_in_bbox(bbox) {
+                                Ok(s) => match s.latest_in_bbox(bbox, width, height) {
                                     Ok(stations) => {
                                         let _ = out.send(DataMsg::SynopticStations(stations));
                                     }

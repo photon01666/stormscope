@@ -231,9 +231,11 @@ pub enum DataCmd {
     LoadMrms,
     /// Update the Synoptic token held by the data thread.
     SetSynopticToken(String),
-    /// Fetch Synoptic stations for the given bbox [w,s,e,n].
+    /// Fetch Synoptic stations for the given bbox [w,s,e,n] and viewport.
     LoadSynoptic {
         bbox: [f64; 4],
+        width: u32,
+        height: u32,
     },
     /// Fetch the latest GOES frame for the chosen layer/satellite.
     LoadGoes {
@@ -3245,25 +3247,11 @@ impl StormApp {
                 let (x0, y0) = view.view_px_to_lonlat(0.0, 0.0);
                 let (x1, y1) = view.view_px_to_lonlat(w, h);
                 let bbox = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
-                let _ = self.tx.send(DataCmd::LoadSynoptic { bbox });
-                self.state.synoptic_pending = true;
-            }
-            // Synoptic: push token + fetch the current view when configured.
-            if !self.state.synoptic_pending
-                && !self.state.synoptic_token.is_empty()
-                && (self.state.synoptic_last_fetch.is_none()
-                    || self.state.synoptic_stations.is_empty())
-            {
-                let _ = self
-                    .tx
-                    .send(DataCmd::SetSynopticToken(self.state.synoptic_token.clone()));
-                let view = &self.state.view;
-                let w = view.width() as f64;
-                let h = view.height() as f64;
-                let (x0, y0) = view.view_px_to_lonlat(0.0, 0.0);
-                let (x1, y1) = view.view_px_to_lonlat(w, h);
-                let bbox = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
-                let _ = self.tx.send(DataCmd::LoadSynoptic { bbox });
+                let _ = self.tx.send(DataCmd::LoadSynoptic {
+                    bbox,
+                    width: view.width() as u32,
+                    height: view.height() as u32,
+                });
                 self.state.synoptic_pending = true;
             }
             self.pump_gemini_live();

@@ -575,6 +575,10 @@ pub struct AppState {
     pub synoptic_error: Option<String>,
     pub synoptic_pending: bool,
     pub show_synoptic: bool,
+    /// Station currently hovered on the map, and when that hover began (for
+    /// the one-second tooltip delay).
+    pub synoptic_hover: Option<String>,
+    pub synoptic_hover_at: f64,
     /// When the forecast/observation currently on screen was fetched, for the
     /// auto-refresh cadence.
     pub forecast_fetched_at: Option<std::time::Instant>,
@@ -1122,6 +1126,8 @@ impl Default for AppState {
             synoptic_error: None,
             synoptic_pending: false,
             show_synoptic: synoptic.show.unwrap_or(true),
+            synoptic_hover: None,
+            synoptic_hover_at: 0.0,
             uv_index: None,
             gps_fix: None,
             gps_polled_at: f64::NEG_INFINITY,

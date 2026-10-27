@@ -79,19 +79,20 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
         }
         ui.separator();
 
-        if let Some(obj) = station.obs.as_object() {
+        let rows = obs_rows(&station);
+        if rows.is_empty() {
+            ui.label("No observation data available.");
+        } else {
             egui::Grid::new("stormscope.synoptic.grid")
                 .num_columns(2)
                 .spacing((8.0, 4.0))
                 .show(ui, |ui| {
-                    for (k, v) in obj {
-                        ui.label(egui::RichText::new(humanize_key(k)).strong());
-                        ui.label(format_value(v));
+                    for (label, value) in &rows {
+                        ui.label(egui::RichText::new(label).strong());
+                        ui.label(value);
                         ui.end_row();
                     }
                 });
-        } else {
-            ui.label("No observation data available.");
         }
 
         if app.state.synoptic_pending {
@@ -116,23 +117,73 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     app.state.synoptic_open = open;
 }
 
-fn humanize_key(k: &str) -> String {
-    let mut out = String::new();
-    for (i, ch) in k.chars().enumerate() {
-        if ch.is_uppercase() && i > 0 {
-            out.push(' ');
-        }
-        out.push(ch);
+/// Flatten a station's observations into display rows (label, "value unit").
+/// Shared by the full popup and the hover tooltip.
+pub(super) fn obs_rows(st: &radar_data::synoptic::SynopticStation) -> Vec<(String, String)> {
+    let Some(obj) = st.obs.as_object() else {
+        return Vec::new();
+    };
+    let mut rows = Vec::with_capacity(obj.len());
+    for (k, v) in obj {
+        let base = base_var(k);
+        let label = humanize_key(base);
+        let unit = st.units.get(base).and_then(|u| u.as_str()).unwrap_or("");
+        let value = format_obs(v);
+        rows.push((
+            label,
+            if unit.is_empty() {
+                value
+            } else {
+                format!("{value} {unit}")
+            },
+        ));
     }
-    // snake_case → spaced
-    out.replace('_', " ")
+    rows
 }
 
-fn format_value(v: &serde_json::Value) -> String {
+/// Strip Synoptic's `_value_N` / `_set_N` suffix so `air_temp_value_1`
+/// becomes `air_temp` (the key used by the station's `UNITS` map).
+fn base_var(k: &str) -> &str {
+    for suffix in ["_value_", "_set_"] {
+        if let Some(i) = k.find(suffix) {
+            return &k[..i];
+        }
+    }
+    k
+}
+
+fn humanize_key(k: &str) -> String {
+    let spaced = k.replace('_', " ");
+    // Title-case each word.
+    spaced
+        .split_whitespace()
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_obs(v: &serde_json::Value) -> String {
+    if let Some(nested) = v.get("value") {
+        return format_obs(nested);
+    }
     match v {
         serde_json::Value::Null => "—".into(),
         serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Number(n) => {
+            // Trim needless trailing zeros while keeping useful precision.
+            if let Some(f) = n.as_f64() {
+                let s = format!("{f:.2}");
+                s.trim_end_matches('0').trim_end_matches('.').to_string()
+            } else {
+                n.to_string()
+            }
+        }
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
     }

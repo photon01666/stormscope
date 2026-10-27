@@ -23,8 +23,11 @@ pub struct SynopticStation {
     pub network: String,
     pub coords: Option<SynopticCoords>,
     pub elevation_m: Option<f64>,
-    /// The latest observation, as returned under `OBSERVATIONS`.
+    /// The latest observation, as returned under `OBSERVATIONS` (each variable
+    /// is `{ "value": ..., "date_time": ... }`).
     pub obs: Value,
+    /// Variable → unit map from the station's `UNITS`.
+    pub units: Value,
 }
 
 impl SynopticStation {
@@ -63,14 +66,21 @@ impl SynopticSource {
 
     /// Latest observations for every station inside `bbox` = [west, south, east, north]
     /// (degrees). Returns station metadata + obs in one call.
-    pub fn latest_in_bbox(&self, bbox: [f64; 4]) -> Result<Vec<SynopticStation>> {
+    pub fn latest_in_bbox(
+        &self,
+        bbox: [f64; 4],
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<SynopticStation>> {
         let url = format!(
-            "{LATEST_URL}?token={}&bbox={:.4},{:.4},{:.4},{:.4}",
+            "{LATEST_URL}?token={}&bbox={:.4},{:.4},{:.4},{:.4}&width={}&height={}&spacing=28",
             urlenc(&self.token),
             bbox[0],
             bbox[1],
             bbox[2],
-            bbox[3]
+            bbox[3],
+            width.max(1),
+            height.max(1),
         );
         let resp = self
             .client
@@ -109,6 +119,13 @@ fn urlenc(s: &str) -> String {
     out
 }
 
+/// A JSON value that may be a number or a numeric string (Synoptic sends
+/// LATITUDE / LONGITUDE / ELEVATION as strings).
+fn loose_f64(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
 fn parse_station(d: &Value) -> SynopticStation {
     let stid = d
         .get("STID")
@@ -125,14 +142,15 @@ fn parse_station(d: &Value) -> SynopticStation {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let lat = d.get("LATITUDE").and_then(|v| v.as_f64());
-    let lon = d.get("LONGITUDE").and_then(|v| v.as_f64());
+    let lat = d.get("LATITUDE").and_then(loose_f64);
+    let lon = d.get("LONGITUDE").and_then(loose_f64);
     let coords = match (lat, lon) {
         (Some(lat), Some(lon)) => Some(SynopticCoords { lat, lon }),
         _ => None,
     };
-    let elevation_m = d.get("ELEVATION").and_then(|v| v.as_f64());
+    let elevation_m = d.get("ELEVATION").and_then(loose_f64);
     let obs = d.get("OBSERVATIONS").cloned().unwrap_or(Value::Null);
+    let units = d.get("UNITS").cloned().unwrap_or(Value::Null);
     SynopticStation {
         stid,
         name,
@@ -140,5 +158,44 @@ fn parse_station(d: &Value) -> SynopticStation {
         coords,
         elevation_m,
         obs,
+        units,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Synoptic sends LATITUDE / LONGITUDE / ELEVATION as strings. If this
+    /// regresses, stations load but nothing can be plotted on the map.
+    #[test]
+    fn parses_string_coordinates() {
+        let json = serde_json::json!({
+            "STID": "KOUN",
+            "NAME": "Norman / Max Westheimer",
+            "LATITUDE": "35.24350",
+            "LONGITUDE": "-97.47080",
+            "ELEVATION": "1182.0",
+            "UNITS": { "air_temp": "Celsius" },
+            "OBSERVATIONS": {
+                "air_temp_value_1": { "value": 19.0, "date_time": "2026-10-27T01:45:00Z" }
+            }
+        });
+        let st = parse_station(&json);
+        let c = st.coords.expect("string coordinates must parse");
+        assert!((c.lat - 35.2435).abs() < 1e-6);
+        assert!((c.lon + 97.4708).abs() < 1e-6);
+        assert_eq!(st.elevation_m, Some(1182.0));
+    }
+
+    #[test]
+    fn parses_numeric_coordinates_too() {
+        let json = serde_json::json!({
+            "STID": "X",
+            "LATITUDE": 35.0,
+            "LONGITUDE": -97.0,
+        });
+        let st = parse_station(&json);
+        assert!(st.coords.is_some());
     }
 }

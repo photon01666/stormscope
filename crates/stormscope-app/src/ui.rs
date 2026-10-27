@@ -2794,17 +2794,27 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                     let _ = app.tx.send(crate::app::DataCmd::SetSynopticToken(
                         app.state.synoptic_token.clone(),
                     ));
-                    let _ = app.tx.send(crate::app::DataCmd::LoadSynoptic { bbox });
+                    let _ = app.tx.send(crate::app::DataCmd::LoadSynoptic {
+                        bbox,
+                        width: view.width() as u32,
+                        height: view.height() as u32,
+                    });
                     app.state.synoptic_pending = true;
                     app.state.persist_synoptic();
                 }
                 if ui
                     .button("Open station…")
-                    .on_hover_text("Open the popup for the selected station")
+                    .on_hover_text(
+                        "Open the popup for the selected station (or the first one in view)",
+                    )
                     .clicked()
-                    && app.state.synoptic_selected.is_some()
                 {
-                    app.state.synoptic_open = true;
+                    if app.state.synoptic_selected.is_none() {
+                        if let Some(st) = app.state.synoptic_stations.first() {
+                            app.state.synoptic_selected = Some(st.stid.clone());
+                        }
+                    }
+                    app.state.synoptic_open = app.state.synoptic_selected.is_some();
                 }
             });
             if app.state.synoptic_pending {

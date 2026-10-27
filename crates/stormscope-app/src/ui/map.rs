@@ -258,6 +258,54 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         } // closes synoptic else
     }
 
+    // --- Station hover tooltip ------------------------------------------
+    // Hovering a Synoptic station for one second shows a compact observation
+    // summary; clicking still opens the full window. The 1 s delay keeps the
+    // tooltip from flashing while the pointer sweeps across the map.
+    let now = ui.input(|i| i.time);
+    let hover_pos = if response.hovered() && !response.dragged() {
+        response.hover_pos()
+    } else {
+        None
+    };
+    let mut hovered: Option<String> = None;
+    if let Some(p) = hover_pos {
+        let (hx, hy) = ((p.x - rect.min.x) as f64, (p.y - rect.min.y) as f64);
+        let mut best = 14.0f64;
+        for st in &app.state.synoptic_stations {
+            let Some(c) = &st.coords else { continue };
+            let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
+            let d = ((vx - hx).powi(2) + (vy - hy).powi(2)).sqrt();
+            if d <= best {
+                best = d;
+                hovered = Some(st.stid.clone());
+            }
+        }
+    }
+    if app.state.synoptic_hover != hovered {
+        app.state.synoptic_hover = hovered;
+        app.state.synoptic_hover_at = now;
+    }
+    if let Some(stid) = app.state.synoptic_hover.clone() {
+        let elapsed = now - app.state.synoptic_hover_at;
+        if elapsed >= 1.0 {
+            if let Some(st) = app.state.synoptic_stations.iter().find(|s| s.stid == stid) {
+                egui::Tooltip::always_open(
+                    ui.ctx().clone(),
+                    response.layer_id,
+                    egui::Id::new(("stormscope.synoptic.hover", st.stid.as_str())),
+                    egui::PopupAnchor::Pointer,
+                )
+                .show(|ui| synoptic_tooltip(ui, st));
+            }
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f32(
+                    (1.0 - elapsed).max(0.0) as f32,
+                ));
+        }
+    }
+
     // Zoom: pinch / ctrl+scroll via zoom_delta(), plain scroll wheel too.
     //
     // IMPORTANT: read the pointer position *before* taking the input lock.
@@ -2250,6 +2298,41 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
     }
 }
 
+/// Compact hover card for one Synoptic station: name, network and the first
+/// handful of observation values.
+fn synoptic_tooltip(ui: &mut egui::Ui, st: &radar_data::synoptic::SynopticStation) {
+    ui.label(egui::RichText::new(st.label()).strong());
+    let mut meta = String::new();
+    if !st.network.is_empty() {
+        meta.push_str(&st.network);
+    }
+    if !st.stid.is_empty() {
+        if !meta.is_empty() {
+            meta.push_str(" · ");
+        }
+        meta.push_str(&st.stid);
+    }
+    if !meta.is_empty() {
+        ui.label(egui::RichText::new(meta).weak().small());
+    }
+    let rows = super::synoptic::obs_rows(st);
+    if rows.is_empty() {
+        ui.label(egui::RichText::new("No observation data").weak().small());
+    } else {
+        egui::Grid::new(("stormscope.synoptic.tip", st.stid.as_str()))
+            .num_columns(2)
+            .spacing((6.0, 2.0))
+            .show(ui, |ui| {
+                for (label, value) in rows.iter().take(8) {
+                    ui.label(egui::RichText::new(label).small());
+                    ui.label(egui::RichText::new(value).small());
+                    ui.end_row();
+                }
+            });
+    }
+    ui.label(egui::RichText::new("click for all data").weak().small());
+}
+
 /// Synoptic (Mesowest) stations, drawn as blue dots with a label.
 fn draw_synoptic_stations(
     painter: &egui::Painter,
@@ -2284,21 +2367,23 @@ fn draw_synoptic_stations(
                 egui::Stroke::new(1.2, egui::Color32::from_black_alpha(180)),
             );
         }
-        let text = if st.name.is_empty() {
-            st.stid.clone()
-        } else {
-            st.name.clone()
-        };
-        let font = egui::FontId::proportional(if selected { 12.0 } else { 10.5 });
-        let fg = egui::Color32::from_rgb(180, 210, 255);
-        draw_tag_label(
-            painter,
-            egui::pos2(pos.x + 5.0, pos.y - 4.0),
-            egui::Align2::LEFT_BOTTOM,
-            &text,
-            font,
-            fg,
-        );
+        // Label only the selected station: a dense network with every name
+        // painted turns the map into unreadable text soup.
+        if selected {
+            let text = if st.name.is_empty() {
+                st.stid.clone()
+            } else {
+                st.name.clone()
+            };
+            draw_tag_label(
+                painter,
+                egui::pos2(pos.x + 6.0, pos.y - 5.0),
+                egui::Align2::LEFT_BOTTOM,
+                &text,
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_rgb(180, 210, 255),
+            );
+        }
     }
 }
 

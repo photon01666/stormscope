@@ -2447,6 +2447,56 @@ fn ambient_tooltip(ui: &mut egui::Ui, st: &radar_data::ambient::AmbientStation) 
     ui.label(egui::RichText::new("click for all data").weak().size(12.0));
 }
 
+/// Draw a station's selected label in the first candidate position that does
+/// not collide with a user marker pin or its label. If every side is blocked,
+/// skip the label rather than covering a pin (e.g. a "Home" marker next door).
+fn draw_station_label(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+    pos: egui::Pos2,
+    text: &str,
+    font: egui::FontId,
+    fg: egui::Color32,
+) {
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), fg);
+    if galley.is_empty() {
+        return;
+    }
+    let size = galley.size();
+
+    // Rectangles the label must avoid: user pins and their pill labels.
+    let mut blocked: Vec<egui::Rect> = Vec::new();
+    for (i, m) in app.state.markers.iter().enumerate() {
+        let (vx, vy) = view.lonlat_to_view_px(m.lon, m.lat);
+        let mpos = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+        let mut label = m.display();
+        if let Some(eta) = app.marker_etas.get(i).and_then(|e| e.as_ref()) {
+            label.push_str(&format!(" · ~{}", fmt_eta(eta.minutes)));
+        }
+        let g = painter.layout_no_wrap(label, egui::FontId::proportional(14.0), fg);
+        blocked.push(egui::Align2::LEFT_TOP.anchor_size(mpos + egui::vec2(14.0, -8.0), g.size()));
+        blocked.push(egui::Rect::from_center_size(mpos, egui::vec2(28.0, 28.0)));
+    }
+
+    // Above-right, below-right, above-left, below-left.
+    const CANDIDATES: &[(egui::Align2, egui::Vec2)] = &[
+        (egui::Align2::LEFT_BOTTOM, egui::vec2(7.0, -6.0)),
+        (egui::Align2::LEFT_TOP, egui::vec2(7.0, 10.0)),
+        (egui::Align2::RIGHT_BOTTOM, egui::vec2(-7.0, -6.0)),
+        (egui::Align2::RIGHT_TOP, egui::vec2(-7.0, 10.0)),
+    ];
+    for (anchor, offset) in CANDIDATES {
+        let at = pos + *offset;
+        let rect = anchor.anchor_size(at, size);
+        if !blocked.iter().any(|b| b.expand(3.0).intersects(rect)) {
+            draw_tag_label(painter, at, *anchor, text, font, fg);
+            return;
+        }
+    }
+}
+
 /// The user's own Ambient Weather station: a green thermometer badge, larger
 /// than the Synoptic dots so it is easy to find.
 fn draw_ambient_stations(
@@ -2480,10 +2530,12 @@ fn draw_ambient_stations(
             } else {
                 st.name.clone()
             };
-            draw_tag_label(
+            draw_station_label(
                 painter,
-                egui::pos2(pos.x + 7.0, pos.y - 6.0),
-                egui::Align2::LEFT_BOTTOM,
+                origin,
+                view,
+                app,
+                pos,
                 &text,
                 egui::FontId::proportional(12.5),
                 green,
@@ -2570,10 +2622,12 @@ fn draw_synoptic_stations(
             } else {
                 st.name.clone()
             };
-            draw_tag_label(
+            draw_station_label(
                 painter,
-                egui::pos2(pos.x + 6.0, pos.y - 5.0),
-                egui::Align2::LEFT_BOTTOM,
+                origin,
+                view,
+                app,
+                pos,
                 &text,
                 egui::FontId::proportional(12.0),
                 egui::Color32::from_rgb(180, 210, 255),

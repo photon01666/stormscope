@@ -345,6 +345,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     egui::Id::new(("stormscope.ambient.hover", st.mac_address.as_str())),
                     egui::PopupAnchor::Pointer,
                 )
+                .width(400.0)
+                .gap(16.0)
                 .show(|ui| ambient_tooltip(ui, st));
             }
         } else {
@@ -363,6 +365,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     egui::Id::new(("stormscope.synoptic.hover", st.stid.as_str())),
                     egui::PopupAnchor::Pointer,
                 )
+                .width(400.0)
+                .gap(16.0)
                 .show(|ui| synoptic_tooltip(ui, st));
             }
         } else {
@@ -2373,7 +2377,8 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
 /// Compact hover card for one Synoptic station: name, network and the first
 /// handful of observation values.
 fn synoptic_tooltip(ui: &mut egui::Ui, st: &radar_data::synoptic::SynopticStation) {
-    ui.label(egui::RichText::new(st.label()).strong());
+    ui.set_min_width(340.0);
+    ui.label(egui::RichText::new(st.label()).strong().size(17.0));
     let mut meta = String::new();
     if !st.network.is_empty() {
         meta.push_str(&st.network);
@@ -2385,48 +2390,49 @@ fn synoptic_tooltip(ui: &mut egui::Ui, st: &radar_data::synoptic::SynopticStatio
         meta.push_str(&st.stid);
     }
     if !meta.is_empty() {
-        ui.label(egui::RichText::new(meta).weak().small());
+        ui.label(egui::RichText::new(meta).weak().size(13.0));
     }
     let rows = super::synoptic::obs_rows(st);
     if rows.is_empty() {
-        ui.label(egui::RichText::new("No observation data").weak().small());
+        ui.label(egui::RichText::new("No observation data").weak().size(14.0));
     } else {
         egui::Grid::new(("stormscope.synoptic.tip", st.stid.as_str()))
             .num_columns(2)
-            .spacing((6.0, 2.0))
+            .spacing((14.0, 4.0))
             .show(ui, |ui| {
-                for (label, value) in rows.iter().take(8) {
-                    ui.label(egui::RichText::new(label).small());
-                    ui.label(egui::RichText::new(value).small());
+                for (label, value) in rows.iter().take(9) {
+                    ui.label(egui::RichText::new(label).weak().size(14.0));
+                    ui.label(egui::RichText::new(value).strong().size(15.0));
                     ui.end_row();
                 }
             });
     }
-    ui.label(egui::RichText::new("click for all data").weak().small());
+    ui.label(egui::RichText::new("click for all data").weak().size(12.0));
 }
 
 /// Compact hover card for the user's Ambient station.
 fn ambient_tooltip(ui: &mut egui::Ui, st: &radar_data::ambient::AmbientStation) {
-    ui.label(egui::RichText::new(st.label()).strong());
+    ui.set_min_width(340.0);
+    ui.label(egui::RichText::new(st.label()).strong().size(17.0));
     if !st.location.is_empty() {
-        ui.label(egui::RichText::new(&st.location).weak().small());
+        ui.label(egui::RichText::new(&st.location).weak().size(13.0));
     }
     let rows = super::ambient::ambient_rows(st);
     if rows.is_empty() {
-        ui.label(egui::RichText::new("No observation data").weak().small());
+        ui.label(egui::RichText::new("No observation data").weak().size(14.0));
     } else {
         egui::Grid::new(("stormscope.ambient.tip", st.mac_address.as_str()))
             .num_columns(2)
-            .spacing((6.0, 2.0))
+            .spacing((14.0, 4.0))
             .show(ui, |ui| {
-                for (label, value) in rows.iter().take(8) {
-                    ui.label(egui::RichText::new(label).small());
-                    ui.label(egui::RichText::new(value).small());
+                for (label, value) in rows.iter().take(9) {
+                    ui.label(egui::RichText::new(label).weak().size(14.0));
+                    ui.label(egui::RichText::new(value).strong().size(15.0));
                     ui.end_row();
                 }
             });
     }
-    ui.label(egui::RichText::new("click for all data").weak().small());
+    ui.label(egui::RichText::new("click for all data").weak().size(12.0));
 }
 
 /// The user's own Ambient Weather station: a green thermometer badge, larger

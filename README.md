@@ -168,12 +168,6 @@ state each frame. Times are UTC internally, coordinates WGS84.
 
 Run with `RUST_LOG=debug` for raster timings and memory accounting.
 
-## Status
-
-Single-site radar and the 3D/overlay stack are solid. Roadmap: configurable
-color tables, packaging (AUR/Flatpak) and a desktop entry; Windows/macOS are
-untested.
-
 Release history lives in [CHANGELOG.md](CHANGELOG.md). See
 [CONTRIBUTING.md](CONTRIBUTING.md) for development and release rules.
 

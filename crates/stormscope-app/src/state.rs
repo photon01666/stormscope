@@ -423,6 +423,10 @@ pub struct AppState {
 
     // Selection
     pub site_id: String,
+    /// Explicit startup site chosen with "Set default"; `None` = automatic
+    /// (nearest radar to the GPS fix on Android, otherwise the hard-coded
+    /// fallback KTLX/Norman).
+    pub default_site: Option<String>,
     pub moment: Moment,
     pub tilt_deg: f32,
     pub opacity: f32,
@@ -1039,7 +1043,11 @@ impl Default for AppState {
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "Aoede".to_string());
         let voice = load_voice_alert_prefs();
-        let site = radar_core::sites::site(radar_core::DEFAULT_SITE)
+        let saved_default = load_default_site().filter(|id| radar_core::sites::site(id).is_some());
+        let site = saved_default
+            .as_deref()
+            .and_then(radar_core::sites::site)
+            .or_else(|| radar_core::sites::site(radar_core::DEFAULT_SITE))
             .unwrap_or_else(|| radar_core::sites::SITES.first().expect("site catalog"));
         Self {
             mode: Mode::Live,
@@ -1072,6 +1080,7 @@ impl Default for AppState {
             loop_state: LoopState::Paused,
             fps: 8.0,
             site_id: site.id.to_string(),
+            default_site: saved_default,
             moment: Moment::Reflectivity,
             tilt_deg: 0.5,
             opacity: 1.0,
@@ -1576,6 +1585,22 @@ fn load_synoptic_prefs() -> SynopticPrefs {
     }
 }
 
+fn site_default_path() -> std::path::PathBuf {
+    config_dir().join("site.json")
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct SitePrefs {
+    #[serde(default)]
+    default_site: Option<String>,
+}
+
+fn load_default_site() -> Option<String> {
+    let text = std::fs::read_to_string(site_default_path()).ok()?;
+    let prefs: SitePrefs = serde_json::from_str(&text).ok()?;
+    prefs.default_site.filter(|s| !s.trim().is_empty())
+}
+
 fn load_markers() -> Vec<MapMarker> {
     match std::fs::read_to_string(markers_path()) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
@@ -1723,6 +1748,32 @@ impl AppState {
                 }
             }
             Err(e) => log::warn!("synoptic settings open: {e}"),
+        }
+    }
+
+    /// Remember the selected site as the explicit startup default (best-effort, 0600).
+    pub fn persist_default_site(&self) {
+        let prefs = SitePrefs {
+            default_site: self.default_site.clone(),
+        };
+        let Ok(json) = serde_json::to_string_pretty(&prefs) else {
+            return;
+        };
+        let path = site_default_path();
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            log::warn!("site settings dir: {e}");
+            return;
+        }
+        use std::io::Write;
+        match private_writer(&path) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(json.as_bytes()) {
+                    log::warn!("site settings write: {e}");
+                }
+            }
+            Err(e) => log::warn!("site settings open: {e}"),
         }
     }
 

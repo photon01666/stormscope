@@ -2135,11 +2135,39 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
                 ui.selectable_value(&mut app.state.site_id, id.to_string(), id);
             }
         });
-    if ui.button("Apply site").clicked() {
-        let _ = app
-            .tx
-            .send(crate::app::DataCmd::SetSite(app.state.site_id.clone()));
-    }
+    ui.horizontal(|ui| {
+        if ui.button("Apply site").clicked() {
+            let _ = app
+                .tx
+                .send(crate::app::DataCmd::SetSite(app.state.site_id.clone()));
+        }
+        if ui
+            .button("Set default")
+            .on_hover_text(
+                "Use this site every time Stormscope starts, overriding the \
+                 GPS/nearest default",
+            )
+            .clicked()
+        {
+            app.state.default_site = Some(app.state.site_id.clone());
+            app.state.persist_default_site();
+            let _ = app
+                .tx
+                .send(crate::app::DataCmd::SetSite(app.state.site_id.clone()));
+        }
+    });
+    match &app.state.default_site {
+        Some(id) => ui.label(egui::RichText::new(format!("default: {id}")).weak().small()),
+        None => ui.label(
+            egui::RichText::new(if cfg!(target_os = "android") {
+                "default: nearest radar to GPS"
+            } else {
+                "default: Norman (KTLX)"
+            })
+            .weak()
+            .small(),
+        ),
+    };
 
     // Product (moment) selector: whatever the volume actually carries —
     // decoded base moments plus the derived products attached at decode

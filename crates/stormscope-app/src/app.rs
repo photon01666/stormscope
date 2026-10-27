@@ -562,7 +562,7 @@ impl StormApp {
         let cache_root = radar_data::DiskCache::default_root();
         let tiles = radar_render::TileLayer::new(cache_root.join("tiles"));
 
-        Self {
+        let app = Self {
             state,
             tx: tx_data,
             rx: rx_data,
@@ -619,7 +619,13 @@ impl StormApp {
             #[cfg(not(target_os = "android"))]
             live_pending_tool: None,
             ai_data_from_live: false,
+        };
+        // The data thread boots on the hard-coded default; if the user saved
+        // a different startup site, switch it immediately.
+        if app.state.site_id != radar_core::DEFAULT_SITE {
+            let _ = app.tx.send(DataCmd::SetSite(app.state.site_id.clone()));
         }
+        app
     }
 
     /// Leave archive/replay and return to live radar: the mode flips,

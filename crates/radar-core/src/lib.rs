@@ -17,7 +17,7 @@ pub mod winter;
 use chrono::{DateTime, Utc};
 
 /// Radar site selected on first launch (Topeka, KS).
-pub const DEFAULT_SITE: &str = "KTWX";
+pub const DEFAULT_SITE: &str = "KTLX";
 
 /// A single radar data moment (equivalent to an L2 "data block" or an L3
 /// product family).

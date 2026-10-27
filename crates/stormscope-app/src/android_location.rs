@@ -67,7 +67,11 @@ fn apply_fix(app: &mut StormApp, lat: f64, lon: f64) {
             site.id,
             km.round() as i64
         );
-        app.select_site(site.id);
+        // A site chosen with "Set default" outranks the automatic nearest
+        // choice; without one, follow the GPS fix.
+        if app.state.default_site.is_none() {
+            app.select_site(site.id);
+        }
     }
 
     // Show the user's own neighbourhood, not the radar's: the station can be

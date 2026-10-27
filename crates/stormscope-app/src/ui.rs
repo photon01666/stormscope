@@ -2128,18 +2128,17 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
         .iter()
         .map(|s| s.id)
         .collect();
+    let mut selected = app.state.site_id.clone();
     egui::ComboBox::from_id_salt("site")
-        .selected_text(app.state.site_id.clone())
+        .selected_text(selected.clone())
         .show_ui(ui, |ui| {
             for id in sites {
-                ui.selectable_value(&mut app.state.site_id, id.to_string(), id);
+                ui.selectable_value(&mut selected, id.to_string(), id);
             }
         });
     ui.horizontal(|ui| {
         if ui.button("Apply site").clicked() {
-            let _ = app
-                .tx
-                .send(crate::app::DataCmd::SetSite(app.state.site_id.clone()));
+            app.open_site(&selected);
         }
         if ui
             .button("Set default")
@@ -2149,11 +2148,9 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
             )
             .clicked()
         {
-            app.state.default_site = Some(app.state.site_id.clone());
+            app.state.default_site = Some(selected.clone());
             app.state.persist_default_site();
-            let _ = app
-                .tx
-                .send(crate::app::DataCmd::SetSite(app.state.site_id.clone()));
+            app.open_site(&selected);
         }
     });
     match &app.state.default_site {

@@ -707,6 +707,27 @@ impl StormApp {
         self.refresh_cached_scans();
         self.refresh_cached_days();
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
+        // The station layer is view-based; a site switch should not wait for
+        // the 20-minute Synoptic timer.
+        if self.state.show_synoptic {
+            self.fetch_synoptic_now();
+        }
+    }
+
+    /// Switch radar site from the Controls picker: move the map to that
+    /// station and refresh the view's weather stations.
+    pub fn open_site(&mut self, id: &str) {
+        let changed = self.state.site_id != id;
+        if let Some(site) = radar_core::sites::site(id) {
+            self.state.view.center_lat = site.latitude;
+            self.state.view.center_lon = site.longitude;
+            self.state.view.zoom = self.state.view.zoom.max(7.0);
+        }
+        if changed {
+            self.select_site(id);
+        } else if self.state.show_synoptic {
+            self.fetch_synoptic_now();
+        }
     }
 
     /// Fetch the user's Ambient station now (no-op without both keys).

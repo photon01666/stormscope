@@ -60,6 +60,13 @@ fn apply_fix(app: &mut StormApp, lat: f64, lon: f64) {
     app.state.gps_applied = true;
     app.state.gps_waiting = false;
 
+    // Show the user's own neighbourhood, not the radar's: the station can be
+    // up to a couple hundred km away and still cover the fix. Centre first so
+    // a site switch's station fetch uses this view.
+    app.state.view.center_lat = lat;
+    app.state.view.center_lon = lon;
+    app.state.view.zoom = app.state.view.zoom.max(8.0);
+
     if let Some(site) = radar_core::sites::nearest(lat, lon) {
         let km = radar_core::sites::haversine_km(lat, lon, site.latitude, site.longitude);
         log::info!(
@@ -73,12 +80,6 @@ fn apply_fix(app: &mut StormApp, lat: f64, lon: f64) {
             app.select_site(site.id);
         }
     }
-
-    // Show the user's own neighbourhood, not the radar's: the station can be
-    // up to a couple hundred km away and still cover the fix.
-    app.state.view.center_lat = lat;
-    app.state.view.center_lon = lon;
-    app.state.view.zoom = app.state.view.zoom.max(8.0);
 
     // The forecast follows the device unless the user has pinned a point.
     // A previous GPS point is replaced by the newer fix.

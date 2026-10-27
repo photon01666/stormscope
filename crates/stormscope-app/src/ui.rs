@@ -6,10 +6,10 @@ use radar_core::Moment;
 
 mod ai;
 pub(crate) mod alerts;
-mod ambient;
 pub(crate) mod forecast;
 mod map;
 mod reports;
+mod synoptic;
 pub(crate) mod totals;
 mod volume3d;
 
@@ -294,7 +294,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // NWS forecast window (station by default, or a point picked on the map).
     forecast::forecast_window(ui.ctx(), app, pane_area);
     totals::totals_window(ui.ctx(), app, pane_area);
-    ambient::ambient_window(ui.ctx(), app, pane_area);
+    synoptic::synoptic_window(ui.ctx(), app, pane_area);
 
     // Archive popup (opened from Settings).
     archive_window(ui.ctx(), app, pane_area);
@@ -2759,72 +2759,71 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
 
         {
             ui.separator();
-            ui.label(egui::RichText::new("Ambient Weather").strong());
+            ui.label(egui::RichText::new("Synoptic (Mesowest)").strong());
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(
-                    "Personal weather stations on the map (green dots).                      Needs an API key AND an application key from your                      AmbientWeather.net account settings.",
+                    "Broad-coverage station network: NWS ASOS/AWOS + state                      mesonets + personal weather stations (incl. Ambient                      Weather), all behind one free token from synopticdata.com.",
                 )
                 .weak()
                 .small(),
             );
-            ui.label("API key");
+            ui.label("API token");
             ui.add(
-                egui::TextEdit::singleline(&mut app.state.ambient_api_key)
+                egui::TextEdit::singleline(&mut app.state.synoptic_token)
                     .desired_width(ui.available_width())
-                    .hint_text("Ambient Weather API key"),
-            );
-            ui.label("Application key");
-            ui.add(
-                egui::TextEdit::singleline(&mut app.state.ambient_app_key)
-                    .desired_width(ui.available_width())
-                    .hint_text("Ambient Weather application key"),
+                    .hint_text("Synoptic API token"),
             );
             ui.checkbox(
-                &mut app.state.ambient_remember_keys,
-                "Remember the keys on disk (plain text, 0600)",
+                &mut app.state.synoptic_remember_token,
+                "Remember the token on disk (plain text, 0600)",
             );
-            ui.checkbox(&mut app.state.show_ambient, "Show stations on the map");
+            ui.checkbox(&mut app.state.show_synoptic, "Show stations on the map");
             ui.horizontal(|ui| {
                 if ui
                     .button("Refresh stations")
-                    .on_hover_text("Fetch the station list + latest observations now")
+                    .on_hover_text("Fetch stations in the current map view now")
                     .clicked()
                 {
-                    let _ = app.tx.send(crate::app::DataCmd::SetAmbientKeys {
-                        api_key: app.state.ambient_api_key.clone(),
-                        app_key: app.state.ambient_app_key.clone(),
-                    });
-                    let _ = app.tx.send(crate::app::DataCmd::LoadAmbient);
-                    app.state.ambient_pending = true;
-                    app.state.persist_ambient();
+                    let view = &app.state.view;
+                    let w = view.width() as f64;
+                    let h = view.height() as f64;
+                    let (x0, y0) = view.view_px_to_lonlat(0.0, 0.0);
+                    let (x1, y1) = view.view_px_to_lonlat(w, h);
+                    let bbox = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
+                    let _ = app.tx.send(crate::app::DataCmd::SetSynopticToken(
+                        app.state.synoptic_token.clone(),
+                    ));
+                    let _ = app.tx.send(crate::app::DataCmd::LoadSynoptic { bbox });
+                    app.state.synoptic_pending = true;
+                    app.state.persist_synoptic();
                 }
                 if ui
                     .button("Open station…")
                     .on_hover_text("Open the popup for the selected station")
                     .clicked()
-                    && app.state.ambient_selected.is_some()
+                    && app.state.synoptic_selected.is_some()
                 {
-                    app.state.ambient_open = true;
+                    app.state.synoptic_open = true;
                 }
             });
-            if app.state.ambient_pending {
+            if app.state.synoptic_pending {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label("Loading…");
                 });
-            } else if let Some(e) = &app.state.ambient_error {
+            } else if let Some(e) = &app.state.synoptic_error {
                 ui.label(
                     egui::RichText::new(e)
                         .small()
                         .color(egui::Color32::from_rgb(255, 120, 120)),
                 );
-            } else if !app.state.ambient_stations.is_empty() {
+            } else if !app.state.synoptic_stations.is_empty() {
                 ui.label(
                     egui::RichText::new(format!(
                         "{} station{} loaded",
-                        app.state.ambient_stations.len(),
-                        if app.state.ambient_stations.len() == 1 {
+                        app.state.synoptic_stations.len(),
+                        if app.state.synoptic_stations.len() == 1 {
                             ""
                         } else {
                             "s"

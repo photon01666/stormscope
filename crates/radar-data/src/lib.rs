@@ -15,7 +15,6 @@ pub fn local_overlay_box(site_lat: f64, site_lon: f64) -> [f64; 4] {
 
 pub mod ai;
 pub mod alerts;
-pub mod ambient;
 pub mod cache;
 pub mod forecast;
 pub mod futurecast;
@@ -27,14 +26,15 @@ pub mod mrms;
 pub mod outlooks;
 pub mod s3;
 pub mod sites_gen;
+pub mod synoptic;
 pub mod update;
 pub mod warnings_archive;
 
 pub use alerts::AlertSource;
-pub use ambient::{AmbientSource, AmbientStation};
 pub use cache::DiskCache;
 pub use forecast::{ForecastSource, StationTotals};
 pub use lsrs::LsrSource;
 pub use mcds::McdSource;
 pub use outlooks::OutlookSource;
 pub use s3::{ArchiveVolumeRef, RealtimePoller, S3Source};
+pub use synoptic::{SynopticSource, SynopticStation};

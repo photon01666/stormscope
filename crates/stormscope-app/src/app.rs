@@ -78,11 +78,10 @@ pub enum DataMsg {
     Observation(radar_core::forecast::Observation),
     /// Rain/snow totals for the stations around a requested point.
     Totals(Vec<radar_data::StationTotals>),
-    /// Ambient Weather personal weather stations on the account, with their
-    /// latest observation.
-    AmbientStations(Vec<radar_data::ambient::AmbientStation>),
-    /// Ambient Weather fetch failed (surfaced in Settings).
-    AmbientError(String),
+    /// Synoptic (Mesowest) stations in the current view, with latest obs.
+    SynopticStations(Vec<radar_data::synoptic::SynopticStation>),
+    /// Synoptic fetch failed.
+    SynopticError(String),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
     /// Forecaster discussion text for one outlook day.
@@ -230,13 +229,12 @@ pub enum DataCmd {
     },
     /// Fetch the newest MRMS multi-radar composite (the overlay's data).
     LoadMrms,
-    /// Update the Ambient Weather credentials held by the data thread.
-    SetAmbientKeys {
-        api_key: String,
-        app_key: String,
+    /// Update the Synoptic token held by the data thread.
+    SetSynopticToken(String),
+    /// Fetch Synoptic stations for the given bbox [w,s,e,n].
+    LoadSynoptic {
+        bbox: [f64; 4],
     },
-    /// Fetch the Ambient Weather stations now (uses the stored credentials).
-    LoadAmbient,
     /// Fetch the latest GOES frame for the chosen layer/satellite.
     LoadGoes {
         layer: radar_data::goes::GoesLayer,
@@ -914,16 +912,16 @@ impl StormApp {
                     log::debug!("totals loaded from {} stations", self.state.totals.len());
                     self.pump_ai_data();
                 }
-                DataMsg::AmbientStations(v) => {
-                    self.state.ambient_stations = v;
-                    self.state.ambient_last_fetch = Some(std::time::Instant::now());
-                    self.state.ambient_pending = false;
-                    self.state.ambient_error = None;
-                    log::debug!("ambient stations: {}", self.state.ambient_stations.len());
+                DataMsg::SynopticStations(v) => {
+                    self.state.synoptic_stations = v;
+                    self.state.synoptic_last_fetch = Some(std::time::Instant::now());
+                    self.state.synoptic_pending = false;
+                    self.state.synoptic_error = None;
+                    log::debug!("synoptic stations: {}", self.state.synoptic_stations.len());
                 }
-                DataMsg::AmbientError(e) => {
-                    self.state.ambient_pending = false;
-                    self.state.ambient_error = Some(e);
+                DataMsg::SynopticError(e) => {
+                    self.state.synoptic_pending = false;
+                    self.state.synoptic_error = Some(e);
                 }
                 DataMsg::Forecast(f) => {
                     log::debug!(
@@ -3232,20 +3230,41 @@ impl StormApp {
                     asset_suffix: "-android.apk".into(),
                 });
             }
-            // Ambient Weather: push keys to the data thread and fetch when
-            // configured (or re-fetch if keys changed and we have none).
-            if !self.state.ambient_pending
-                && (!self.state.ambient_api_key.is_empty()
-                    || !self.state.ambient_app_key.is_empty())
-                && (self.state.ambient_last_fetch.is_none()
-                    || self.state.ambient_stations.is_empty())
+            // Synoptic: push token + fetch the current view when configured.
+            if !self.state.synoptic_pending
+                && !self.state.synoptic_token.is_empty()
+                && (self.state.synoptic_last_fetch.is_none()
+                    || self.state.synoptic_stations.is_empty())
             {
-                let _ = self.tx.send(DataCmd::SetAmbientKeys {
-                    api_key: self.state.ambient_api_key.clone(),
-                    app_key: self.state.ambient_app_key.clone(),
-                });
-                let _ = self.tx.send(DataCmd::LoadAmbient);
-                self.state.ambient_pending = true;
+                let _ = self
+                    .tx
+                    .send(DataCmd::SetSynopticToken(self.state.synoptic_token.clone()));
+                let view = &self.state.view;
+                let w = view.width() as f64;
+                let h = view.height() as f64;
+                let (x0, y0) = view.view_px_to_lonlat(0.0, 0.0);
+                let (x1, y1) = view.view_px_to_lonlat(w, h);
+                let bbox = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
+                let _ = self.tx.send(DataCmd::LoadSynoptic { bbox });
+                self.state.synoptic_pending = true;
+            }
+            // Synoptic: push token + fetch the current view when configured.
+            if !self.state.synoptic_pending
+                && !self.state.synoptic_token.is_empty()
+                && (self.state.synoptic_last_fetch.is_none()
+                    || self.state.synoptic_stations.is_empty())
+            {
+                let _ = self
+                    .tx
+                    .send(DataCmd::SetSynopticToken(self.state.synoptic_token.clone()));
+                let view = &self.state.view;
+                let w = view.width() as f64;
+                let h = view.height() as f64;
+                let (x0, y0) = view.view_px_to_lonlat(0.0, 0.0);
+                let (x1, y1) = view.view_px_to_lonlat(w, h);
+                let bbox = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
+                let _ = self.tx.send(DataCmd::LoadSynoptic { bbox });
+                self.state.synoptic_pending = true;
             }
             self.pump_gemini_live();
             // Sessions are event-driven, but the footer meter, status and

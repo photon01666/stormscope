@@ -104,24 +104,24 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             // `draw_sites` marker positions.
             let (cx, cy) = ((click.x - rect.min.x) as f64, (click.y - rect.min.y) as f64);
 
-            // 0) Ambient Weather station marker: open its observation popup.
-            const AMBIENT_HIT_PX: f64 = 16.0;
-            let mut ambient_hit: Option<String> = None;
-            let mut ambient_best = AMBIENT_HIT_PX;
-            if app.state.show_ambient {
-                for st in &app.state.ambient_stations {
+            // 0) Synoptic station marker: open its observation popup.
+            const SYNOPTIC_HIT_PX: f64 = 16.0;
+            let mut synoptic_hit: Option<String> = None;
+            let mut synoptic_best = SYNOPTIC_HIT_PX;
+            if app.state.show_synoptic {
+                for st in &app.state.synoptic_stations {
                     let Some(c) = &st.coords else { continue };
                     let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
                     let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
-                    if d <= ambient_best {
-                        ambient_best = d;
-                        ambient_hit = Some(st.mac_address.clone());
+                    if d <= synoptic_best {
+                        synoptic_best = d;
+                        synoptic_hit = Some(st.stid.clone());
                     }
                 }
             }
-            if let Some(mac) = ambient_hit {
-                app.state.ambient_selected = Some(mac);
-                app.state.ambient_open = true;
+            if let Some(stid) = synoptic_hit {
+                app.state.synoptic_selected = Some(stid);
+                app.state.synoptic_open = true;
             } else {
                 // 1) Clicking an existing pin opens its label editor.
                 const MARKER_HIT_PX: f64 = 18.0;
@@ -255,7 +255,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     }
                 }
             }
-        } // closes ambient else
+        } // closes synoptic else
     }
 
     // Zoom: pinch / ctrl+scroll via zoom_delta(), plain scroll wheel too.
@@ -821,9 +821,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // Painted late so echoes never bury the dots or "ID City" names.
     draw_sites(&painter, origin, &view, app);
 
-    // --- Ambient Weather personal stations (PWS) ---
-    if app.state.show_ambient {
-        draw_ambient_stations(&painter, origin, &view, app);
+    // --- Synoptic (Mesowest) stations ---
+    if app.state.show_synoptic {
+        draw_synoptic_stations(&painter, origin, &view, app);
     }
 
     // --- User-placed pins (above radar + warnings, below measure tool) ---
@@ -2250,9 +2250,8 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
     }
 }
 
-/// Ambient Weather personal weather stations, drawn as green dots with a
-/// label. Only stations whose observation carries coordinates are plotted.
-fn draw_ambient_stations(
+/// Synoptic (Mesowest) stations, drawn as blue dots with a label.
+fn draw_synoptic_stations(
     painter: &egui::Painter,
     origin: egui::Pos2,
     view: &MapView,
@@ -2260,37 +2259,41 @@ fn draw_ambient_stations(
 ) {
     let (w, h) = (view.width() as f64, view.height() as f64);
     let pad = 24.0f64;
-    for st in &app.state.ambient_stations {
+    for st in &app.state.synoptic_stations {
         let Some(c) = &st.coords else { continue };
         let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
         if vx < -pad || vy < -pad || vx > w + pad || vy > h + pad {
             continue;
         }
         let pos = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
-        let selected = app.state.ambient_selected.as_deref() == Some(st.mac_address.as_str());
+        let selected = app.state.synoptic_selected.as_deref() == Some(st.stid.as_str());
         if selected {
             painter.circle_filled(pos, 8.0, egui::Color32::from_black_alpha(220));
-            painter.circle_filled(pos, 5.5, egui::Color32::from_rgb(80, 220, 120));
+            painter.circle_filled(pos, 5.5, egui::Color32::from_rgb(90, 180, 255));
             painter.circle_stroke(
                 pos,
                 9.0,
-                egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 220, 120)),
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 180, 255)),
             );
         } else {
-            painter.circle_filled(pos, 4.5, egui::Color32::from_black_alpha(200));
-            painter.circle_filled(pos, 3.0, egui::Color32::from_rgb(80, 220, 120));
+            painter.circle_filled(pos, 4.0, egui::Color32::from_black_alpha(200));
+            painter.circle_filled(pos, 2.6, egui::Color32::from_rgb(150, 200, 255));
             painter.circle_stroke(
                 pos,
-                4.5,
-                egui::Stroke::new(1.5, egui::Color32::from_black_alpha(180)),
+                4.0,
+                egui::Stroke::new(1.2, egui::Color32::from_black_alpha(180)),
             );
         }
-        let text = st.label();
-        let font = egui::FontId::proportional(if selected { 12.5 } else { 11.0 });
-        let fg = egui::Color32::from_rgb(180, 255, 190);
+        let text = if st.name.is_empty() {
+            st.stid.clone()
+        } else {
+            st.name.clone()
+        };
+        let font = egui::FontId::proportional(if selected { 12.0 } else { 10.5 });
+        let fg = egui::Color32::from_rgb(180, 210, 255);
         draw_tag_label(
             painter,
-            egui::pos2(pos.x + 6.0, pos.y - 4.0),
+            egui::pos2(pos.x + 5.0, pos.y - 4.0),
             egui::Align2::LEFT_BOTTOM,
             &text,
             font,

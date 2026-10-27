@@ -6,6 +6,7 @@ use radar_core::Moment;
 
 mod ai;
 pub(crate) mod alerts;
+mod ambient;
 pub(crate) mod forecast;
 mod map;
 mod reports;
@@ -295,6 +296,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     forecast::forecast_window(ui.ctx(), app, pane_area);
     totals::totals_window(ui.ctx(), app, pane_area);
     synoptic::synoptic_window(ui.ctx(), app, pane_area);
+    ambient::ambient_window(ui.ctx(), app, pane_area);
 
     // Archive popup (opened from Settings).
     archive_window(ui.ctx(), app, pane_area);
@@ -2834,6 +2836,90 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                         "{} station{} loaded",
                         app.state.synoptic_stations.len(),
                         if app.state.synoptic_stations.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ))
+                    .weak()
+                    .small(),
+                );
+            }
+        }
+        {
+            ui.separator();
+            ui.label(egui::RichText::new("My Ambient Weather station").strong());
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Your own personal weather station, shown as a green \
+                     thermometer next to the Synoptic network. Requires both \
+                     keys from AmbientWeather.net → Account → API Keys.",
+                )
+                .weak()
+                .small(),
+            );
+            ui.label("API key");
+            ui.add(
+                egui::TextEdit::singleline(&mut app.state.ambient_api_key)
+                    .desired_width(ui.available_width())
+                    .hint_text("Ambient Weather API key"),
+            );
+            ui.label("Application key");
+            ui.add(
+                egui::TextEdit::singleline(&mut app.state.ambient_app_key)
+                    .desired_width(ui.available_width())
+                    .hint_text("Ambient Weather application key"),
+            );
+            ui.checkbox(
+                &mut app.state.ambient_remember_keys,
+                "Remember the keys on disk (plain text, 0600)",
+            );
+            ui.checkbox(&mut app.state.show_ambient, "Show my station on the map");
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Refresh my station")
+                    .on_hover_text("Fetch your Ambient station + latest observation")
+                    .clicked()
+                {
+                    let _ = app.tx.send(crate::app::DataCmd::SetAmbientKeys {
+                        api_key: app.state.ambient_api_key.clone(),
+                        app_key: app.state.ambient_app_key.clone(),
+                    });
+                    let _ = app.tx.send(crate::app::DataCmd::LoadAmbient);
+                    app.state.ambient_pending = true;
+                    app.state.persist_ambient();
+                }
+                if ui
+                    .button("Open my station…")
+                    .on_hover_text("Open the popup for your station")
+                    .clicked()
+                {
+                    if app.state.ambient_selected.is_none() {
+                        if let Some(st) = app.state.ambient_stations.first() {
+                            app.state.ambient_selected = Some(st.mac_address.clone());
+                        }
+                    }
+                    app.state.ambient_open = app.state.ambient_selected.is_some();
+                }
+            });
+            if app.state.ambient_pending {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Loading…");
+                });
+            } else if let Some(e) = &app.state.ambient_error {
+                ui.label(
+                    egui::RichText::new(e)
+                        .small()
+                        .color(egui::Color32::from_rgb(255, 120, 120)),
+                );
+            } else if !app.state.ambient_stations.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} station{} loaded",
+                        app.state.ambient_stations.len(),
+                        if app.state.ambient_stations.len() == 1 {
                             ""
                         } else {
                             "s"

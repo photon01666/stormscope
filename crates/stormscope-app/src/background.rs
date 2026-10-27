@@ -137,6 +137,7 @@ pub fn run(
     let alerts = AlertSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
     let mut synoptic_token: Option<String> = None;
+    let mut ambient_keys: Option<(String, String)> = None;
     let forecasts = radar_data::ForecastSource::new(USER_AGENT).ok();
     // Both feeds hold caches (report texts, MCD pages) and a cold fill can
     // take tens of seconds (up to 80 product texts), so each poll runs on a
@@ -614,6 +615,40 @@ pub fn run(
                     } else {
                         let _ =
                             out.send(DataMsg::SynopticError("Synoptic API token not set".into()));
+                    }
+                }
+                DataCmd::SetAmbientKeys { api_key, app_key } => {
+                    let (a, b) = (api_key.trim().to_string(), app_key.trim().to_string());
+                    ambient_keys = if a.is_empty() || b.is_empty() {
+                        None
+                    } else {
+                        Some((a, b))
+                    };
+                }
+                DataCmd::LoadAmbient => {
+                    if let Some((ak, apk)) = ambient_keys.clone() {
+                        let out = out.clone();
+                        std::thread::spawn(move || {
+                            let src =
+                                radar_data::ambient::AmbientSource::new(USER_AGENT, &ak, &apk);
+                            match src {
+                                Ok(s) => match s.stations() {
+                                    Ok(stations) => {
+                                        let _ = out.send(DataMsg::AmbientStations(stations));
+                                    }
+                                    Err(e) => {
+                                        let _ = out.send(DataMsg::AmbientError(format!("{e:#}")));
+                                    }
+                                },
+                                Err(e) => {
+                                    let _ = out.send(DataMsg::AmbientError(format!("{e:#}")));
+                                }
+                            }
+                        });
+                    } else {
+                        let _ = out.send(DataMsg::AmbientError(
+                            "Ambient Weather API key / application key not set".into(),
+                        ));
                     }
                 }
                 DataCmd::LoadGoes {

@@ -388,7 +388,7 @@ pub(crate) fn request_forecast_now(app: &mut StormApp) {
 /// converted to the US units the rest of the app uses.
 /// Animated weather glyph for a forecast row, keyed off the NWS summary.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum WeatherIcon {
+pub(super) enum WeatherIcon {
     Sunny,
     ClearNight,
     PartlyDay,
@@ -468,7 +468,7 @@ fn draw_cloud(painter: &egui::Painter, rect: egui::Rect, dx: f32, color: egui::C
 }
 
 /// One animated forecast glyph: sun/moon, clouds, rain, snow, bolt or mist.
-fn draw_weather_icon(
+pub(super) fn draw_weather_icon(
     ctx: &egui::Context,
     painter: &egui::Painter,
     rect: egui::Rect,

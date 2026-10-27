@@ -82,6 +82,10 @@ pub enum DataMsg {
     SynopticStations(Vec<radar_data::synoptic::SynopticStation>),
     /// Synoptic fetch failed.
     SynopticError(String),
+    /// Ambient Weather personal stations on the account.
+    AmbientStations(Vec<radar_data::ambient::AmbientStation>),
+    /// Ambient Weather fetch failed.
+    AmbientError(String),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
     /// Forecaster discussion text for one outlook day.
@@ -237,6 +241,13 @@ pub enum DataCmd {
         width: u32,
         height: u32,
     },
+    /// Update the Ambient Weather credentials held by the data thread.
+    SetAmbientKeys {
+        api_key: String,
+        app_key: String,
+    },
+    /// Fetch the Ambient Weather stations now.
+    LoadAmbient,
     /// Fetch the latest GOES frame for the chosen layer/satellite.
     LoadGoes {
         layer: radar_data::goes::GoesLayer,
@@ -924,6 +935,16 @@ impl StormApp {
                 DataMsg::SynopticError(e) => {
                     self.state.synoptic_pending = false;
                     self.state.synoptic_error = Some(e);
+                }
+                DataMsg::AmbientStations(v) => {
+                    self.state.ambient_stations = v;
+                    self.state.ambient_last_fetch = Some(std::time::Instant::now());
+                    self.state.ambient_pending = false;
+                    self.state.ambient_error = None;
+                }
+                DataMsg::AmbientError(e) => {
+                    self.state.ambient_pending = false;
+                    self.state.ambient_error = Some(e);
                 }
                 DataMsg::Forecast(f) => {
                     log::debug!(
@@ -3253,6 +3274,20 @@ impl StormApp {
                     height: view.height() as u32,
                 });
                 self.state.synoptic_pending = true;
+            }
+            // Ambient Weather: push keys + fetch when configured.
+            if !self.state.ambient_pending
+                && !self.state.ambient_api_key.is_empty()
+                && !self.state.ambient_app_key.is_empty()
+                && (self.state.ambient_last_fetch.is_none()
+                    || self.state.ambient_stations.is_empty())
+            {
+                let _ = self.tx.send(DataCmd::SetAmbientKeys {
+                    api_key: self.state.ambient_api_key.clone(),
+                    app_key: self.state.ambient_app_key.clone(),
+                });
+                let _ = self.tx.send(DataCmd::LoadAmbient);
+                self.state.ambient_pending = true;
             }
             self.pump_gemini_live();
             // Sessions are event-driven, but the footer meter, status and

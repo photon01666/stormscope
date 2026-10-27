@@ -104,149 +104,174 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             // `draw_sites` marker positions.
             let (cx, cy) = ((click.x - rect.min.x) as f64, (click.y - rect.min.y) as f64);
 
-            // 0) Synoptic station marker: open its observation popup.
-            const SYNOPTIC_HIT_PX: f64 = 16.0;
-            let mut synoptic_hit: Option<String> = None;
-            let mut synoptic_best = SYNOPTIC_HIT_PX;
-            if app.state.show_synoptic {
-                for st in &app.state.synoptic_stations {
+            // 0a) My Ambient Weather station: open its popup (highest
+            // priority — it is the station the user cares about most).
+            const AMBIENT_HIT_PX: f64 = 18.0;
+            let mut ambient_hit: Option<String> = None;
+            let mut ambient_best = AMBIENT_HIT_PX;
+            if app.state.show_ambient {
+                for st in &app.state.ambient_stations {
                     let Some(c) = &st.coords else { continue };
                     let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
                     let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
-                    if d <= synoptic_best {
-                        synoptic_best = d;
-                        synoptic_hit = Some(st.stid.clone());
+                    if d <= ambient_best {
+                        ambient_best = d;
+                        ambient_hit = Some(st.mac_address.clone());
                     }
                 }
             }
-            if let Some(stid) = synoptic_hit {
-                app.state.synoptic_selected = Some(stid);
-                app.state.synoptic_open = true;
+            if let Some(mac) = ambient_hit {
+                app.state.ambient_selected = Some(mac);
+                app.state.ambient_open = true;
             } else {
-                // 1) Clicking an existing pin opens its label editor.
-                const MARKER_HIT_PX: f64 = 18.0;
-                let mut marker_hit: Option<usize> = None;
-                for (i, m) in app.state.markers.iter().enumerate() {
-                    let (vx, vy) = view.lonlat_to_view_px(m.lon, m.lat);
-                    if (vx - cx).hypot(vy - cy) <= MARKER_HIT_PX {
-                        marker_hit = Some(i);
-                        break;
+                // 0b) Synoptic station marker: open its observation popup.
+                const SYNOPTIC_HIT_PX: f64 = 16.0;
+                let mut synoptic_hit: Option<String> = None;
+                let mut synoptic_best = SYNOPTIC_HIT_PX;
+                if app.state.show_synoptic {
+                    for st in &app.state.synoptic_stations {
+                        let Some(c) = &st.coords else { continue };
+                        let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
+                        let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
+                        if d <= synoptic_best {
+                            synoptic_best = d;
+                            synoptic_hit = Some(st.stid.clone());
+                        }
                     }
                 }
-                if let Some(i) = marker_hit {
-                    // Seed the persistent draft the popup edits (egui's TextEdit
-                    // is immediate-mode — the draft must live in app state).
-                    app.state.pending_marker_label = app.state.markers[i].label.clone();
-                    app.state.pending_marker = Some(i);
+                if let Some(stid) = synoptic_hit {
+                    app.state.synoptic_selected = Some(stid);
+                    app.state.synoptic_open = true;
                 } else {
-                    let shift = ui.input(|i| i.modifiers.shift);
-                    if shift || app.state.add_marker_mode {
-                        // 2) Drop a new pin and ask for its label.
-                        let (lon, lat) = view.view_px_to_lonlat(cx, cy);
-                        app.state.markers.push(crate::state::MapMarker {
-                            lat,
-                            lon,
-                            label: String::new(),
-                        });
-                        app.state.pending_marker = Some(app.state.markers.len() - 1);
-                        app.state.pending_marker_label.clear();
-                        app.state.marker_focus_pending = true;
-                        app.state.add_marker_mode = false;
-                        app.state.persist_markers();
-                    } else {
-                        // 3) Select the nearest radar site under the pointer.
-                        const SITE_HIT_PX: f64 = 14.0;
-                        let mut best: Option<(&radar_core::sites::RadarSite, f64)> = None;
-                        for site in radar_core::sites::SITES {
-                            let (vx, vy) = view.lonlat_to_view_px(site.longitude, site.latitude);
-                            let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
-                            if d <= SITE_HIT_PX && best.map_or(true, |(_, bd)| d < bd) {
-                                best = Some((site, d));
-                            }
+                    // 1) Clicking an existing pin opens its label editor.
+                    const MARKER_HIT_PX: f64 = 18.0;
+                    let mut marker_hit: Option<usize> = None;
+                    for (i, m) in app.state.markers.iter().enumerate() {
+                        let (vx, vy) = view.lonlat_to_view_px(m.lon, m.lat);
+                        if (vx - cx).hypot(vy - cy) <= MARKER_HIT_PX {
+                            marker_hit = Some(i);
+                            break;
                         }
-                        if let Some((site, _)) = best {
-                            app.select_site(site.id);
-                        } else if app.state.show_lsrs
-                            && let Some(r) = super::reports::lsr_at(&app.state.lsrs, &view, cx, cy)
-                        {
-                            // 4) A storm-report dot (drawn on top, small precise
-                            // target): open its full report.
-                            app.state.lsr_detail = Some(r.id.clone());
-                        } else if app.state.show_totals
-                            && super::totals::totals_at(&app.state.totals, &view, cx, cy).is_some()
-                        {
-                            // 5) A station-total dot: the marker is the shortcut,
-                            // the window the table.
-                            app.state.totals_open = true;
-                        } else {
-                            // 6) A warning polygon under the click — inside it, or
-                            // on its outline (8 px of reach, so a polygon drawn
-                            // under another one stays clickable where they
-                            // overlap). Opens its NOAA text and lights it up (site
-                            // dots win above: they are small, deliberate targets).
-                            // Clicking the same spot again steps to the next
-                            // warning in the stack.
+                    }
+                    if let Some(i) = marker_hit {
+                        // Seed the persistent draft the popup edits (egui's TextEdit
+                        // is immediate-mode — the draft must live in app state).
+                        app.state.pending_marker_label = app.state.markers[i].label.clone();
+                        app.state.pending_marker = Some(i);
+                    } else {
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        if shift || app.state.add_marker_mode {
+                            // 2) Drop a new pin and ask for its label.
                             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
-                            let at = egui::pos2(cx as f32, cy as f32);
-                            let stack = if super::alerts::showing_live_radar(&app.state) {
-                                super::alerts::warning_stack_at(
-                                    &app.state.alerts,
-                                    lon,
-                                    lat,
-                                    |lo, la| view.lonlat_to_view_px(lo, la),
-                                    cx,
-                                    cy,
-                                    WARNING_EDGE_PX,
-                                )
-                            } else {
-                                Vec::new()
-                            };
-                            if !stack.is_empty() {
-                                let ids: Vec<String> = stack.iter().map(|w| w.id.clone()).collect();
-                                let idx = cycle_pick(app.map_alert_cycle.as_ref(), at, &ids);
-                                let w = stack[idx];
-                                app.state.alert_detail = Some(w.id.clone());
-                                app.state.alerts_focus = Some(w.id.clone());
-                                app.state.alerts_focus_at = ui.input(|i| i.time);
-                                app.map_alert_cycle = Some((at, ids, idx));
-                            } else if let Some(idx) =
-                                archive_click_target(app, &view, lon, lat, cx, cy)
-                            {
-                                // Historical-warning overlay: clicking one opens
-                                // its archived NWS text (fetched once, on demand);
-                                // the popup carries the radar-at-this-time button.
-                                if let Some(w) = app.state.archive_warnings.get(idx) {
-                                    app.state.archive_detail = Some(w.id.clone());
+                            app.state.markers.push(crate::state::MapMarker {
+                                lat,
+                                lon,
+                                label: String::new(),
+                            });
+                            app.state.pending_marker = Some(app.state.markers.len() - 1);
+                            app.state.pending_marker_label.clear();
+                            app.state.marker_focus_pending = true;
+                            app.state.add_marker_mode = false;
+                            app.state.persist_markers();
+                        } else {
+                            // 3) Select the nearest radar site under the pointer.
+                            const SITE_HIT_PX: f64 = 14.0;
+                            let mut best: Option<(&radar_core::sites::RadarSite, f64)> = None;
+                            for site in radar_core::sites::SITES {
+                                let (vx, vy) =
+                                    view.lonlat_to_view_px(site.longitude, site.latitude);
+                                let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
+                                if d <= SITE_HIT_PX && best.map_or(true, |(_, bd)| d < bd) {
+                                    best = Some((site, d));
                                 }
-                                app.map_alert_cycle = None;
+                            }
+                            if let Some((site, _)) = best {
+                                app.select_site(site.id);
+                            } else if app.state.show_lsrs
+                                && let Some(r) =
+                                    super::reports::lsr_at(&app.state.lsrs, &view, cx, cy)
+                            {
+                                // 4) A storm-report dot (drawn on top, small precise
+                                // target): open its full report.
+                                app.state.lsr_detail = Some(r.id.clone());
+                            } else if app.state.show_totals
+                                && super::totals::totals_at(&app.state.totals, &view, cx, cy)
+                                    .is_some()
+                            {
+                                // 5) A station-total dot: the marker is the shortcut,
+                                // the window the table.
+                                app.state.totals_open = true;
                             } else {
-                                // Clicked off the warnings: the next click on a
-                                // stack starts from the top of it again.
-                                app.map_alert_cycle = None;
-                                if app.state.show_mcds
-                                    && let Some(m) =
-                                        super::reports::mcd_at(&app.state.mcds, lon, lat)
+                                // 6) A warning polygon under the click — inside it, or
+                                // on its outline (8 px of reach, so a polygon drawn
+                                // under another one stays clickable where they
+                                // overlap). Opens its NOAA text and lights it up (site
+                                // dots win above: they are small, deliberate targets).
+                                // Clicking the same spot again steps to the next
+                                // warning in the stack.
+                                let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+                                let at = egui::pos2(cx as f32, cy as f32);
+                                let stack = if super::alerts::showing_live_radar(&app.state) {
+                                    super::alerts::warning_stack_at(
+                                        &app.state.alerts,
+                                        lon,
+                                        lat,
+                                        |lo, la| view.lonlat_to_view_px(lo, la),
+                                        cx,
+                                        cy,
+                                        WARNING_EDGE_PX,
+                                    )
+                                } else {
+                                    Vec::new()
+                                };
+                                if !stack.is_empty() {
+                                    let ids: Vec<String> =
+                                        stack.iter().map(|w| w.id.clone()).collect();
+                                    let idx = cycle_pick(app.map_alert_cycle.as_ref(), at, &ids);
+                                    let w = stack[idx];
+                                    app.state.alert_detail = Some(w.id.clone());
+                                    app.state.alerts_focus = Some(w.id.clone());
+                                    app.state.alerts_focus_at = ui.input(|i| i.time);
+                                    app.map_alert_cycle = Some((at, ids, idx));
+                                } else if let Some(idx) =
+                                    archive_click_target(app, &view, lon, lat, cx, cy)
                                 {
-                                    // Discussion area: open the full SPC text.
-                                    app.state.mcd_detail = Some(m.number);
-                                } else if app.state.show_outlook {
-                                    // Clicking an SPC outline opens that day's
-                                    // forecaster discussion. ALL mode accepts a
-                                    // click on any product's outline, and the
-                                    // tapped product becomes the legend/detail.
-                                    if let Some((o, f)) = outlook_hit(app, &view, lon, lat) {
-                                        let (ty, dn) = (o.ty, f.dn);
-                                        app.state.outlook = Some(o.clone());
-                                        app.state.outlook_type = ty;
-                                        app.state.outlook_hover = None;
-                                        app.state.outlook_detail_open = true;
-                                        app.state.outlook_detail_dn = Some(dn);
-                                        let day = app.state.outlook_day;
-                                        if app.state.outlook_discussion_requested != Some(day) {
-                                            app.state.outlook_discussion_requested = Some(day);
-                                            let _ = app.tx.send(
-                                                crate::app::DataCmd::LoadOutlookDiscussion(day),
-                                            );
+                                    // Historical-warning overlay: clicking one opens
+                                    // its archived NWS text (fetched once, on demand);
+                                    // the popup carries the radar-at-this-time button.
+                                    if let Some(w) = app.state.archive_warnings.get(idx) {
+                                        app.state.archive_detail = Some(w.id.clone());
+                                    }
+                                    app.map_alert_cycle = None;
+                                } else {
+                                    // Clicked off the warnings: the next click on a
+                                    // stack starts from the top of it again.
+                                    app.map_alert_cycle = None;
+                                    if app.state.show_mcds
+                                        && let Some(m) =
+                                            super::reports::mcd_at(&app.state.mcds, lon, lat)
+                                    {
+                                        // Discussion area: open the full SPC text.
+                                        app.state.mcd_detail = Some(m.number);
+                                    } else if app.state.show_outlook {
+                                        // Clicking an SPC outline opens that day's
+                                        // forecaster discussion. ALL mode accepts a
+                                        // click on any product's outline, and the
+                                        // tapped product becomes the legend/detail.
+                                        if let Some((o, f)) = outlook_hit(app, &view, lon, lat) {
+                                            let (ty, dn) = (o.ty, f.dn);
+                                            app.state.outlook = Some(o.clone());
+                                            app.state.outlook_type = ty;
+                                            app.state.outlook_hover = None;
+                                            app.state.outlook_detail_open = true;
+                                            app.state.outlook_detail_dn = Some(dn);
+                                            let day = app.state.outlook_day;
+                                            if app.state.outlook_discussion_requested != Some(day) {
+                                                app.state.outlook_discussion_requested = Some(day);
+                                                let _ = app.tx.send(
+                                                    crate::app::DataCmd::LoadOutlookDiscussion(day),
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -254,8 +279,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         }
                     }
                 }
-            }
-        } // closes synoptic else
+            } // closes synoptic else
+        } // closes ambient else
     }
 
     // --- Station hover tooltip ------------------------------------------
@@ -268,25 +293,67 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     } else {
         None
     };
-    let mut hovered: Option<String> = None;
+    let mut hovered_ambient: Option<String> = None;
+    let mut hovered_synoptic: Option<String> = None;
     if let Some(p) = hover_pos {
         let (hx, hy) = ((p.x - rect.min.x) as f64, (p.y - rect.min.y) as f64);
-        let mut best = 14.0f64;
-        for st in &app.state.synoptic_stations {
-            let Some(c) = &st.coords else { continue };
-            let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
-            let d = ((vx - hx).powi(2) + (vy - hy).powi(2)).sqrt();
-            if d <= best {
-                best = d;
-                hovered = Some(st.stid.clone());
+        if app.state.show_ambient {
+            let mut best = 18.0f64;
+            for st in &app.state.ambient_stations {
+                let Some(c) = &st.coords else { continue };
+                let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
+                let d = ((vx - hx).powi(2) + (vy - hy).powi(2)).sqrt();
+                if d <= best {
+                    best = d;
+                    hovered_ambient = Some(st.mac_address.clone());
+                }
+            }
+        }
+        if hovered_ambient.is_none() && app.state.show_synoptic {
+            let mut best = 14.0f64;
+            for st in &app.state.synoptic_stations {
+                let Some(c) = &st.coords else { continue };
+                let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
+                let d = ((vx - hx).powi(2) + (vy - hy).powi(2)).sqrt();
+                if d <= best {
+                    best = d;
+                    hovered_synoptic = Some(st.stid.clone());
+                }
             }
         }
     }
-    if app.state.synoptic_hover != hovered {
-        app.state.synoptic_hover = hovered;
+    if app.state.ambient_hover != hovered_ambient {
+        app.state.ambient_hover = hovered_ambient.clone();
+        app.state.ambient_hover_at = now;
+    }
+    if app.state.synoptic_hover != hovered_synoptic {
+        app.state.synoptic_hover = hovered_synoptic.clone();
         app.state.synoptic_hover_at = now;
     }
-    if let Some(stid) = app.state.synoptic_hover.clone() {
+    if let Some(mac) = app.state.ambient_hover.clone() {
+        let elapsed = now - app.state.ambient_hover_at;
+        if elapsed >= 1.0 {
+            if let Some(st) = app
+                .state
+                .ambient_stations
+                .iter()
+                .find(|s| s.mac_address == mac)
+            {
+                egui::Tooltip::always_open(
+                    ui.ctx().clone(),
+                    response.layer_id,
+                    egui::Id::new(("stormscope.ambient.hover", st.mac_address.as_str())),
+                    egui::PopupAnchor::Pointer,
+                )
+                .show(|ui| ambient_tooltip(ui, st));
+            }
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f32(
+                    (1.0 - elapsed).max(0.0) as f32,
+                ));
+        }
+    } else if let Some(stid) = app.state.synoptic_hover.clone() {
         let elapsed = now - app.state.synoptic_hover_at;
         if elapsed >= 1.0 {
             if let Some(st) = app.state.synoptic_stations.iter().find(|s| s.stid == stid) {
@@ -872,6 +939,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Synoptic (Mesowest) stations ---
     if app.state.show_synoptic {
         draw_synoptic_stations(&painter, origin, &view, app);
+    }
+
+    // --- Ambient Weather: my personal station ---
+    if app.state.show_ambient {
+        draw_ambient_stations(&painter, origin, &view, app);
     }
 
     // --- User-placed pins (above radar + warnings, below measure tool) ---
@@ -2333,6 +2405,119 @@ fn synoptic_tooltip(ui: &mut egui::Ui, st: &radar_data::synoptic::SynopticStatio
     ui.label(egui::RichText::new("click for all data").weak().small());
 }
 
+/// Compact hover card for the user's Ambient station.
+fn ambient_tooltip(ui: &mut egui::Ui, st: &radar_data::ambient::AmbientStation) {
+    ui.label(egui::RichText::new(st.label()).strong());
+    if !st.location.is_empty() {
+        ui.label(egui::RichText::new(&st.location).weak().small());
+    }
+    let rows = super::ambient::ambient_rows(st);
+    if rows.is_empty() {
+        ui.label(egui::RichText::new("No observation data").weak().small());
+    } else {
+        egui::Grid::new(("stormscope.ambient.tip", st.mac_address.as_str()))
+            .num_columns(2)
+            .spacing((6.0, 2.0))
+            .show(ui, |ui| {
+                for (label, value) in rows.iter().take(8) {
+                    ui.label(egui::RichText::new(label).small());
+                    ui.label(egui::RichText::new(value).small());
+                    ui.end_row();
+                }
+            });
+    }
+    ui.label(egui::RichText::new("click for all data").weak().small());
+}
+
+/// The user's own Ambient Weather station: a green thermometer badge, larger
+/// than the Synoptic dots so it is easy to find.
+fn draw_ambient_stations(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+) {
+    let (w, h) = (view.width() as f64, view.height() as f64);
+    let pad = 24.0f64;
+    let green = egui::Color32::from_rgb(80, 220, 120);
+    for st in &app.state.ambient_stations {
+        let Some(c) = &st.coords else { continue };
+        let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
+        if vx < -pad || vy < -pad || vx > w + pad || vy > h + pad {
+            continue;
+        }
+        let pos = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+        let selected = app.state.ambient_selected.as_deref() == Some(st.mac_address.as_str());
+        let r = if selected { 9.5 } else { 7.5 };
+        painter.circle_filled(pos, r + 1.0, egui::Color32::from_black_alpha(215));
+        painter.circle_stroke(
+            pos,
+            r + 1.0,
+            egui::Stroke::new(if selected { 2.2 } else { 1.6 }, green),
+        );
+        draw_thermometer(painter, pos, if selected { 1.05 } else { 0.85 }, green);
+        if selected {
+            let text = if st.name.is_empty() {
+                st.mac_address.clone()
+            } else {
+                st.name.clone()
+            };
+            draw_tag_label(
+                painter,
+                egui::pos2(pos.x + 7.0, pos.y - 6.0),
+                egui::Align2::LEFT_BOTTOM,
+                &text,
+                egui::FontId::proportional(12.5),
+                green,
+            );
+        }
+    }
+}
+
+/// A thermometer glyph that reads as "weather station" at map scale.
+fn draw_thermometer(painter: &egui::Painter, c: egui::Pos2, s: f32, color: egui::Color32) {
+    painter.line_segment(
+        [c + egui::vec2(0.0, -5.0 * s), c + egui::vec2(0.0, 1.4 * s)],
+        egui::Stroke::new(1.9 * s, color),
+    );
+    painter.circle_filled(c + egui::vec2(0.0, 2.8 * s), 2.2 * s, color);
+    let tick = egui::Stroke::new(1.0 * s, egui::Color32::from_white_alpha(190));
+    painter.line_segment(
+        [
+            c + egui::vec2(1.2 * s, -3.2 * s),
+            c + egui::vec2(2.7 * s, -3.2 * s),
+        ],
+        tick,
+    );
+    painter.line_segment(
+        [
+            c + egui::vec2(1.2 * s, -1.4 * s),
+            c + egui::vec2(2.7 * s, -1.4 * s),
+        ],
+        tick,
+    );
+}
+
+/// Blue (cold) → green → orange → red (hot) for the station badge.
+fn temp_color(c: Option<f64>) -> egui::Color32 {
+    fn lerp(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+        let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+        (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
+    }
+    let c = c.unwrap_or(10.0).clamp(-30.0, 45.0) as f32;
+    let t = ((c + 30.0) / 75.0).clamp(0.0, 1.0);
+    let (r, g, b) = if t < 0.25 {
+        lerp((80, 140, 255), (80, 220, 220), t / 0.25)
+    } else if t < 0.5 {
+        lerp((80, 220, 220), (120, 230, 120), (t - 0.25) / 0.25)
+    } else if t < 0.75 {
+        lerp((120, 230, 120), (255, 220, 80), (t - 0.5) / 0.25)
+    } else {
+        lerp((255, 220, 80), (255, 90, 70), (t - 0.75) / 0.25)
+    };
+    egui::Color32::from_rgb(r, g, b)
+}
+
 /// Synoptic (Mesowest) stations, drawn as blue dots with a label.
 fn draw_synoptic_stations(
     painter: &egui::Painter,
@@ -2350,23 +2535,15 @@ fn draw_synoptic_stations(
         }
         let pos = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
         let selected = app.state.synoptic_selected.as_deref() == Some(st.stid.as_str());
-        if selected {
-            painter.circle_filled(pos, 8.0, egui::Color32::from_black_alpha(220));
-            painter.circle_filled(pos, 5.5, egui::Color32::from_rgb(90, 180, 255));
-            painter.circle_stroke(
-                pos,
-                9.0,
-                egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 180, 255)),
-            );
-        } else {
-            painter.circle_filled(pos, 4.0, egui::Color32::from_black_alpha(200));
-            painter.circle_filled(pos, 2.6, egui::Color32::from_rgb(150, 200, 255));
-            painter.circle_stroke(
-                pos,
-                4.0,
-                egui::Stroke::new(1.2, egui::Color32::from_black_alpha(180)),
-            );
-        }
+        let color = temp_color(super::synoptic::temp_c(st));
+        let r = if selected { 8.5 } else { 6.5 };
+        painter.circle_filled(pos, r + 1.0, egui::Color32::from_black_alpha(210));
+        painter.circle_stroke(
+            pos,
+            r + 1.0,
+            egui::Stroke::new(if selected { 2.0 } else { 1.4 }, color),
+        );
+        draw_thermometer(painter, pos, if selected { 1.0 } else { 0.8 }, color);
         // Label only the selected station: a dense network with every name
         // painted turns the map into unreadable text soup.
         if selected {

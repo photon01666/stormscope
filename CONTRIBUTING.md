@@ -13,8 +13,7 @@ cargo test  --workspace          # some tests are integration tests (network)
 cargo install --path crates/stormscope-app   # run it
 ```
 
-Runtime requirements: Linux, Vulkan drivers, Wayland or X11. Rust stable
-(edition 2024 — needs ≥ 1.85).
+Runtime requirements: Linux, Vulkan drivers, Wayland or X11. Build requirements: Rust stable (edition 2024, needs ≥ 1.85); Windows and Android use their own toolchains — see the README for platform-specific setup.
 
 ## Before you open a PR
 
@@ -52,9 +51,10 @@ Runtime requirements: Linux, Vulkan drivers, Wayland or X11. Rust stable
 
 ## Releases & repository hygiene
 
-- Release artifacts (binaries, archives, screenshots, `dist/` output) are
-  **never committed**. Build them from the tagged commit and attach them to the
-  GitHub Release only; the git repository stays source-only.
+- Release artifacts (binaries, archives, `dist/` output) are **never committed**.
+  Deliberate README images live under `docs/images/`; ad-hoc screenshots stay
+  out of git. Build release binaries from the tagged commit and attach them to
+  the GitHub Release only; the git repository stays source-only.
 - **Always purge old release artifacts from the git repository.** Remove stale
   binaries/archives from the working tree, and if one was ever committed,
   remove it from history before tagging rather than leaving it in the pack.
@@ -76,8 +76,8 @@ Please include:
 
 ## Data etiquette
 
-The app deliberately uses only free, public sources and behaves politely:
-descriptive `User-Agent` for `api.weather.gov`, low-volume anonymous tile
-fetching with a disk cache and per-provider backoff, and no API keys. Please
-don't add a provider that requires an account or whose terms forbid this kind
-of use.
+The app deliberately uses only free, public sources for its core and behaves
+politely: descriptive `User-Agent` for `api.weather.gov`, low-volume anonymous
+tile fetching with a disk cache and per-provider backoff, and no required API
+keys. Optional Synoptic, Ambient and AI integrations must stay opt-in, store
+their keys locally, and never become necessary for live radar.

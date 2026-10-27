@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-const STATIONS_URL: &str = "https://api.ambientweather.net/v1/stations";
+const STATIONS_URL: &str = "https://api.ambientweather.net/v1/devices";
 
 #[derive(Debug, Clone, Default)]
 pub struct AmbientCoords {
@@ -216,6 +216,28 @@ fn parse_coords(v: &Value) -> Option<AmbientCoords> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The live `/v1/devices` shape: coords sit under `info.coords.coords`.
+    #[test]
+    fn parses_live_device_shape() {
+        let d = serde_json::json!({
+            "macAddress": "84:F3:EB:67:B1:EF",
+            "info": {
+                "name": "Weather Station",
+                "location": "Topeka",
+                "coords": {
+                    "coords": { "lat": 39.0146, "lon": -95.597 },
+                    "location": "Topeka"
+                }
+            },
+            "lastData": { "tempf": 64.2, "humidity": 68, "baromrelin": 30.19 }
+        });
+        let st = parse_device(&d);
+        let c = st.coords.expect("nested device coords");
+        assert!((c.lat - 39.0146).abs() < 1e-6);
+        assert!((c.lon + 95.597).abs() < 1e-6);
+        assert_eq!(st.location, "Topeka");
+    }
 
     #[test]
     fn parses_flat_and_nested_coords() {

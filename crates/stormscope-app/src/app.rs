@@ -937,6 +937,7 @@ impl StormApp {
                     self.state.synoptic_error = Some(e);
                 }
                 DataMsg::AmbientStations(v) => {
+                    log::debug!("ambient stations: {}", v.len());
                     self.state.ambient_stations = v;
                     self.state.ambient_last_fetch = Some(std::time::Instant::now());
                     self.state.ambient_pending = false;
@@ -3258,7 +3259,12 @@ impl StormApp {
                 && !self.state.synoptic_token.is_empty()
                 && (self.state.synoptic_last_fetch.is_none()
                     || self.state.synoptic_stations.is_empty())
+                && self
+                    .state
+                    .synoptic_last_attempt
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60))
             {
+                self.state.synoptic_last_attempt = Some(std::time::Instant::now());
                 let _ = self
                     .tx
                     .send(DataCmd::SetSynopticToken(self.state.synoptic_token.clone()));
@@ -3281,7 +3287,12 @@ impl StormApp {
                 && !self.state.ambient_app_key.is_empty()
                 && (self.state.ambient_last_fetch.is_none()
                     || self.state.ambient_stations.is_empty())
+                && self
+                    .state
+                    .ambient_last_attempt
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60))
             {
+                self.state.ambient_last_attempt = Some(std::time::Instant::now());
                 let _ = self.tx.send(DataCmd::SetAmbientKeys {
                     api_key: self.state.ambient_api_key.clone(),
                     app_key: self.state.ambient_app_key.clone(),

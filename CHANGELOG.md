@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.6.1 — 2026-10-27
+
+**Analysis**
+- Point soundings with Skew-T, hodograph, CAPE/CIN, LCL/LFC/EL, PWAT,
+  shear and SRH, plus heuristic severe, tornado and winter indicators.
+- Dealiased velocity (VEL-D), VAD wind profiles, rotation/TVS signatures,
+  hail cores/swath and automatic storm motion from tracked cells.
+- Display-level reflectivity QC: dual-pol clutter filter, KDP attenuation
+  correction, manual REF bias and terrain-based beam-blockage masking.
+
+**Hydrology**
+- MRMS multi-sensor and radar-only QPE for 1/3/6/24 hours.
+- FLASH flash-flood guidance with a reversed risk colour scale.
+- QPE/FFG follows the selected radar site and is available to the AI.
+
+**Model data**
+- HRRR point forecast profiles and a temperature/humidity/wind time-height
+  section out to 48 hours.
+- HRRR 2D QPF, CAPE and 0–6 km shear fields for the local radar area.
+
+**AI**
+- The AI snapshot now includes soundings, VAD, rotation/hail, QPE/FFG and
+  HRRR point/field context.
+
+**Fixes**
+- Map controls auto-fit all analysis and QC rows on desktop.
+- QC processing is cached, removing drag judder.
+- KDP attenuation no longer over-corrects by tens of dB.
+- Switching radar sites refreshes the HRRR field instead of leaving the old
+  field over the new site.
+
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 

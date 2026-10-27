@@ -288,7 +288,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // summary; clicking still opens the full window. The 1 s delay keeps the
     // tooltip from flashing while the pointer sweeps across the map.
     let now = ui.input(|i| i.time);
-    let hover_pos = if response.hovered() && !response.dragged() {
+    // No hover card while a station window is open: the card would sit on
+    // top of the window (tooltips are above windows) and overlap it.
+    let station_window_open = app.state.synoptic_open || app.state.ambient_open;
+    let hover_pos = if response.hovered() && !response.dragged() && !station_window_open {
         response.hover_pos()
     } else {
         None
@@ -342,7 +345,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 egui::Tooltip::always_open(
                     ui.ctx().clone(),
                     response.layer_id,
-                    egui::Id::new(("stormscope.ambient.hover", st.mac_address.as_str())),
+                    egui::Id::new("stormscope.station.hover"),
                     egui::PopupAnchor::Pointer,
                 )
                 .width(400.0)
@@ -362,7 +365,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 egui::Tooltip::always_open(
                     ui.ctx().clone(),
                     response.layer_id,
-                    egui::Id::new(("stormscope.synoptic.hover", st.stid.as_str())),
+                    egui::Id::new("stormscope.station.hover"),
                     egui::PopupAnchor::Pointer,
                 )
                 .width(400.0)

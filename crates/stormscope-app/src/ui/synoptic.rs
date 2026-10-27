@@ -73,16 +73,21 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
             return;
         };
 
-        let width = if fill {
-            ui.available_width()
+        if fill {
+            // Phone: full pane width.
+            let w = ui.available_width();
+            ui.set_width(w);
         } else {
-            (size.x - 28.0).max(300.0)
-        };
-        ui.set_width(width);
+            // Desktop: let the label/value table decide the width (with a
+            // comfortable floor) instead of forcing a 420 pt box with a big
+            // empty right-hand side.
+            ui.set_min_width(300.0);
+            ui.set_max_width(400.0);
+        }
 
         egui::ScrollArea::vertical()
             .id_salt("stormscope.synoptic.scroll")
-            .auto_shrink([false, true])
+            .auto_shrink([!fill, true])
             .show(ui, |ui| {
                 header_ui(ui, &station);
                 ui.separator();
@@ -156,7 +161,15 @@ fn header_ui(ui: &mut egui::Ui, st: &SynopticStation) {
                     );
                 }
                 None => {
-                    ui.label(egui::RichText::new("—°F").size(34.0).strong().weak());
+                    // Some stations report wind/rain/pressure but no air
+                    // temperature; lead with their first reading instead of
+                    // a broken "—°F".
+                    if let Some((label, value)) = obs_rows(st).first() {
+                        ui.label(egui::RichText::new(value).size(26.0).strong());
+                        ui.label(egui::RichText::new(label).weak().size(13.0));
+                    } else {
+                        ui.label(egui::RichText::new("—").size(30.0).strong().weak());
+                    }
                 }
             }
             ui.label(egui::RichText::new(condition_word(st)).size(17.0));

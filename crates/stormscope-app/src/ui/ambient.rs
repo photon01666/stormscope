@@ -414,12 +414,6 @@ pub fn ambient_settings_window(ctx: &egui::Context, app: &mut StormApp, area: eg
                 {
                     app.state.persist_ambient();
                 }
-                if ui
-                    .checkbox(&mut app.state.show_ambient, "Show my station on the map")
-                    .changed()
-                {
-                    app.state.persist_ambient();
-                }
                 ui.add_space(6.0);
                 if app.state.ambient_pending {
                     ui.horizontal(|ui| {

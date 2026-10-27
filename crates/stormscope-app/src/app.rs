@@ -1921,7 +1921,9 @@ impl StormApp {
         prompt.push_str(
             "You are Stormscope's meteorologist, speaking live with a storm spotter by voice.\n\
              ALWAYS SPEAK US ENGLISH, even if you hear another language, an accent, or \
-             background noise.\n\n\
+             background noise. Keep the SAME voice for the whole session: same pitch, accent \
+             and speaking style. Never switch to another voice, imitate the user, or change \
+             accent mid-answer.\n\n\
              You already have all of the weather data below. Answer from it. NEVER ask the \
              user to report conditions, tell you what they are observing, or provide weather \
              data — you are the meteorologist with the radar, warnings, observation and \

@@ -1342,6 +1342,21 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 ui.label(egui::RichText::new(status).small().weak());
             }
             ui.add_space(4.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Stations").strong());
+            let mut synoptic = app.state.show_synoptic;
+            if ui
+                .checkbox(&mut synoptic, "Show stations on the map")
+                .on_hover_text("Synoptic network: NWS/mesonet/PWS stations (thermometer badges)")
+                .changed()
+            {
+                app.state.show_synoptic = synoptic;
+                app.state.persist_synoptic();
+                if synoptic {
+                    app.fetch_synoptic_now();
+                }
+            }
+            ui.add_space(4.0);
             let fill = warning_fill_slider(ui, app);
             sliders.push((12, fill));
             control_window_wheel(ui, &sliders, |target, steps| match target {

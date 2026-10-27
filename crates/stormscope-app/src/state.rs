@@ -1154,7 +1154,7 @@ impl Default for AppState {
             synoptic_last_view: None,
             synoptic_error: None,
             synoptic_pending: false,
-            show_synoptic: synoptic.show.unwrap_or(true),
+            show_synoptic: true,
             ambient_api_key: std::env::var("STORMSCOPE_AMBIENT_API_KEY")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
@@ -1175,7 +1175,7 @@ impl Default for AppState {
             ambient_last_attempt: None,
             ambient_error: None,
             ambient_pending: false,
-            show_ambient: ambient.show.unwrap_or(true),
+            show_ambient: true,
             ambient_hover: None,
             ambient_hover_at: 0.0,
             synoptic_hover: None,

@@ -650,12 +650,6 @@ pub fn synoptic_settings_window(ctx: &egui::Context, app: &mut StormApp, area: e
                 {
                     app.state.persist_synoptic();
                 }
-                if ui
-                    .checkbox(&mut app.state.show_synoptic, "Show stations on the map")
-                    .changed()
-                {
-                    app.state.persist_synoptic();
-                }
                 ui.add_space(6.0);
                 if app.state.synoptic_pending {
                     ui.horizontal(|ui| {

@@ -3306,23 +3306,15 @@ impl StormApp {
                     .request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
-        // Synoptic: auto-fetch on startup, every 10 minutes, and after a
-        // meaningful pan/zoom (throttled so panning cannot hammer the free
-        // tier).
+        // Synoptic: auto-fetch on startup and every 20 minutes. Upstream
+        // station data changes slowly (ASOS hourly, mesonets 5-15 min) and
+        // the free tier is ~5,000 requests/month, so polling faster than
+        // this buys nothing. Pan/zoom does not force a refetch.
         if !self.state.synoptic_pending && !self.state.synoptic_token.trim().is_empty() {
-            let (lat, lon, zoom) = (
-                self.state.view.center_lat,
-                self.state.view.center_lon,
-                self.state.view.zoom,
-            );
-            let view_moved = self.state.synoptic_last_view.is_none_or(|(l, o, z)| {
-                (l - lat).abs() > 0.75 || (o - lon).abs() > 1.0 || (z - zoom).abs() > 0.35
-            });
-            let aged_secs = if view_moved { 180 } else { 600 };
             let due = self
                 .state
                 .synoptic_last_fetch
-                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(aged_secs));
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(20 * 60));
             let throttled = self
                 .state
                 .synoptic_last_attempt

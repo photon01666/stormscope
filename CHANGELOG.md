@@ -3,6 +3,35 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.5.19 — 2026-10-27
+
+**Weather stations on the map**
+- Synoptic (Mesowest) network stations: NWS ASOS/AWOS, state mesonets and
+  personal weather stations, fetched automatically for the current map view.
+- Ambient Weather: your own personal station via the Ambient API (API key +
+  application key), always shown as a green thermometer.
+- Thermometer badges are tinted by temperature; the selected station's label
+  avoids user pins and their labels.
+- Hover a station for a second for a readable observation card; click for the
+  full fixed-width popup with °F, mph, inHg and inches.
+- Station settings have dedicated popups; Synoptic refreshes every 20
+  minutes, your Ambient station every 5 minutes. "Show stations on the map"
+  is in Map controls; your own station is always on.
+
+**AI meteorologist**
+- FutureCast can be requested on demand, including the 48-hour run, and is
+  included in the live voice summary. Download notes mention the 30–60 s wait.
+- Fixed a stuck spinner after a Gemini Live tool answered.
+- Instruct the live model to keep one consistent voice for the session.
+
+**Map**
+- Android pinch-to-zoom is damped and no longer pans the map mid-pinch;
+  wheel-style zoom is ignored on touch.
+- Disk cache moved to the bottom of Settings.
+
+**Desktop**
+- The AI settings window hugs its form instead of leaving a blank band.
+
 ## v1.5.18 — 2026-10-26
 
 **FutureCast and live radar**

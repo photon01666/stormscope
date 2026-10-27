@@ -437,6 +437,9 @@ pub fn melting_layer_sweep(volume: &Volume) -> Option<Sweep> {
 /// reaches the UI: product switching and playback then never pay for a
 /// derivation, at the cost of ~8 MB per resident volume.
 pub fn attach_derived(volume: &mut Volume) {
+    // Velocity dealiasing is independent of the reflectivity-derived
+    // products; do it even for velocity-only volumes.
+    crate::dealias::attach_dealiased(volume);
     if volume
         .sweeps
         .iter()
@@ -502,7 +505,10 @@ pub fn storm_relative_sweeps(volume: &Volume, motion_toward_deg: f32, speed_kt: 
     let (u, v) = (s_ms * th.sin(), s_ms * th.cos());
     let mut out = Vec::new();
     for sweep in &volume.sweeps {
-        let Some(md) = sweep.moment(Moment::Velocity) else {
+        let Some(md) = sweep
+            .moment(Moment::DealiasedVelocity)
+            .or_else(|| sweep.moment(Moment::Velocity))
+        else {
             continue;
         };
         let mut data = vec![0i16; md.ray_count * md.gate_count];

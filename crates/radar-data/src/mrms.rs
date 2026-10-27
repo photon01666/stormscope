@@ -33,6 +33,20 @@ pub enum MrmsProduct {
     Reflectivity,
     /// `PrecipRate_00.00`: the multi-sensor surface precipitation rate.
     PrecipRate,
+    /// Multi-sensor QPE accumulations (millimetres).
+    MultiSensorQpe01h,
+    MultiSensorQpe03h,
+    MultiSensorQpe06h,
+    MultiSensorQpe24h,
+    /// Radar-only QPE accumulations (millimetres).
+    RadarOnlyQpe01h,
+    RadarOnlyQpe03h,
+    RadarOnlyQpe06h,
+    RadarOnlyQpe24h,
+    /// FLASH flash-flood guidance: rain needed to reach guidance.
+    FlashFfg01h,
+    FlashFfg03h,
+    FlashFfg06h,
 }
 
 impl MrmsProduct {
@@ -40,6 +54,17 @@ impl MrmsProduct {
         match self {
             MrmsProduct::Reflectivity => "CONUS/MergedBaseReflectivity_00.50",
             MrmsProduct::PrecipRate => "CONUS/PrecipRate_00.00",
+            MrmsProduct::MultiSensorQpe01h => "CONUS/MultiSensor_QPE_01H_Pass2_00.00",
+            MrmsProduct::MultiSensorQpe03h => "CONUS/MultiSensor_QPE_03H_Pass2_00.00",
+            MrmsProduct::MultiSensorQpe06h => "CONUS/MultiSensor_QPE_06H_Pass2_00.00",
+            MrmsProduct::MultiSensorQpe24h => "CONUS/MultiSensor_QPE_24H_Pass2_00.00",
+            MrmsProduct::RadarOnlyQpe01h => "CONUS/RadarOnly_QPE_01H_00.00",
+            MrmsProduct::RadarOnlyQpe03h => "CONUS/RadarOnly_QPE_03H_00.00",
+            MrmsProduct::RadarOnlyQpe06h => "CONUS/RadarOnly_QPE_06H_00.00",
+            MrmsProduct::RadarOnlyQpe24h => "CONUS/RadarOnly_QPE_24H_00.00",
+            MrmsProduct::FlashFfg01h => "CONUS/FLASH_QPE_FFG01H_00.00",
+            MrmsProduct::FlashFfg03h => "CONUS/FLASH_QPE_FFG03H_00.00",
+            MrmsProduct::FlashFfg06h => "CONUS/FLASH_QPE_FFG06H_00.00",
         }
     }
 
@@ -47,6 +72,17 @@ impl MrmsProduct {
         match self {
             MrmsProduct::Reflectivity => "MRMS_MergedBaseReflectivity_00.50",
             MrmsProduct::PrecipRate => "MRMS_PrecipRate_00.00",
+            MrmsProduct::MultiSensorQpe01h => "MRMS_MultiSensor_QPE_01H_Pass2_00.00",
+            MrmsProduct::MultiSensorQpe03h => "MRMS_MultiSensor_QPE_03H_Pass2_00.00",
+            MrmsProduct::MultiSensorQpe06h => "MRMS_MultiSensor_QPE_06H_Pass2_00.00",
+            MrmsProduct::MultiSensorQpe24h => "MRMS_MultiSensor_QPE_24H_Pass2_00.00",
+            MrmsProduct::RadarOnlyQpe01h => "MRMS_RadarOnly_QPE_01H_00.00",
+            MrmsProduct::RadarOnlyQpe03h => "MRMS_RadarOnly_QPE_03H_00.00",
+            MrmsProduct::RadarOnlyQpe06h => "MRMS_RadarOnly_QPE_06H_00.00",
+            MrmsProduct::RadarOnlyQpe24h => "MRMS_RadarOnly_QPE_24H_00.00",
+            MrmsProduct::FlashFfg01h => "MRMS_FLASH_QPE_FFG01H_00.00",
+            MrmsProduct::FlashFfg03h => "MRMS_FLASH_QPE_FFG03H_00.00",
+            MrmsProduct::FlashFfg06h => "MRMS_FLASH_QPE_FFG06H_00.00",
         }
     }
 
@@ -54,7 +90,54 @@ impl MrmsProduct {
         match self {
             MrmsProduct::Reflectivity => "MRMS reflectivity",
             MrmsProduct::PrecipRate => "MRMS precip rate",
+            MrmsProduct::MultiSensorQpe01h => "QPE 1 h (multi-sensor)",
+            MrmsProduct::MultiSensorQpe03h => "QPE 3 h (multi-sensor)",
+            MrmsProduct::MultiSensorQpe06h => "QPE 6 h (multi-sensor)",
+            MrmsProduct::MultiSensorQpe24h => "QPE 24 h (multi-sensor)",
+            MrmsProduct::RadarOnlyQpe01h => "QPE 1 h (radar only)",
+            MrmsProduct::RadarOnlyQpe03h => "QPE 3 h (radar only)",
+            MrmsProduct::RadarOnlyQpe06h => "QPE 6 h (radar only)",
+            MrmsProduct::RadarOnlyQpe24h => "QPE 24 h (radar only)",
+            MrmsProduct::FlashFfg01h => "FFG 1 h (rain needed)",
+            MrmsProduct::FlashFfg03h => "FFG 3 h (rain needed)",
+            MrmsProduct::FlashFfg06h => "FFG 6 h (rain needed)",
         }
+    }
+    pub fn is_qpe(self) -> bool {
+        matches!(
+            self,
+            MrmsProduct::MultiSensorQpe01h
+                | MrmsProduct::MultiSensorQpe03h
+                | MrmsProduct::MultiSensorQpe06h
+                | MrmsProduct::MultiSensorQpe24h
+                | MrmsProduct::RadarOnlyQpe01h
+                | MrmsProduct::RadarOnlyQpe03h
+                | MrmsProduct::RadarOnlyQpe06h
+                | MrmsProduct::RadarOnlyQpe24h
+                | MrmsProduct::FlashFfg01h
+                | MrmsProduct::FlashFfg03h
+                | MrmsProduct::FlashFfg06h
+        )
+    }
+
+    pub fn is_ffg(self) -> bool {
+        matches!(
+            self,
+            MrmsProduct::FlashFfg01h | MrmsProduct::FlashFfg03h | MrmsProduct::FlashFfg06h
+        )
+    }
+
+    pub fn accumulation_hours(self) -> Option<u16> {
+        Some(match self {
+            MrmsProduct::MultiSensorQpe01h | MrmsProduct::RadarOnlyQpe01h => 1,
+            MrmsProduct::MultiSensorQpe03h | MrmsProduct::RadarOnlyQpe03h => 3,
+            MrmsProduct::MultiSensorQpe06h | MrmsProduct::RadarOnlyQpe06h => 6,
+            MrmsProduct::MultiSensorQpe24h | MrmsProduct::RadarOnlyQpe24h => 24,
+            MrmsProduct::FlashFfg01h => 1,
+            MrmsProduct::FlashFfg03h => 3,
+            MrmsProduct::FlashFfg06h => 6,
+            _ => return None,
+        })
     }
 }
 
@@ -209,7 +292,9 @@ impl MrmsSource {
 /// Parse `MRMS_...._YYYYMMDD-HHMMSS.grib2.gz` into its valid time.
 pub fn time_from_key(key: &str) -> Option<DateTime<Utc>> {
     let name = key.rsplit('/').next()?;
-    let idx = name.find("_2")? + 1;
+    // Use the last `_2` so the `24H` product suffix is not mistaken for
+    // the start of the timestamp.
+    let idx = name.rfind("_2")? + 1;
     let stamp = name.get(idx..idx + 15)?; // YYYYMMDD-HHMMSS
     let naive = NaiveDateTime::parse_from_str(stamp, "%Y%m%d-%H%M%S").ok()?;
     Some(Utc.from_utc_datetime(&naive))
@@ -310,9 +395,19 @@ pub fn decode_grib2(
     if w != ni || h != nj {
         bail!("PNG {w}x{h} does not match the grid {ni}x{nj}");
     }
-    let samples: Vec<u16> = match image {
-        image::DynamicImage::ImageLuma16(buf) => buf.into_raw(),
-        image::DynamicImage::ImageLuma8(buf) => buf.into_raw().into_iter().map(u16::from).collect(),
+    // Most MRMS products use 16-bit grayscale PNG. The FLASH guidance
+    // products use an RGB8 PNG carrying a 24-bit sample in R,G,B order.
+    let samples: Vec<u32> = match image {
+        image::DynamicImage::ImageLuma16(buf) => {
+            buf.into_raw().into_iter().map(u32::from).collect()
+        }
+        image::DynamicImage::ImageLuma8(buf) => buf.into_raw().into_iter().map(u32::from).collect(),
+        image::DynamicImage::ImageRgb8(buf) => {
+            let raw = buf.into_raw();
+            raw.chunks_exact(3)
+                .map(|p| (u32::from(p[0]) << 16) | (u32::from(p[1]) << 8) | u32::from(p[2]))
+                .collect()
+        }
         _ => bail!("unexpected MRMS PNG colour type"),
     };
 
@@ -336,7 +431,7 @@ pub fn decode_grib2(
     for y in (row0..=row1).step_by(step) {
         let row = &samples[y * ni..(y + 1) * ni];
         for x in (col0..=col1).step_by(step) {
-            values.push((reference + f32::from(row[x]) * binary) / decimal);
+            values.push((reference + row[x] as f32 * binary) / decimal);
         }
     }
     Ok(Mosaic {

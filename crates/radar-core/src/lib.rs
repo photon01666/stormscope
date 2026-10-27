@@ -5,11 +5,17 @@
 //! application shell (`stormscope-app`). Keep it dependency-light and
 //! semantically stable; extend additively.
 
+pub mod dealias;
 pub mod derived;
 pub mod forecast;
 pub mod outlooks;
+pub mod qc;
 pub mod sampling;
+pub mod severe;
 pub mod sites;
+pub mod sounding;
+pub mod terrain;
+pub mod vad;
 pub mod vcp;
 pub mod warnings;
 pub mod winter;
@@ -49,6 +55,9 @@ pub enum Moment {
     /// Storm-relative radial velocity (m/s) — radial velocity minus the
     /// storm motion projected onto each radial.
     StormRelativeVelocity,
+    /// Dealiased radial velocity (m/s) — velocity with range/azimuth folding
+    /// removed, derived from the base VEL sweep.
+    DealiasedVelocity,
     /// Hydrometeor classification (categorical) — rain / heavy rain / dry
     /// snow / wet snow / mixed / ice crystals / graupel-hail / clutter,
     /// from the dual-pol trio (Z, ZDR, CC) and KDP.
@@ -76,6 +85,7 @@ impl Moment {
             Moment::EchoTops => "TOPS",
             Moment::Mesh => "MEHS",
             Moment::StormRelativeVelocity => "SRM",
+            Moment::DealiasedVelocity => "VEL-D",
             Moment::Hydrometeor => "HCA",
             Moment::SnowRate => "SNOW",
             Moment::MeltingLayer => "MELT",
@@ -97,6 +107,7 @@ impl Moment {
             Moment::EchoTops => "kft",
             Moment::Mesh => "in",
             Moment::StormRelativeVelocity => "m/s",
+            Moment::DealiasedVelocity => "m/s",
             Moment::Hydrometeor => "",
             Moment::SnowRate => "in/h",
             Moment::MeltingLayer => "kft",

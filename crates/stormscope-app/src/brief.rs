@@ -43,6 +43,28 @@ pub struct BriefInputs<'a> {
     pub forecast_age_min: Option<u64>,
     pub observation: Option<&'a radar_core::forecast::Observation>,
     pub totals: &'a [radar_data::StationTotals],
+    /// Model sounding loaded in the Sounding window.
+    pub sounding: Option<&'a radar_core::sounding::Sounding>,
+    /// Age of the loaded sounding in minutes.
+    pub sounding_age_min: Option<u64>,
+    /// Low-level rotation/TVS signatures for the current volume.
+    pub rotation: &'a [radar_core::severe::RotationSignature],
+    /// Hail cores accumulated across the loaded loop.
+    pub hail: &'a [radar_core::severe::HailCore],
+    /// Radar-derived VAD wind profile for the current volume.
+    pub vad: Option<&'a radar_core::vad::VadProfile>,
+    /// MRMS QPE windows (CONUS first, the sharp radar window last).
+    pub qpe: Option<&'a [std::sync::Arc<radar_data::mrms::Mosaic>]>,
+    /// Age of the loaded QPE product in minutes.
+    pub qpe_age_min: Option<u64>,
+    /// HRRR point forecast profiles, when loaded.
+    pub hrrr: Option<&'a radar_data::SoundingSeries>,
+    /// Selected HRRR forecast hour index.
+    pub hrrr_hour: usize,
+    /// HRRR 2D model field currently loaded.
+    pub model_field: Option<&'a radar_data::HrrrField>,
+    /// Age of the loaded model field in minutes.
+    pub model_field_age_min: Option<u64>,
     /// MRMS windows (CONUS first, the sharp radar window last).
     pub mrms: Option<&'a [std::sync::Arc<radar_data::mrms::Mosaic>]>,
     /// What the user is looking at right now, so the model can decide what to
@@ -117,6 +139,21 @@ pub fn system_prompt() -> String {
      with DATA: a full run can take 30–60 seconds to download, so tell the user it is downloading. \
      The default run is 18 hours; set `futurecast_hours` to 48 when the user asks about the \
      extended outlook.\n\
+     - `sounding` is an Open-Meteo model profile, not an observed RAOB. Use its CAPE, CIN, \
+     shear, SRH, LCL and moisture as environmental context. `sounding.severe_potential`, \
+     `tornado_potential` and `winter` are heuristic 0-100 indicators, not official forecasts; \
+     never present them as SPC risk categories. For winter, use `sounding.winter.type` and the \
+     surface observation; snow or ice is only possible when the surface is near or below \
+     freezing. If it is missing, request it with DATA.\n\
+     - `rotation_signatures` are single-radar velocity couplets (MESO / TVS?) and \
+     `hail_swath` is the accumulated MEHS cores. Treat them as evidence to mention when the \
+     user asks about rotation or hail, not as official warnings. `vad` is a radar-derived \
+     vertical wind profile; use it for wind shear/aloft flow, and say it is radar-derived. \
+     `qpe` is MRMS rainfall accumulation in inches; use it for rainfall/flood questions and \
+     compare it to station totals when both are present. If its product starts with FFG, the \
+     values are rainfall *needed* to reach flash-flood guidance — lower values mean higher risk, \
+     not observed rainfall. It is not an official flood warning. `hrrr_forecast` is an hourly \
+     HRRR model point forecast; use it for trends and always call it a forecast.\n\
      - Lead with the answer in the first sentence: is anything dangerous coming, when, and what \
      should the reader do? For `current_location` and each marker write 2-4 short sentences: what \
      is happening now, what the next 30-90 minutes look like, the specific hazard \
@@ -154,9 +191,10 @@ pub fn system_prompt() -> String {
      When you answer after a LOOK, centre the MAP on that area and choose a zoom that shows the \
      whole disk (not a single point).\n\
      - If the answer needs data that `data_status` says is missing — MRMS, GOES, the NWS \
-     forecast, station totals, or a different SPC day/type — reply with ONLY:\n\
+     forecast, station totals, a model sounding, or a different SPC day/type — reply with ONLY:\n\
      DATA: {\"mrms\": true, \"goes\": true, \"futurecast\": true, \"forecast\": {\"lat\": 39.05, \
      \"lon\": -95.68, \"label\": \"Topeka\"}, \"totals\": {\"lat\": 39.05, \"lon\": -95.68}, \
+     \"sounding\": {\"lat\": 39.05, \"lon\": -95.68, \"label\": \"Topeka\"}, \
      \"spc\": {\"day\": 2, \"kind\": \"tornado\"}}\n\
      Include only what you need. The app fetches it and sends a second snapshot; then answer \
      fully. One DATA round per question.\n\
@@ -181,7 +219,7 @@ pub fn system_prompt() -> String {
      \"show_melting_layer\": true}\n\
      Every field is optional; send only what helps (focus the marker, show the velocity couplet, \
      open the 3D pane or a cross-section, show the 0 °C level). Allowed products: REF, VEL, SW, \
-     ZDR, PHI, KDP, CC, VIL, TOPS, MEHS, SRM, HCA, SNOW, MELT. pane: none, split, max3d, map. \n\
+     ZDR, PHI, KDP, CC, VIL, TOPS, MEHS, SRM, VELD, HCA, SNOW, MELT. pane: none, split, max3d, map. \n\
      - Mark what you are talking about with an `annotations` array inside the same MAP object: \
      [{\"lat\": 38.9, \"lon\": -97.2, \"radius_mi\": 2, \"alt_kft\": 0, \"label\": \"possible tornado\", \
      \"kind\": \"tornado\"}]. Kinds: tornado, hail, wind, flood, updraft, generic. `alt_kft` > 0 \
@@ -345,11 +383,23 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             "storm_reports_loaded": !input.lsrs.is_empty(),
             "mcds_loaded": !input.mcds.is_empty(),
             "station_totals_loaded": !input.totals.is_empty(),
+            "sounding_loaded": input.sounding.is_some(),
+            "sounding_source": input.sounding.map(|s| s.source.clone()),
+            "sounding_age_min": input.sounding_age_min,
+            "rotation_count": input.rotation.len(),
+            "hail_core_count": input.hail.len(),
+            "vad_loaded": input.vad.is_some_and(|v| !v.levels.is_empty()),
+            "qpe_loaded": input.qpe.is_some(),
+            "qpe_product": input.qpe.and_then(|q| q.last()).map(|m| m.product.label()),
+            "qpe_age_min": input.qpe_age_min,
+            "hrrr_loaded": input.hrrr.is_some(),
+            "hrrr_profiles": input.hrrr.map(|h| h.profiles.len()),
+            "model_field_loaded": input.model_field.is_some(),
             "spc_outlook_loaded": input.outlook.is_some(),
             "spc_day": input.outlook.map(|o| o.day),
             "spc_type": input.outlook.map(|o| o.ty.label()),
             "srm_loaded": input.srm_volume.is_some(),
-            "note": "MRMS/GOES/futurecast/forecast/totals/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them. A futurecast request downloads a full HRRR run (18 or 48 hours) and can take 30-60 seconds, so tell the user it is downloading before answering. Set futurecast_hours to 48 for the extended run (default 18). `futurecast` is HRRR simulated reflectivity, a model forecast, not observed radar. Rain/snow values are in `rain_snow_totals`, in inches.",
+            "note": "MRMS/GOES/futurecast/forecast/totals/sounding/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them. A futurecast request downloads a full HRRR run (18 or 48 hours) and can take 30-60 seconds, so tell the user it is downloading before answering. Set futurecast_hours to 48 for the extended run (default 18). `futurecast` is HRRR simulated reflectivity, a model forecast, not observed radar. Rain/snow values are in `rain_snow_totals`, in inches. `sounding` is a model profile, not an observed RAOB; its severe/tornado/winter scores are heuristic, not official forecasts.",
         }),
     );
 
@@ -456,6 +506,226 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
                 "updated_utc": forecast.updated.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
                 "fetched_age_min": input.forecast_age_min,
                 "periods": periods,
+            }),
+        );
+    }
+
+    if let Some(sounding) = input.sounding {
+        let levels: Vec<Value> = sounding
+            .levels
+            .iter()
+            .map(|l| {
+                json!({
+                    "pressure_hpa": round1(l.pressure_hpa),
+                    "height_ft": round1(l.height_m * 3.280_84),
+                    "temperature_f": round1f(c_to_f(l.temp_c as f32)),
+                    "dewpoint_f": round1f(c_to_f(l.dewpoint_c as f32)),
+                    "rh_pct": round1(l.rh_pct),
+                    "wind_mph": round1(l.wind_speed_ms * 2.236_94),
+                    "wind_from_deg": round1(l.wind_dir_deg),
+                })
+            })
+            .collect();
+        root.insert(
+            "sounding".into(),
+            json!({
+                "source": sounding.source,
+                "valid_utc": sounding.valid_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "point": {
+                    "lat": round4(sounding.latitude),
+                    "lon": round4(sounding.longitude),
+                },
+                "age_min": input.sounding_age_min,
+                "surface": {
+                    "pressure_hpa": round1(sounding.surface_pressure_hpa),
+                    "height_ft": round1(
+                        sounding.levels.first().map(|l| l.height_m).unwrap_or(0.0) * 3.280_84,
+                    ),
+                    "temperature_f": round1f(c_to_f(sounding.surface_temp_c as f32)),
+                    "dewpoint_f": round1f(c_to_f(sounding.surface_dewpoint_c as f32)),
+                },
+                "parameters": {
+                    "cape_jkg": round1(sounding.sb_cape_jkg),
+                    "cin_jkg": round1(sounding.sb_cin_jkg),
+                    "lcl_pressure_hpa": sounding.lcl_pressure_hpa.map(round1),
+                    "lcl_height_ft": sounding.lcl_height_m.map(|m| round1(m * 3.280_84)),
+                    "lfc_pressure_hpa": sounding.lfc_pressure_hpa.map(round1),
+                    "el_pressure_hpa": sounding.el_pressure_hpa.map(round1),
+                    "pwat_mm": round1(sounding.pwat_mm),
+                    "freezing_level_ft": sounding.freezing_level_m.map(|m| round1(m * 3.280_84)),
+                    "wet_bulb_zero_ft": sounding.wet_bulb_zero_m.map(|m| round1(m * 3.280_84)),
+                    "shear_0_1km_mph": round1(sounding.shear_0_1km_ms * 2.236_94),
+                    "shear_0_3km_mph": round1(sounding.shear_0_3km_ms * 2.236_94),
+                    "shear_0_6km_mph": round1(sounding.shear_0_6km_ms * 2.236_94),
+                    "srh_0_1km": round1(sounding.srh_0_1km),
+                    "srh_0_3km": round1(sounding.srh_0_3km),
+                },
+                "severe_potential": {
+                    "score": round1(sounding.severe_potential()),
+                    "label": radar_core::sounding::Sounding::potential_label(sounding.severe_potential()),
+                    "note": "Heuristic 0-100 environment favorability, not an official forecast.",
+                },
+                "tornado_potential": {
+                    "score": round1(sounding.tornado_potential()),
+                    "label": radar_core::sounding::Sounding::potential_label(sounding.tornado_potential()),
+                    "note": "Heuristic 0-100 tornado-environment favorability, not an official forecast.",
+                },
+                "winter": {
+                    "score": round1(sounding.winter_potential()),
+                    "label": radar_core::sounding::Sounding::potential_label(sounding.winter_potential()),
+                    "type": sounding.winter_type(),
+                    "note": "Winter type is inferred from the thermal profile; the score is heuristic and not a forecast.",
+                },
+                "levels": levels,
+                "note": "Open-Meteo model sounding, not an observed RAOB. Scores are environmental heuristics, not storm warnings.",
+            }),
+        );
+    }
+
+    root.insert(
+        "rotation_signatures".into(),
+        json!(
+            input
+                .rotation
+                .iter()
+                .take(8)
+                .map(|s| json!({
+                    "lat": round4(s.lat),
+                    "lon": round4(s.lon),
+                    "range_mi": round1(s.range_km * 0.621_371),
+                    "elevation_deg": round1(s.elevation_deg as f64),
+                    "delta_v_mph": round1(s.delta_v_ms * 2.236_94),
+                    "shear_s": round1(s.shear_s * 1000.0) / 1000.0,
+                    "tvs": s.tvs,
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
+    root.insert(
+        "hail_swath".into(),
+        json!(
+            input
+                .hail
+                .iter()
+                .take(40)
+                .map(|c| json!({
+                    "lat": round4(c.lat),
+                    "lon": round4(c.lon),
+                    "mehs_in": round1(c.mehs_in),
+                    "time_utc": c.time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
+    if let Some(vad) = input.vad {
+        root.insert(
+            "vad".into(),
+            json!({
+                "levels": vad.levels.iter().map(|l| json!({
+                    "height_ft": round1(l.height_m * 3.280_84),
+                    "wind_mph": round1(l.speed_ms * 2.236_94),
+                    "wind_from_deg": round1(l.dir_deg),
+                    "u_mph": round1(l.u_ms * 2.236_94),
+                    "v_mph": round1(l.v_ms * 2.236_94),
+                    "rms_mph": round1(l.rms_ms * 2.236_94),
+                    "gates": l.gates,
+                    "range_mi": round1(l.range_km * 0.621_371),
+                })).collect::<Vec<_>>(),
+                "note": "Single-radar VAD, one wind per elevation cut; not a model sounding.",
+            }),
+        );
+    }
+
+    if let Some(qpe) = input.qpe {
+        if let Some(near) = qpe.last() {
+            let mut samples: Vec<Value> = Vec::new();
+            if let Some((lat, lon)) = input.gps_fix {
+                if let Some(mm) = mosaic_value_at(near, lat, lon) {
+                    samples.push(json!({"label": "GPS", "lat": round4(lat), "lon": round4(lon), "inches": round2(mm / 25.4)}));
+                }
+            }
+            for marker in input.markers.iter().take(12) {
+                if let Some(mm) = mosaic_value_at(near, marker.lat, marker.lon) {
+                    samples.push(json!({"label": marker.display(), "lat": round4(marker.lat), "lon": round4(marker.lon), "inches": round2(mm / 25.4)}));
+                }
+            }
+            root.insert(
+                "qpe".into(),
+                json!({
+                    "product": near.product.label(),
+                    "time_utc": near.time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "age_min": input.qpe_age_min,
+                    "units": "inches",
+                    "samples": samples,
+                    "note": if near.product.is_ffg() {
+                        "FFG rainfall needed in inches — lower values mean greater flash-flood risk. Not an official warning."
+                    } else {
+                        "MRMS QPE accumulation in inches; multi-sensor or radar-only depending on the product. Not an official flood warning."
+                    },
+                }),
+            );
+        }
+    }
+
+    if let Some(hrrr) = input.hrrr {
+        if let Some(profile) = hrrr.profiles.get(input.hrrr_hour) {
+            let mut hourly = Vec::new();
+            for p in hrrr.profiles.iter().step_by(3).take(12) {
+                hourly.push(json!({
+                    "valid_utc": p.valid_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "cape_jkg": round1(p.sb_cape_jkg),
+                    "cin_jkg": round1(p.sb_cin_jkg),
+                    "pwat_mm": round1(p.pwat_mm),
+                    "shear_0_6km_mph": round1(p.shear_0_6km_ms * 2.236_94),
+                    "srh_0_3km": round1(p.srh_0_3km),
+                }));
+            }
+            root.insert(
+                "hrrr_forecast".into(),
+                json!({
+                    "point": {"lat": round4(hrrr.latitude), "lon": round4(hrrr.longitude)},
+                    "selected_valid_utc": profile.valid_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "selected": {
+                        "cape_jkg": round1(profile.sb_cape_jkg),
+                        "cin_jkg": round1(profile.sb_cin_jkg),
+                        "lcl_height_ft": profile.lcl_height_m.map(|m| round1(m * 3.280_84)),
+                        "pwat_mm": round1(profile.pwat_mm),
+                        "shear_0_6km_mph": round1(profile.shear_0_6km_ms * 2.236_94),
+                        "srh_0_3km": round1(profile.srh_0_3km),
+                    },
+                    "hourly": hourly,
+                    "note": "HRRR model point forecast via Open-Meteo; not observed. Use for forecast trends.",
+                }),
+            );
+        }
+    }
+
+    if let Some(field) = input.model_field {
+        let mut samples: Vec<Value> = Vec::new();
+        if let Some((lat, lon)) = input.gps_fix {
+            if let Some(v) = model_field_at(field, lat, lon) {
+                samples.push(json!({"label": "GPS", "lat": round4(lat), "lon": round4(lon), "value": round1(v as f64)}));
+            }
+        }
+        for marker in input.markers.iter().take(12) {
+            if let Some(v) = model_field_at(field, marker.lat, marker.lon) {
+                samples.push(json!({"label": marker.display(), "lat": round4(marker.lat), "lon": round4(marker.lon), "value": round1(v as f64)}));
+            }
+        }
+        let unit = match field.kind {
+            radar_data::HrrrFieldKind::Qpf => "inches",
+            radar_data::HrrrFieldKind::Cape => "J/kg",
+            radar_data::HrrrFieldKind::Shear => "m/s",
+        };
+        root.insert(
+            "model_field".into(),
+            json!({
+                "kind": field.kind.label(),
+                "unit": unit,
+                "valid_utc": field.valid.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "age_min": input.model_field_age_min,
+                "samples": samples,
+                "note": "HRRR model field, not an observation.",
             }),
         );
     }
@@ -1684,6 +1954,51 @@ fn outlook_area_sq_mi(feature: &radar_core::outlooks::OutlookFeature) -> f64 {
     total
 }
 
+fn model_field_at(field: &radar_data::HrrrField, lat: f64, lon: f64) -> Option<f32> {
+    if lat > field.north || lat < field.south || lon < field.west || lon > field.east {
+        return None;
+    }
+    let mx0 = 6_378_137.0 * field.west.to_radians();
+    let mx1 = 6_378_137.0 * field.east.to_radians();
+    let my0 = 6_378_137.0
+        * (std::f64::consts::PI / 4.0 + field.south.to_radians() / 2.0)
+            .tan()
+            .ln();
+    let my1 = 6_378_137.0
+        * (std::f64::consts::PI / 4.0 + field.north.to_radians() / 2.0)
+            .tan()
+            .ln();
+    let mx = 6_378_137.0 * lon.to_radians();
+    let my = 6_378_137.0
+        * (std::f64::consts::PI / 4.0 + lat.to_radians() / 2.0)
+            .tan()
+            .ln();
+    let x = ((mx - mx0) / (mx1 - mx0) * (field.width - 1) as f64).round() as usize;
+    let y = ((my1 - my) / (my1 - my0) * (field.height - 1) as f64).round() as usize;
+    field
+        .values
+        .get(y * field.width + x)
+        .copied()
+        .filter(|v| v.is_finite())
+}
+
+fn mosaic_value_at(m: &radar_data::mrms::Mosaic, lat: f64, lon: f64) -> Option<f32> {
+    if lat > m.north
+        || lat < m.south
+        || lon < m.west
+        || lon > m.east
+        || m.width == 0
+        || m.height == 0
+    {
+        return None;
+    }
+    let u = ((lon - m.west) / (m.east - m.west)).clamp(0.0, 1.0) * (m.width - 1) as f64;
+    let v = ((m.north - lat) / (m.north - m.south)).clamp(0.0, 1.0) * (m.height - 1) as f64;
+    let x = u.round() as usize;
+    let y = v.round() as usize;
+    m.values.get(y * m.width + x).copied()
+}
+
 fn c_to_f(c: f32) -> f32 {
     c * 9.0 / 5.0 + 32.0
 }
@@ -1794,6 +2109,49 @@ mod tests {
         };
         radar_core::derived::attach_derived(&mut volume);
 
+        let sounding_levels = vec![
+            radar_core::sounding::SoundingLevel {
+                pressure_hpa: 1000.0,
+                height_m: 300.0,
+                temp_c: 15.0,
+                dewpoint_c: 10.0,
+                rh_pct: 70.0,
+                wind_speed_ms: 10.0,
+                wind_dir_deg: 180.0,
+                u_ms: 0.0,
+                v_ms: -10.0,
+            },
+            radar_core::sounding::SoundingLevel {
+                pressure_hpa: 850.0,
+                height_m: 1500.0,
+                temp_c: 8.0,
+                dewpoint_c: 4.0,
+                rh_pct: 75.0,
+                wind_speed_ms: 20.0,
+                wind_dir_deg: 240.0,
+                u_ms: 17.3,
+                v_ms: 10.0,
+            },
+            radar_core::sounding::SoundingLevel {
+                pressure_hpa: 500.0,
+                height_m: 5600.0,
+                temp_c: -20.0,
+                dewpoint_c: -30.0,
+                rh_pct: 40.0,
+                wind_speed_ms: 35.0,
+                wind_dir_deg: 270.0,
+                u_ms: 35.0,
+                v_ms: 0.0,
+            },
+        ];
+        let sounding = radar_core::sounding::Sounding::from_levels(
+            41.0,
+            -97.0,
+            chrono::Utc::now(),
+            "test",
+            sounding_levels,
+        );
+
         let site = radar_core::sites::site("KTWX").expect("site");
         let marker = MapMarker {
             lat: site.latitude + 30.0 / 111.0,
@@ -1879,6 +2237,17 @@ mod tests {
             forecast_age_min: None,
             observation: None,
             totals: &[],
+            sounding: Some(&sounding),
+            sounding_age_min: Some(1),
+            rotation: &[],
+            hail: &[],
+            vad: None,
+            qpe: None,
+            qpe_age_min: None,
+            hrrr: None,
+            hrrr_hour: 0,
+            model_field: None,
+            model_field_age_min: None,
             mrms: Some(std::slice::from_ref(&mosaic)),
             view_moment: Moment::Reflectivity,
             view_tilt_deg: 0.5,
@@ -1923,6 +2292,11 @@ mod tests {
             r#""label":"Wichita""#,
             r#""echo_coverage_pct""#,
             r#""max_dbz_at""#,
+            r#""severe_potential""#,
+            r#""tornado_potential""#,
+            r#""winter""#,
+            r#""rotation_signatures""#,
+            r#""hail_swath""#,
         ] {
             assert!(
                 brief.user.contains(needle),
@@ -2026,6 +2400,17 @@ mod tests {
             forecast_age_min: None,
             observation: Some(&observation),
             totals: &[],
+            sounding: None,
+            sounding_age_min: None,
+            rotation: &[],
+            hail: &[],
+            vad: None,
+            qpe: None,
+            qpe_age_min: None,
+            hrrr: None,
+            hrrr_hour: 0,
+            model_field: None,
+            model_field_age_min: None,
             mrms: None,
             view_moment: Moment::Reflectivity,
             view_tilt_deg: 0.5,

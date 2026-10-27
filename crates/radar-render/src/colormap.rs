@@ -239,7 +239,7 @@ const MEHS_STOPS: &[Stop] = &[
 fn stops_for(kind: Moment) -> &'static [Stop] {
     match kind {
         Moment::Reflectivity | Moment::CompositeReflectivity => REFLECTIVITY_STOPS,
-        Moment::Velocity => VELOCITY_STOPS,
+        Moment::Velocity | Moment::DealiasedVelocity => VELOCITY_STOPS,
         Moment::SpectrumWidth => SPECTRUM_WIDTH_STOPS,
         Moment::DifferentialReflectivity => ZDR_STOPS,
         Moment::DifferentialPhase => PHI_STOPS,

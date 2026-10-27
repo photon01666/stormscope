@@ -581,6 +581,59 @@ pub fn run(
                         }
                     });
                 }
+                DataCmd::LoadQpe(product) => {
+                    let out = out.clone();
+                    let site = current_site.clone();
+                    std::thread::spawn(move || {
+                        let source = radar_data::mrms::MrmsSource::new(
+                            radar_data::DiskCache::default_root(),
+                        );
+                        let crop = radar_core::sites::site(&site)
+                            .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude));
+                        let wide = source.latest(product, 3, None);
+                        let near = source.latest(product, 1, crop);
+                        match (wide, near) {
+                            (Ok(wide), Ok(near)) => {
+                                let _ = out.send(DataMsg::Qpe {
+                                    product,
+                                    mosaics: vec![
+                                        std::sync::Arc::new(wide),
+                                        std::sync::Arc::new(near),
+                                    ],
+                                });
+                            }
+                            (Err(e), _) | (_, Err(e)) => {
+                                log::warn!("MRMS QPE: {e:#}");
+                                let _ = out.send(DataMsg::Error(format!("MRMS QPE: {e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadModelField { kind, hour } => {
+                    let out = out.clone();
+                    let site = current_site.clone();
+                    std::thread::spawn(move || {
+                        let source = match radar_data::HrrrFieldSource::new() {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ = out.send(DataMsg::Error(format!("HRRR field: {e:#}")));
+                                return;
+                            }
+                        };
+                        let bbox = radar_core::sites::site(&site)
+                            .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude))
+                            .unwrap_or([35.0, -100.0, 43.0, -92.0]);
+                        match source.fetch_latest(kind, hour, bbox) {
+                            Ok(field) => {
+                                let _ = out.send(DataMsg::ModelField(std::sync::Arc::new(field)));
+                            }
+                            Err(e) => {
+                                log::warn!("HRRR field: {e:#}");
+                                let _ = out.send(DataMsg::Error(format!("HRRR field: {e:#}")));
+                            }
+                        }
+                    });
+                }
                 DataCmd::SetSynopticToken(token) => {
                     let t = token.trim().to_string();
                     if t.is_empty() {
@@ -851,6 +904,68 @@ pub fn run(
                         "loading forecast for {lat:.3}, {lon:.3}…"
                     )));
                     refresh_forecast(&forecasts, lat, lon, &out);
+                }
+                DataCmd::LoadSounding(lat, lon) => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let src = match radar_data::SoundingSource::new(USER_AGENT) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ =
+                                    out.send(DataMsg::SoundingError(format!("sounding: {e:#}")));
+                                return;
+                            }
+                        };
+                        match src.model_sounding(lat, lon) {
+                            Ok(s) => {
+                                let _ = out.send(DataMsg::Sounding(s));
+                            }
+                            Err(e) => {
+                                let _ =
+                                    out.send(DataMsg::SoundingError(format!("sounding: {e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadTerrain(lat, lon) => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let src = match radar_data::TerrainSource::new(USER_AGENT) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ = out.send(DataMsg::TerrainError(format!("terrain: {e:#}")));
+                                return;
+                            }
+                        };
+                        match src.for_site(lat, lon) {
+                            Ok(grid) => {
+                                let _ = out.send(DataMsg::Terrain(std::sync::Arc::new(grid)));
+                            }
+                            Err(e) => {
+                                let _ = out.send(DataMsg::TerrainError(format!("terrain: {e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadHrrr(lat, lon) => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let src = match radar_data::SoundingSource::new(USER_AGENT) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ = out.send(DataMsg::HrrrError(format!("HRRR: {e:#}")));
+                                return;
+                            }
+                        };
+                        match src.hrrr_series(lat, lon) {
+                            Ok(series) => {
+                                let _ = out.send(DataMsg::Hrrr(series));
+                            }
+                            Err(e) => {
+                                let _ = out.send(DataMsg::HrrrError(format!("HRRR: {e:#}")));
+                            }
+                        }
+                    });
                 }
                 DataCmd::ClearRadar => {
                     let _ = out.send(DataMsg::Status("clearing radar data…".into()));

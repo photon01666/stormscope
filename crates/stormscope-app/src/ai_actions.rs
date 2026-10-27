@@ -137,6 +137,8 @@ pub struct DataRequest {
     #[serde(default)]
     pub totals: Option<DataPoint>,
     #[serde(default)]
+    pub sounding: Option<DataPoint>,
+    #[serde(default)]
     pub spc: Option<DataSpc>,
 }
 
@@ -401,6 +403,7 @@ fn moment_for(name: &str) -> Option<Moment> {
     Some(match name.trim().to_ascii_uppercase().as_str() {
         "REF" | "REFLECTIVITY" | "DBZ" => Moment::Reflectivity,
         "VEL" | "VELOCITY" => Moment::Velocity,
+        "VELD" | "VEL-D" | "DEALIASED" | "DEALIASEDVELOCITY" => Moment::DealiasedVelocity,
         "SW" | "SPECTRUMWIDTH" => Moment::SpectrumWidth,
         "ZDR" | "DIFFERENTIALREFLECTIVITY" => Moment::DifferentialReflectivity,
         "PHI" | "DIFFERENTIALPHASE" => Moment::DifferentialPhase,
@@ -455,6 +458,12 @@ mod tests {
         assert_eq!(data.mrms, Some(true));
         assert_eq!(data.forecast.as_ref().map(|p| p.lat), Some(39.05));
         assert_eq!(data.spc.and_then(|s| s.day), Some(2));
+        let sounding = "DATA: {\"sounding\":{\"lat\":39.05,\"lon\":-95.68,\"label\":\"Topeka\"}}";
+        let (_, _, _, data) = split_reply(sounding);
+        assert_eq!(
+            data.expect("sounding request").sounding.map(|p| p.lat),
+            Some(39.05)
+        );
     }
 
     #[test]

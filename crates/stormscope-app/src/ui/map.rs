@@ -103,6 +103,23 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             }
             let _ = app.tx.send(crate::app::DataCmd::LoadForecast(lat, lon));
         }
+    } else if app.state.sounding_pick_mode && response.clicked() && !crosshair_mode {
+        if let Some(click) = response.interact_pointer_pos() {
+            let (cx, cy) = viewport_pos(rect, click);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            app.state.sounding_point = Some((lat, lon));
+            app.state.sounding_point_gps = false;
+            app.state.sounding_pick_mode = false;
+            app.state.sounding = None;
+            app.state.sounding_requested = None;
+            app.state.sounding_error = None;
+            app.state.sounding_fetched_at = None;
+            if app.state.sounding_reopen_after_pick {
+                app.state.sounding_reopen_after_pick = false;
+                app.state.sounding_open = true;
+            }
+            let _ = app.tx.send(crate::app::DataCmd::LoadSounding(lat, lon));
+        }
     } else if response.clicked()
         && !measuring
         && !crosshair_mode
@@ -624,6 +641,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // Under the single-site radar so the local gate detail stays on top; the
     // mosaic is the surroundings' composite and the context layer.
     draw_mrms(&painter, origin, &view, app);
+    draw_qpe(&painter, origin, &view, app);
+    draw_model_field(&painter, origin, &view, app);
 
     // --- Layer 2.5: SPC outlook *fills* ------------------------------------
     // Under the radar so echoes stay crisp; the outline pass (Layer 3.5)
@@ -698,6 +717,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     app.state.view.height().hash(&mut h);
                     ((app.state.opacity * 100.0) as u32).hash(&mut h);
                     app.state.min_dbz.to_bits().hash(&mut h);
+                    app.state.qc_clutter.hash(&mut h);
+                    app.state.qc_attenuation.hash(&mut h);
+                    app.state.qc_bias_db.to_bits().hash(&mut h);
+                    app.state.qc_blockage.hash(&mut h);
                     raster_scale.to_bits().hash(&mut h); // scale changes re-raster
                     let sig = h.finish();
 
@@ -760,9 +783,57 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                 app.radar_buf.resize(need, 0);
                             }
                             app.radar_buf.fill(0);
+                            let qc_cfg = radar_core::qc::QcConfig {
+                                clutter_filter: app.state.qc_clutter,
+                                attenuation_correction: app.state.qc_attenuation,
+                                bias_db: app.state.qc_bias_db,
+                            };
+                            let terrain = if app.state.qc_blockage {
+                                app.state.qc_terrain.as_deref().map(|grid| {
+                                    radar_core::qc::QcTerrain {
+                                        grid,
+                                        site_lat: site.latitude,
+                                        site_lon: site.longitude,
+                                        site_elev_m: site.elevation_m,
+                                    }
+                                })
+                            } else {
+                                None
+                            };
+                            let qc_active = app.state.moment == radar_core::Moment::Reflectivity
+                                && (qc_cfg.active() || app.state.qc_blockage);
+                            let qc_owned: Option<std::sync::Arc<radar_core::Sweep>> = if qc_active {
+                                use std::hash::{Hash, Hasher};
+                                let mut qh = std::collections::hash_map::DefaultHasher::new();
+                                std::sync::Arc::as_ptr(&volume).hash(&mut qh);
+                                (sweep as *const radar_core::Sweep as usize).hash(&mut qh);
+                                qc_cfg.clutter_filter.hash(&mut qh);
+                                qc_cfg.attenuation_correction.hash(&mut qh);
+                                qc_cfg.bias_db.to_bits().hash(&mut qh);
+                                app.state.qc_blockage.hash(&mut qh);
+                                match app.state.qc_terrain.as_ref() {
+                                    Some(grid) => std::sync::Arc::as_ptr(grid).hash(&mut qh),
+                                    None => 0usize.hash(&mut qh),
+                                }
+                                let qc_key = qh.finish();
+                                if app.qc_cache.as_ref().is_some_and(|(k, _)| *k == qc_key) {
+                                    app.qc_cache.as_ref().map(|(_, s)| std::sync::Arc::clone(s))
+                                } else {
+                                    let (filtered, _) = radar_core::qc::qc_reflectivity_sweep(
+                                        &volume, sweep, qc_cfg, terrain,
+                                    );
+                                    let arc = std::sync::Arc::new(filtered);
+                                    app.qc_cache = Some((qc_key, std::sync::Arc::clone(&arc)));
+                                    Some(arc)
+                                }
+                            } else {
+                                app.qc_cache = None;
+                                None
+                            };
+                            let draw_sweep = qc_owned.as_deref().unwrap_or(sweep);
                             let t0 = std::time::Instant::now();
                             radar_render::rasterize_sweep_from_geometry_pm(
-                                sweep,
+                                draw_sweep,
                                 app.state.moment,
                                 app.radar_geom.as_ref().expect("geometry built above"),
                                 &rows,
@@ -933,6 +1004,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     update_marker_etas(app);
     if app.state.show_tracks {
         draw_tracks(&painter, origin, &view, app);
+    }
+    update_severe_layers(app);
+    if app.state.show_rotation {
+        draw_rotation_signatures(&painter, origin, &view, app);
+    }
+    if app.state.show_hail_cores {
+        draw_hail_cores(&painter, origin, &view, app);
     }
 
     // --- GOES GLM lightning (above radar/warnings/tracks) -------------------
@@ -2105,6 +2183,9 @@ fn mrms_texture(
         radar_data::mrms::MrmsProduct::PrecipRate => {
             radar_render::ColorTable::for_moment(radar_core::Moment::Vil)
         }
+        // QPE has its own texture path; this arm only keeps the match total
+        // if a QPE product is accidentally passed to the reflectivity layer.
+        _ => radar_render::ColorTable::for_moment(radar_core::Moment::Vil),
     };
     let mut rgba = Vec::with_capacity(mosaic.values.len() * 4);
     for value in &mosaic.values {
@@ -2118,6 +2199,225 @@ fn mrms_texture(
     );
     app.mrms_tex.push((key, texture.clone()));
     texture
+}
+
+/// QPE accumulation overlay, draped under the radar sweep like MRMS.
+fn draw_qpe(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &mut StormApp) {
+    if !app.state.show_qpe || app.state.show_futurecast {
+        return;
+    }
+    let Some(mosaics) = app.state.qpe.as_ref().map(|(m, _)| m.clone()) else {
+        return;
+    };
+    let alpha = (app.state.qpe_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    for mosaic in &mosaics {
+        let texture = qpe_texture(app, painter.ctx(), mosaic);
+        let (x0, y0) = view.lonlat_to_view_px(mosaic.west, mosaic.north);
+        let (x1, y1) = view.lonlat_to_view_px(mosaic.east, mosaic.south);
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+            egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+        );
+        painter.image(
+            texture.id(),
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::from_white_alpha(alpha),
+        );
+    }
+    prune_textures(
+        painter.ctx(),
+        &mut app.qpe_tex,
+        "stormscope-qpe",
+        mosaics
+            .iter()
+            .map(|m| std::sync::Arc::as_ptr(m) as usize)
+            .collect(),
+    );
+}
+
+fn qpe_texture(
+    app: &mut StormApp,
+    ctx: &egui::Context,
+    mosaic: &std::sync::Arc<radar_data::mrms::Mosaic>,
+) -> egui::TextureHandle {
+    let key = std::sync::Arc::as_ptr(mosaic) as usize;
+    if let Some((_, texture)) = app.qpe_tex.iter().find(|(k, _)| *k == key) {
+        return texture.clone();
+    }
+    let ffg = mosaic.product.is_ffg();
+    let mut rgba = Vec::with_capacity(mosaic.values.len() * 4);
+    for value in &mosaic.values {
+        rgba.extend_from_slice(&qpe_rgba(*value, ffg));
+    }
+    let image = egui::ColorImage::from_rgba_unmultiplied([mosaic.width, mosaic.height], &rgba);
+    let texture = ctx.load_texture(
+        format!("stormscope-qpe-{key}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    );
+    app.qpe_tex.push((key, texture.clone()));
+    texture
+}
+
+/// QPE colour ramp in inches. MRMS QPE values are millimetres.
+pub(crate) fn qpe_rgba(mm: f32, ffg: bool) -> [u8; 4] {
+    if !mm.is_finite() || mm <= 0.0 {
+        return [0, 0, 0, 0];
+    }
+    let value = mm / 25.4;
+    // QPE: more rain = hotter. FFG is rain *needed*: less needed = greater
+    // flood risk, so the ramp is reversed.
+    const QPE_STOPS: &[(f32, [u8; 4])] = &[
+        (0.01, [40, 80, 190, 110]),
+        (0.05, [40, 100, 230, 160]),
+        (0.10, [40, 180, 120, 190]),
+        (0.25, [110, 210, 60, 210]),
+        (0.50, [240, 220, 50, 225]),
+        (1.00, [255, 150, 30, 240]),
+        (2.00, [255, 60, 30, 250]),
+        (4.00, [230, 20, 170, 255]),
+        (8.00, [170, 0, 255, 255]),
+    ];
+    const FFG_STOPS: &[(f32, [u8; 4])] = &[
+        (0.01, [255, 40, 30, 230]),
+        (0.10, [255, 80, 30, 230]),
+        (0.25, [255, 150, 30, 225]),
+        (0.50, [240, 220, 50, 220]),
+        (1.00, [70, 190, 80, 210]),
+        (2.00, [40, 120, 220, 200]),
+        (4.00, [40, 80, 190, 190]),
+    ];
+    let stops = if ffg { FFG_STOPS } else { QPE_STOPS };
+    if value <= stops[0].0 {
+        return stops[0].1;
+    }
+    for pair in stops.windows(2) {
+        let (a, ca) = pair[0];
+        let (b, cb) = pair[1];
+        if value <= b {
+            let t = ((value - a) / (b - a)).clamp(0.0, 1.0);
+            let mut out = [0u8; 4];
+            for i in 0..4 {
+                out[i] = (ca[i] as f32 + (cb[i] as f32 - ca[i] as f32) * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+            return out;
+        }
+    }
+    stops.last().unwrap().1
+}
+
+fn draw_model_field(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &mut StormApp,
+) {
+    if !app.state.show_model_field || app.state.show_futurecast {
+        return;
+    }
+    let Some(field) = app
+        .state
+        .model_field
+        .as_ref()
+        .map(|(f, _)| std::sync::Arc::clone(f))
+    else {
+        return;
+    };
+    let texture = model_field_texture(app, painter.ctx(), &field);
+    let alpha = (app.state.model_field_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let (x0, y0) = view.lonlat_to_view_px(field.west, field.north);
+    let (x1, y1) = view.lonlat_to_view_px(field.east, field.south);
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+        egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+    );
+    painter.image(
+        texture.id(),
+        rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::from_white_alpha(alpha),
+    );
+    prune_textures(
+        painter.ctx(),
+        &mut app.model_field_tex,
+        "stormscope-model-field",
+        std::collections::HashSet::from([std::sync::Arc::as_ptr(&field) as usize]),
+    );
+}
+
+fn model_field_texture(
+    app: &mut StormApp,
+    ctx: &egui::Context,
+    field: &std::sync::Arc<radar_data::HrrrField>,
+) -> egui::TextureHandle {
+    let key = std::sync::Arc::as_ptr(field) as usize;
+    if let Some((_, texture)) = app.model_field_tex.iter().find(|(k, _)| *k == key) {
+        return texture.clone();
+    }
+    let mut rgba = Vec::with_capacity(field.values.len() * 4);
+    for value in &field.values {
+        rgba.extend_from_slice(&model_field_rgba(field.kind, *value));
+    }
+    let image = egui::ColorImage::from_rgba_unmultiplied([field.width, field.height], &rgba);
+    let texture = ctx.load_texture(
+        format!("stormscope-model-field-{key}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    );
+    app.model_field_tex.push((key, texture.clone()));
+    texture
+}
+
+pub(crate) fn model_field_rgba(kind: radar_data::HrrrFieldKind, value: f32) -> [u8; 4] {
+    use radar_data::HrrrFieldKind;
+    if !value.is_finite() || value < 0.0 {
+        return [0, 0, 0, 0];
+    }
+    if kind == HrrrFieldKind::Qpf {
+        return qpe_rgba(value, false);
+    }
+    let stops: &[(f32, [u8; 4])] = match kind {
+        HrrrFieldKind::Cape => &[
+            (1.0, [40, 70, 180, 80]),
+            (250.0, [40, 100, 230, 150]),
+            (500.0, [50, 180, 100, 180]),
+            (1000.0, [230, 220, 50, 205]),
+            (2000.0, [255, 140, 30, 225]),
+            (3000.0, [255, 50, 30, 240]),
+            (4000.0, [220, 20, 160, 250]),
+        ],
+        HrrrFieldKind::Shear => &[
+            (0.1, [40, 70, 180, 80]),
+            (5.0, [40, 100, 230, 150]),
+            (10.0, [50, 180, 100, 180]),
+            (15.0, [230, 220, 50, 205]),
+            (20.0, [255, 140, 30, 225]),
+            (25.0, [255, 50, 30, 240]),
+            (30.0, [220, 20, 160, 250]),
+        ],
+        HrrrFieldKind::Qpf => unreachable!(),
+    };
+    if value <= stops[0].0 {
+        return stops[0].1;
+    }
+    for pair in stops.windows(2) {
+        let (a, ca) = pair[0];
+        let (b, cb) = pair[1];
+        if value <= b {
+            let t = ((value - a) / (b - a)).clamp(0.0, 1.0);
+            let mut out = [0u8; 4];
+            for i in 0..4 {
+                out[i] = (ca[i] as f32 + (cb[i] as f32 - ca[i] as f32) * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+            return out;
+        }
+    }
+    stops.last().unwrap().1
 }
 
 /// The 0 °C level: isohypses of the melting-layer product (the radar's CC
@@ -3174,6 +3474,125 @@ pub(super) fn fmt_eta(minutes: f64) -> String {
         let h = (minutes / 60.0).floor() as i64;
         let m = (minutes % 60.0).round() as i64;
         format!("{h}h {m:02}m")
+    }
+}
+
+/// Recompute rotation and hail caches only when the volume/ring changes.
+fn update_severe_layers(app: &mut StormApp) {
+    let Some(site) = radar_core::sites::site(&app.state.site_id) else {
+        return;
+    };
+    let Some(volume) = app
+        .state
+        .current()
+        .map(|f| std::sync::Arc::clone(&f.volume))
+    else {
+        return;
+    };
+    let key = volume.meta.volume_start.timestamp_millis() as u64;
+    if app.rotation_cache.as_ref().map(|(k, _)| *k) != Some(key) {
+        let sigs = radar_core::severe::rotation_signatures(&volume, site.latitude, site.longitude);
+        app.rotation_cache = Some((key, sigs));
+    }
+    if app.state.show_hail_cores {
+        let mut hkey = key;
+        for f in &app.state.ring {
+            hkey = hkey
+                .wrapping_mul(1_000_003)
+                .wrapping_add(f.volume.meta.volume_start.timestamp_millis() as u64);
+        }
+        if app.hail_cache.as_ref().map(|(k, _)| *k) != Some(hkey) {
+            let vols: Vec<&radar_core::Volume> =
+                app.state.ring.iter().map(|f| f.volume.as_ref()).collect();
+            let cores = radar_core::severe::hail_swath(&vols, site.latitude, site.longitude);
+            app.hail_cache = Some((hkey, cores));
+        }
+    } else {
+        app.hail_cache = None;
+    }
+}
+
+fn draw_rotation_signatures(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+) {
+    let Some((_, sigs)) = &app.rotation_cache else {
+        return;
+    };
+    let (w, h) = (view.width() as f64, view.height() as f64);
+    for sig in sigs {
+        let (x, y) = view.lonlat_to_view_px(sig.lon, sig.lat);
+        if x < -30.0 || y < -30.0 || x > w + 30.0 || y > h + 30.0 {
+            continue;
+        }
+        let pos = egui::pos2(origin.x + x as f32, origin.y + y as f32);
+        let color = if sig.tvs {
+            egui::Color32::from_rgb(255, 55, 55)
+        } else {
+            egui::Color32::from_rgb(255, 155, 40)
+        };
+        painter.circle_stroke(pos, 8.0, egui::Stroke::new(2.0, color));
+        painter.circle_filled(pos, 2.5, color);
+        let label = format!(
+            "{} {:.0} m/s",
+            if sig.tvs { "TVS?" } else { "MESO" },
+            sig.delta_v_ms
+        );
+        draw_tag_label(
+            painter,
+            egui::pos2(pos.x + 10.0, pos.y - 6.0),
+            egui::Align2::LEFT_BOTTOM,
+            &label,
+            egui::FontId::proportional(11.0),
+            color,
+        );
+    }
+}
+
+fn draw_hail_cores(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
+    let Some((_, cores)) = &app.hail_cache else {
+        return;
+    };
+    let (w, h) = (view.width() as f64, view.height() as f64);
+    let mut prev: Option<(egui::Pos2, &radar_core::severe::HailCore)> = None;
+    for core in cores {
+        let (x, y) = view.lonlat_to_view_px(core.lon, core.lat);
+        if x < -30.0 || y < -30.0 || x > w + 30.0 || y > h + 30.0 {
+            continue;
+        }
+        let pos = egui::pos2(origin.x + x as f32, origin.y + y as f32);
+        if let Some((p, old)) = prev {
+            let gap_min = (core.time - old.time).num_minutes().abs();
+            let dist_m = radar_render::surface_distance_m(old.lon, old.lat, core.lon, core.lat);
+            if gap_min <= 20 && dist_m <= 25_000.0 {
+                painter.line_segment(
+                    [p, pos],
+                    egui::Stroke::new(
+                        1.5,
+                        egui::Color32::from_rgb(255, 120, 40).gamma_multiply(0.45),
+                    ),
+                );
+            }
+        }
+        let color = if core.mehs_in >= 1.5 {
+            egui::Color32::from_rgb(255, 60, 30)
+        } else {
+            egui::Color32::from_rgb(255, 185, 40)
+        };
+        painter.circle_filled(pos, 3.5, color);
+        if core.mehs_in >= 1.5 {
+            draw_tag_label(
+                painter,
+                egui::pos2(pos.x + 6.0, pos.y + 5.0),
+                egui::Align2::LEFT_TOP,
+                &format!("{:.1} in", core.mehs_in),
+                egui::FontId::proportional(10.0),
+                color,
+            );
+        }
+        prev = Some((pos, core));
     }
 }
 

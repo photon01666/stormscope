@@ -78,6 +78,18 @@ pub enum DataMsg {
     Observation(radar_core::forecast::Observation),
     /// Rain/snow totals for the stations around a requested point.
     Totals(Vec<radar_data::StationTotals>),
+    /// Model sounding for a requested point.
+    Sounding(radar_core::sounding::Sounding),
+    /// Sounding fetch failed.
+    SoundingError(String),
+    /// Terrain grid for beam-blockage masking.
+    Terrain(std::sync::Arc<radar_core::terrain::TerrainGrid>),
+    /// Terrain fetch failed.
+    TerrainError(String),
+    /// HRRR point forecast profiles.
+    Hrrr(radar_data::SoundingSeries),
+    /// HRRR profile fetch failed.
+    HrrrError(String),
     /// Synoptic (Mesowest) stations in the current view, with latest obs.
     SynopticStations(Vec<radar_data::synoptic::SynopticStation>),
     /// Synoptic fetch failed.
@@ -115,6 +127,13 @@ pub enum DataMsg {
     Mrms {
         mosaics: Vec<Arc<radar_data::mrms::Mosaic>>,
     },
+    /// QPE accumulation: CONUS-wide image plus the sharp radar window.
+    Qpe {
+        product: radar_data::mrms::MrmsProduct,
+        mosaics: Vec<Arc<radar_data::mrms::Mosaic>>,
+    },
+    /// One HRRR 2D model field over the local radar box.
+    ModelField(Arc<radar_data::HrrrField>),
     /// GOES satellite frames (GIBS WMS images): CONUS-wide and the sharp
     /// window around the radar.
     Goes {
@@ -233,6 +252,13 @@ pub enum DataCmd {
     },
     /// Fetch the newest MRMS multi-radar composite (the overlay's data).
     LoadMrms,
+    /// Fetch the newest QPE accumulation for one product.
+    LoadQpe(radar_data::mrms::MrmsProduct),
+    /// Fetch one HRRR 2D field for a forecast hour.
+    LoadModelField {
+        kind: radar_data::HrrrFieldKind,
+        hour: u16,
+    },
     /// Update the Synoptic token held by the data thread.
     SetSynopticToken(String),
     /// Fetch Synoptic stations for the given bbox [w,s,e,n] and viewport.
@@ -268,6 +294,12 @@ pub enum DataCmd {
     LoadOutlook(u8, radar_core::outlooks::OutlookType),
     /// Rain/snow totals for the stations around (lat, lon).
     LoadTotals(f64, f64),
+    /// Fetch a model sounding for a point.
+    LoadSounding(f64, f64),
+    /// Fetch terrain around a radar site for beam-blockage masking.
+    LoadTerrain(f64, f64),
+    /// Fetch HRRR point profiles for a coordinate.
+    LoadHrrr(f64, f64),
     /// Fetch the forecaster discussion text for a day (1..=3).
     LoadOutlookDiscussion(u8),
     /// Fetch the NWS gridpoint forecast for a coordinate.
@@ -374,6 +406,10 @@ pub struct StormApp {
     pub srm_requested_at: Option<std::time::Instant>,
     /// Cached MRMS textures, one per window (Arc identity + egui handle).
     pub mrms_tex: Vec<(usize, egui::TextureHandle)>,
+    /// Cached QPE textures, one per window.
+    pub qpe_tex: Vec<(usize, egui::TextureHandle)>,
+    /// Cached HRRR 2D field texture.
+    pub model_field_tex: Vec<(usize, egui::TextureHandle)>,
     /// Cached GOES textures, one per window.
     pub goes_tex: Vec<(usize, egui::TextureHandle)>,
     /// Cached FutureCast textures, keyed by frame Arc identity.
@@ -388,6 +424,15 @@ pub struct StormApp {
     /// Per-marker arrival estimates, aligned with `state.markers` by index
     /// (`None` = no cell incoming). Recomputed whenever tracks refresh.
     pub marker_etas: Vec<Option<MarkerEta>>,
+    /// Rotation/TVS signatures for the current volume (cached by scan time).
+    pub rotation_cache: Option<(u64, Vec<radar_core::severe::RotationSignature>)>,
+    /// Hail cores accumulated across the ring (cached by ring signature).
+    pub hail_cache: Option<(u64, Vec<radar_core::severe::HailCore>)>,
+    /// VAD profile for the current volume (cached by scan time).
+    pub vad_cache: Option<(u64, radar_core::vad::VadProfile)>,
+    /// QC-processed reflectivity sweep. Dragging must not rerun the filter
+    /// and terrain mask on every raster; key by sweep + config + DEM.
+    pub qc_cache: Option<(u64, Arc<radar_core::Sweep>)>,
     /// GPU resources of the 3D volume pane, created on first use (see
     /// [`crate::render3d`]).
     pub view3d: Option<crate::render3d::Volume3d>,
@@ -580,11 +625,17 @@ impl StormApp {
             tracks_cache: None,
             srm_requested_at: None,
             mrms_tex: Vec::new(),
+            qpe_tex: Vec::new(),
+            model_field_tex: Vec::new(),
             goes_tex: Vec::new(),
             futurecast_tex: Vec::new(),
             view3d_section_key: None,
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
+            rotation_cache: None,
+            hail_cache: None,
+            vad_cache: None,
+            qc_cache: None,
             view3d: None,
             map_rect_at: None,
             view3d_rect_at: None,
@@ -693,6 +744,48 @@ impl StormApp {
         self.state.cached_days_at = Some(std::time::Instant::now());
     }
 
+    /// Fetch the terrain grid when beam-blockage masking is enabled and the
+    /// site changed. Cheap no-op otherwise.
+    pub fn ensure_terrain(&mut self) {
+        if !self.state.qc_blockage {
+            return;
+        }
+        let site_id = self.state.site_id.clone();
+        if self.state.qc_terrain_site != site_id {
+            self.state.qc_terrain = None;
+            self.state.qc_terrain_error = None;
+            self.state.qc_terrain_site = site_id.clone();
+        }
+        if self.state.qc_terrain.is_none()
+            && !self.state.qc_terrain_pending
+            && self.state.qc_terrain_error.is_none()
+        {
+            if let Some(site) = radar_core::sites::site(&site_id) {
+                self.state.qc_terrain_pending = true;
+                self.state.qc_terrain_error = None;
+                let _ = self
+                    .tx
+                    .send(DataCmd::LoadTerrain(site.latitude, site.longitude));
+            }
+        }
+    }
+
+    /// Mean motion of the tracked cells, as (toward degrees, knots). Used to
+    /// seed the storm-relative velocity product with a real background flow.
+    pub fn mean_storm_motion(&self) -> Option<(f32, f32)> {
+        let (_, tracks) = self.tracks_cache.as_ref()?;
+        if tracks.is_empty() {
+            return None;
+        }
+        let n = tracks.len() as f64;
+        let e = tracks.iter().map(|t| t.vel_e).sum::<f64>() / n;
+        let ncomp = tracks.iter().map(|t| t.vel_n).sum::<f64>() / n;
+        let kmh = e.hypot(ncomp) * 60.0;
+        let kt = (kmh / 1.852) as f32;
+        let toward = (e.atan2(ncomp).to_degrees().rem_euclid(360.0)) as f32;
+        Some((toward, kt))
+    }
+
     /// Select a radar site from the map (or controls) and tell the data
     /// thread to load it. Mirrors what the controls panel does on change.
     pub fn select_site(&mut self, id: &str) {
@@ -704,6 +797,12 @@ impl StormApp {
         self.prev_tracks.clear();
         self.tracks_cache = None;
         self.marker_etas.clear();
+        self.rotation_cache = None;
+        self.hail_cache = None;
+        self.vad_cache = None;
+        self.qc_cache = None;
+        self.state.model_field = None;
+        self.state.model_field_requested_at = None;
         self.refresh_cached_scans();
         self.refresh_cached_days();
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
@@ -1019,6 +1118,54 @@ impl StormApp {
                     self.state.ambient_pending = false;
                     self.state.ambient_error = Some(e);
                 }
+                DataMsg::Sounding(s) => {
+                    log::debug!("sounding loaded: {} levels", s.levels.len());
+                    self.state.sounding_requested = Some((s.latitude, s.longitude));
+                    self.state.sounding = Some(s);
+                    self.state.sounding_fetched_at = Some(std::time::Instant::now());
+                    self.state.sounding_error = None;
+                    self.pump_ai_data();
+                }
+                DataMsg::SoundingError(e) => {
+                    log::warn!("sounding: {e}");
+                    self.state.sounding_error = Some(e);
+                    self.state.sounding_requested = None;
+                }
+                DataMsg::Terrain(grid) => {
+                    log::info!("terrain grid loaded: {}x{}", grid.width, grid.height);
+                    self.state.qc_terrain = Some(grid);
+                    self.state.qc_terrain_pending = false;
+                    self.state.qc_terrain_error = None;
+                    // The raster signature does not contain the terrain grid
+                    // itself; force the next frame to rebuild the texture.
+                    self.radar_tex = None;
+                    self.radar_pending = None;
+                }
+                DataMsg::TerrainError(e) => {
+                    log::warn!("terrain: {e}");
+                    self.state.qc_terrain_pending = false;
+                    self.state.qc_terrain_error = Some(e);
+                }
+                DataMsg::Hrrr(series) => {
+                    log::info!("HRRR series: {} profiles", series.profiles.len());
+                    self.state.hrrr_requested = Some((series.latitude, series.longitude));
+                    let now = chrono::Utc::now();
+                    self.state.hrrr_hour = series
+                        .profiles
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, p)| (p.valid_time - now).num_seconds().abs())
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    self.state.hrrr = Some(series);
+                    self.state.hrrr_fetched_at = Some(std::time::Instant::now());
+                    self.state.hrrr_error = None;
+                }
+                DataMsg::HrrrError(e) => {
+                    log::warn!("HRRR series: {e}");
+                    self.state.hrrr_error = Some(e);
+                    self.state.hrrr_requested = None;
+                }
                 DataMsg::Forecast(f) => {
                     log::debug!(
                         "forecast for {} ({} {}): {} periods",
@@ -1075,6 +1222,12 @@ impl StormApp {
                     self.state.playhead = 0;
                     self.radar_tex = None;
                     self.radar_pending = None;
+                    self.rotation_cache = None;
+                    self.hail_cache = None;
+                    self.vad_cache = None;
+                    self.qc_cache = None;
+                    self.state.model_field = None;
+                    self.state.model_field_requested_at = None;
                     // Tracks are georeferenced to the old site/mode; don't
                     // let the smoothing blend across the switch.
                     self.prev_tracks.clear();
@@ -1128,6 +1281,34 @@ impl StormApp {
                     }
                     self.state.mrms = Some((mosaics, std::time::Instant::now()));
                     self.pump_ai_data();
+                }
+                DataMsg::Qpe { product, mosaics } => {
+                    self.state.qpe_requested_at = None;
+                    if let Some(wide) = mosaics.first() {
+                        log::info!(
+                            "QPE {}: {} images, {}x{} at {}",
+                            product.label(),
+                            mosaics.len(),
+                            wide.width,
+                            wide.height,
+                            wide.time.format("%H:%MZ")
+                        );
+                    }
+                    self.state.qpe = Some((mosaics, std::time::Instant::now()));
+                    self.state.qpe_product = product;
+                    self.pump_ai_data();
+                }
+                DataMsg::ModelField(field) => {
+                    log::info!(
+                        "HRRR field {:?} f{:02} valid {}: {}x{}",
+                        field.kind,
+                        field.hour,
+                        field.valid.format("%H:%MZ"),
+                        field.width,
+                        field.height
+                    );
+                    self.state.model_field = Some((field, std::time::Instant::now()));
+                    self.state.model_field_requested_at = None;
                 }
                 DataMsg::Goes { images } => {
                     self.state.goes_pending = None;
@@ -1920,6 +2101,70 @@ impl StormApp {
         } else {
             out.push_str("No NWS forecast is loaded for the user's point.\n");
         }
+        if let Some(s) = &self.state.sounding {
+            let to_f = |c: f64| c * 9.0 / 5.0 + 32.0;
+            let to_ft = |m: f64| m * 3.280_84;
+            out.push_str(&format!(
+                "Model sounding (Open-Meteo, not observed): surface {:.0}°F / dew {:.0}°F, \
+                 CAPE {:.0} J/kg, CIN {:.0} J/kg, PWAT {:.1} mm, LCL {:.0} ft, \
+                 0C {:.0} ft, shear 0-6 km {:.0} mph, SRH 0-3 km {:.0} m2/s2.\n",
+                to_f(s.surface_temp_c),
+                to_f(s.surface_dewpoint_c),
+                s.sb_cape_jkg,
+                s.sb_cin_jkg,
+                s.pwat_mm,
+                s.lcl_height_m.map(to_ft).unwrap_or(0.0),
+                s.freezing_level_m.map(to_ft).unwrap_or(0.0),
+                s.shear_0_6km_ms * 2.236_94,
+                s.srh_0_3km,
+            ));
+            out.push_str(&format!(
+                "Heuristic environment indicators: severe {:.0}/100 ({}), tornado {:.0}/100 ({}), \
+                 winter {:.0}/100 ({}, type {}). These are not official forecasts.\n",
+                s.severe_potential(),
+                radar_core::sounding::Sounding::potential_label(s.severe_potential()),
+                s.tornado_potential(),
+                radar_core::sounding::Sounding::potential_label(s.tornado_potential()),
+                s.winter_potential(),
+                radar_core::sounding::Sounding::potential_label(s.winter_potential()),
+                s.winter_type(),
+            ));
+        }
+        if let (Some(site), Some(frame)) = (
+            radar_core::sites::site(&self.state.site_id),
+            self.state.current(),
+        ) {
+            let rotation = radar_core::severe::rotation_signatures(
+                &frame.volume,
+                site.latitude,
+                site.longitude,
+            );
+            if !rotation.is_empty() {
+                out.push_str("Low-level rotation signatures (experimental, single radar):\n");
+                for sig in rotation.iter().take(4) {
+                    out.push_str(&format!(
+                        "- {} at {:.3},{:.3}, {:.0} mph delta-V, {:.1}° tilt{}.\n",
+                        if sig.tvs { "TVS?" } else { "MESO" },
+                        sig.lat,
+                        sig.lon,
+                        sig.delta_v_ms * 2.236_94,
+                        sig.elevation_deg,
+                        if sig.tvs { ", low-level" } else { "" },
+                    ));
+                }
+            }
+            let cores =
+                radar_core::severe::hail_cores(&frame.volume, site.latitude, site.longitude);
+            if !cores.is_empty() {
+                out.push_str("Hail cores (MEHS, experimental):\n");
+                for c in cores.iter().take(5) {
+                    out.push_str(&format!(
+                        "- {:.2} in at {:.3},{:.3}.\n",
+                        c.mehs_in, c.lat, c.lon
+                    ));
+                }
+            }
+        }
         let alerts: Vec<&str> = self
             .state
             .alerts
@@ -2579,6 +2824,20 @@ impl StormApp {
                 _ => "station totals".into(),
             });
         }
+        if let Some(point) = &request.sounding {
+            self.state.sounding = None;
+            self.state.sounding_error = None;
+            self.state.sounding_point = Some((point.lat, point.lon));
+            self.state.sounding_point_gps = false;
+            self.state.sounding_requested = Some((point.lat, point.lon));
+            self.state.sounding_open = true;
+            let _ = self.tx.send(DataCmd::LoadSounding(point.lat, point.lon));
+            waiting.push("sounding".into());
+            notes.push(match point.label.as_deref().map(str::trim) {
+                Some(label) if !label.is_empty() => format!("model sounding for {label}"),
+                _ => "model sounding".into(),
+            });
+        }
         if let Some(spc) = &request.spc {
             let day = spc.day.unwrap_or(1).clamp(1, 3);
             let ty = match spc.kind.as_deref().map(str::to_ascii_lowercase).as_deref() {
@@ -2688,6 +2947,7 @@ impl StormApp {
             }
             "forecast" => self.state.forecast.is_some(),
             "totals" => !self.state.totals.is_empty(),
+            "sounding" => self.state.sounding.is_some(),
             "spc" => self.state.outlook.is_some(),
             _ => true,
         }
@@ -2890,6 +3150,12 @@ impl StormApp {
         let mrms = self.state.mrms.as_ref().map(|(m, _)| m.as_slice());
         let goes = self.state.goes.as_ref().map(|(i, _)| i.as_slice());
         let srm = self.state.srm_cache.as_ref().map(|(_, v)| v.as_ref());
+        let rotation =
+            radar_core::severe::rotation_signatures(&volume, site.latitude, site.longitude);
+        let hail_volumes: Vec<&radar_core::Volume> =
+            self.state.ring.iter().map(|f| f.volume.as_ref()).collect();
+        let hail = radar_core::severe::hail_swath(&hail_volumes, site.latitude, site.longitude);
+        let vad = radar_core::vad::vad_profile(&volume);
         Ok(crate::brief::build(&crate::brief::BriefInputs {
             site,
             mode: match self.state.mode {
@@ -2914,6 +3180,28 @@ impl StormApp {
                 .map(|t| t.elapsed().as_secs() / 60),
             observation: self.state.observation.as_ref(),
             totals: &self.state.totals,
+            sounding: self.state.sounding.as_ref(),
+            sounding_age_min: self
+                .state
+                .sounding_fetched_at
+                .map(|t| t.elapsed().as_secs() / 60),
+            rotation: &rotation,
+            hail: &hail,
+            vad: Some(&vad),
+            qpe: self.state.qpe.as_ref().map(|(m, _)| m.as_slice()),
+            qpe_age_min: self
+                .state
+                .qpe
+                .as_ref()
+                .map(|(_, at)| at.elapsed().as_secs() / 60),
+            hrrr: self.state.hrrr.as_ref(),
+            hrrr_hour: self.state.hrrr_hour,
+            model_field: self.state.model_field.as_ref().map(|(f, _)| f.as_ref()),
+            model_field_age_min: self
+                .state
+                .model_field
+                .as_ref()
+                .map(|(_, at)| at.elapsed().as_secs() / 60),
             mrms,
             view_moment: self.state.moment,
             view_tilt_deg: self.state.tilt_deg,
@@ -3092,6 +3380,80 @@ impl StormApp {
         }
         self.state.mrms_requested_at = Some(std::time::Instant::now());
         let _ = self.tx.send(DataCmd::LoadMrms);
+    }
+
+    fn pump_qpe(&mut self) {
+        if !self.state.show_qpe {
+            return;
+        }
+        let want = radar_core::sites::site(&self.state.site_id)
+            .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude));
+        let fresh = self.state.qpe.as_ref().is_some_and(|(m, at)| {
+            at.elapsed() < std::time::Duration::from_secs(600)
+                && m.last().is_some_and(|near| {
+                    near.product == self.state.qpe_product
+                        && want.is_none_or(|w| {
+                            (near.south - w[0]).abs() < 0.2
+                                && (near.west - w[1]).abs() < 0.2
+                                && (near.north - w[2]).abs() < 0.2
+                                && (near.east - w[3]).abs() < 0.2
+                        })
+                })
+        });
+        if fresh {
+            return;
+        }
+        if self
+            .state
+            .qpe
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() < std::time::Duration::from_secs(30))
+        {
+            return;
+        }
+        if self
+            .state
+            .qpe_requested_at
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(120))
+        {
+            return;
+        }
+        self.state.qpe_requested_at = Some(std::time::Instant::now());
+        let _ = self.tx.send(DataCmd::LoadQpe(self.state.qpe_product));
+    }
+
+    fn pump_model_field(&mut self) {
+        if !self.state.show_model_field {
+            return;
+        }
+        let want = radar_core::sites::site(&self.state.site_id)
+            .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude));
+        let fresh = self.state.model_field.as_ref().is_some_and(|(f, at)| {
+            at.elapsed() < std::time::Duration::from_secs(600)
+                && f.kind == self.state.model_field_kind
+                && f.hour == self.state.model_field_hour
+                && want.is_none_or(|w| {
+                    (f.south - w[0]).abs() < 0.2
+                        && (f.west - w[1]).abs() < 0.2
+                        && (f.north - w[2]).abs() < 0.2
+                        && (f.east - w[3]).abs() < 0.2
+                })
+        });
+        if fresh {
+            return;
+        }
+        if self
+            .state
+            .model_field_requested_at
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(90))
+        {
+            return;
+        }
+        self.state.model_field_requested_at = Some(std::time::Instant::now());
+        let _ = self.tx.send(DataCmd::LoadModelField {
+            kind: self.state.model_field_kind,
+            hour: self.state.model_field_hour,
+        });
     }
 
     /// Keep the GOES satellite overlay fresh while it is on: fetch on first
@@ -3356,6 +3718,8 @@ impl StormApp {
         self.pump();
         self.pump_srm();
         self.pump_mrms();
+        self.pump_qpe();
+        self.pump_model_field();
         self.pump_futurecast();
         self.advance_futurecast_playback(ui.ctx());
         self.pump_goes();

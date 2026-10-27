@@ -630,6 +630,42 @@ pub struct AppState {
     pub totals_hover: Option<String>,
     pub totals_hover_at: f64,
 
+    // Sounding window.
+    pub sounding_open: bool,
+    pub sounding_pick_mode: bool,
+    pub sounding_reopen_after_pick: bool,
+    pub sounding_point: Option<(f64, f64)>,
+    pub sounding_point_gps: bool,
+    pub sounding_site: String,
+    pub sounding_requested: Option<(f64, f64)>,
+    pub sounding_fetched_at: Option<std::time::Instant>,
+    pub sounding: Option<radar_core::sounding::Sounding>,
+    pub sounding_error: Option<String>,
+
+    // Phase 2 analysis: VAD, rotation signatures, hail cores.
+    pub vad_open: bool,
+    pub show_rotation: bool,
+    pub show_hail_cores: bool,
+    /// Display-level reflectivity QC / calibration.
+    pub qc_clutter: bool,
+    pub qc_attenuation: bool,
+    pub qc_bias_db: f32,
+    pub qc_blockage: bool,
+    pub qc_terrain: Option<std::sync::Arc<radar_core::terrain::TerrainGrid>>,
+    pub qc_terrain_pending: bool,
+    pub qc_terrain_error: Option<String>,
+    pub qc_terrain_site: String,
+
+    // Phase 5: HRRR point forecast / time-height.
+    pub hrrr_open: bool,
+    pub hrrr: Option<radar_data::SoundingSeries>,
+    pub hrrr_requested: Option<(f64, f64)>,
+    pub hrrr_fetched_at: Option<std::time::Instant>,
+    pub hrrr_error: Option<String>,
+    pub hrrr_hour: usize,
+    /// 0 = temperature, 1 = RH, 2 = wind speed.
+    pub hrrr_field: u8,
+
     // 3D volume pane — split view beside the 2D map.
     /// Whether the 3D pane is shown beside the map. `STORMSCOPE_3D_OPEN=1`
     /// in the environment opens it at launch (scripted screenshots).
@@ -700,6 +736,22 @@ pub struct AppState {
     )>,
     /// When the in-flight MRMS fetch was requested (rate limit + retry).
     pub mrms_requested_at: Option<std::time::Instant>,
+    /// MRMS QPE accumulation layer.
+    pub show_qpe: bool,
+    pub qpe_opacity: f32,
+    pub qpe_product: radar_data::mrms::MrmsProduct,
+    pub qpe: Option<(
+        Vec<std::sync::Arc<radar_data::mrms::Mosaic>>,
+        std::time::Instant,
+    )>,
+    pub qpe_requested_at: Option<std::time::Instant>,
+    /// HRRR 2D model field overlay.
+    pub show_model_field: bool,
+    pub model_field_kind: radar_data::HrrrFieldKind,
+    pub model_field_hour: u16,
+    pub model_field_opacity: f32,
+    pub model_field: Option<(std::sync::Arc<radar_data::HrrrField>, std::time::Instant)>,
+    pub model_field_requested_at: Option<std::time::Instant>,
     /// Draw GOES GLM lightning flashes (official NOAA), last 20 minutes.
     pub show_lightning: bool,
     pub lightning: Vec<radar_data::glm::GlmStrike>,
@@ -1070,7 +1122,7 @@ impl Default for AppState {
             archive_hover: None,
             archive_hover_at: 0.0,
             archive_focus: None,
-            map_controls_open: false,
+            map_controls_open: std::env::var_os("STORMSCOPE_MAP_CONTROLS").is_some(),
             view3d_controls_open: false,
             archive_minute: {
                 use chrono::Timelike;
@@ -1204,6 +1256,34 @@ impl Default for AppState {
             show_totals: true,
             totals_hover: None,
             totals_hover_at: 0.0,
+            sounding_open: false,
+            sounding_pick_mode: false,
+            sounding_reopen_after_pick: false,
+            sounding_point: None,
+            sounding_point_gps: false,
+            sounding_site: String::new(),
+            sounding_requested: None,
+            sounding_fetched_at: None,
+            sounding: None,
+            sounding_error: None,
+            vad_open: false,
+            show_rotation: true,
+            show_hail_cores: true,
+            qc_clutter: true,
+            qc_attenuation: true,
+            qc_bias_db: 0.0,
+            qc_blockage: true,
+            qc_terrain: None,
+            qc_terrain_pending: false,
+            qc_terrain_error: None,
+            qc_terrain_site: String::new(),
+            hrrr_open: std::env::var_os("STORMSCOPE_HRRR_OPEN").is_some(),
+            hrrr: None,
+            hrrr_requested: None,
+            hrrr_fetched_at: None,
+            hrrr_error: None,
+            hrrr_hour: 0,
+            hrrr_field: 2,
             view3d_open: std::env::var_os("STORMSCOPE_3D_OPEN").is_some(),
             pane_max: if std::env::var_os("STORMSCOPE_3D_OPEN").is_some_and(|v| v == "max") {
                 PaneMax::View3d
@@ -1243,6 +1323,17 @@ impl Default for AppState {
             mrms_opacity: 0.55,
             mrms: None,
             mrms_requested_at: None,
+            show_qpe: layers.contains("qpe"),
+            qpe_opacity: 0.60,
+            qpe_product: radar_data::mrms::MrmsProduct::MultiSensorQpe01h,
+            qpe: None,
+            qpe_requested_at: None,
+            show_model_field: layers.contains("field"),
+            model_field_kind: radar_data::HrrrFieldKind::Cape,
+            model_field_hour: 1,
+            model_field_opacity: 0.55,
+            model_field: None,
+            model_field_requested_at: None,
             // Lightning is on by default; STORMSCOPE_LAYERS still acts as an
             // explicit layer whitelist when set.
             show_lightning: layers.is_empty() || layers.contains("lightning"),

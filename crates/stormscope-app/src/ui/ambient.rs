@@ -16,7 +16,7 @@ pub fn ambient_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect)
     }
     let fill = cfg!(target_os = "android");
     let scale = super::big_text_scale(app);
-    let size = super::popup_size(ctx, scale, 560.0, 620.0);
+    let size = super::popup_size(ctx, scale, 420.0, 620.0);
     let mut open = app.state.ambient_open;
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close_requested = false;
@@ -39,7 +39,12 @@ pub fn ambient_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect)
             .movable(false)
             .resizable(false)
     } else {
-        window.fixed_size(size).resizable(false)
+        window
+            .default_size(size)
+            .max_height(super::popup_max_height(ctx, scale))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .resizable(false)
     };
     let window = window.open(&mut open);
     window.show(ctx, |ui| {
@@ -64,13 +69,13 @@ pub fn ambient_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect)
         let width = if fill {
             ui.available_width()
         } else {
-            (size.x - 34.0).max(300.0)
+            (size.x - 28.0).max(300.0)
         };
         ui.set_width(width);
 
         egui::ScrollArea::vertical()
             .id_salt("stormscope.ambient.scroll")
-            .auto_shrink([false, fill])
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 header_ui(ui, &station);
                 ui.separator();
@@ -117,8 +122,14 @@ fn header_ui(ui: &mut egui::Ui, st: &AmbientStation) {
     let temp = temp_f(st);
     let kind = icon_kind(st);
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(52.0, 52.0), egui::Sense::hover());
-        draw_weather_icon(&ctx, ui.painter(), rect, kind);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 56.0), egui::Sense::hover());
+        // The rain/snow strokes extend below the glyph box; shift the glyph
+        // up slightly so it does not run into the station name underneath.
+        let icon_rect = egui::Rect::from_center_size(
+            rect.center() - egui::vec2(0.0, 4.0),
+            egui::vec2(44.0, 44.0),
+        );
+        draw_weather_icon(&ctx, ui.painter(), icon_rect, kind);
         ui.vertical(|ui| {
             match temp {
                 Some(t) => {
@@ -150,14 +161,16 @@ fn header_ui(ui: &mut egui::Ui, st: &AmbientStation) {
         meta.push(st.mac_address.clone());
     }
     if !meta.is_empty() {
-        let (dot, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
-        let pulse = 0.5 + 0.5 * (ctx.input(|i| i.time) * 2.0).sin();
-        ui.painter().circle_filled(
-            dot.center(),
-            4.5,
-            egui::Color32::from_rgba_unmultiplied(90, 220, 120, (110.0 + 110.0 * pulse) as u8),
-        );
-        ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+        ui.horizontal(|ui| {
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+            let pulse = 0.5 + 0.5 * (ctx.input(|i| i.time) * 2.0).sin();
+            ui.painter().circle_filled(
+                dot.center(),
+                4.5,
+                egui::Color32::from_rgba_unmultiplied(90, 220, 120, (110.0 + 110.0 * pulse) as u8),
+            );
+            ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+        });
     }
 }
 

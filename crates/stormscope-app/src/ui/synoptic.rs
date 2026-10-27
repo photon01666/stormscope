@@ -16,7 +16,7 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     }
     let fill = cfg!(target_os = "android");
     let scale = super::big_text_scale(app);
-    let size = super::popup_size(ctx, scale, 560.0, 620.0);
+    let size = super::popup_size(ctx, scale, 420.0, 620.0);
     let mut open = app.state.synoptic_open;
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close_requested = false;
@@ -42,9 +42,15 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
             .movable(false)
             .resizable(false)
     } else {
-        // Fixed size, like the other desktop popups: the table always has
-        // the same footprint and scrolls if a station reports many variables.
-        window.fixed_size(size).resizable(false)
+        // Fixed width, non-resizable, but the height follows the station's
+        // row count (capped at the screen). A hard 620 pt box left a large
+        // blank band under short station reports.
+        window
+            .default_size(size)
+            .max_height(super::popup_max_height(ctx, scale))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .resizable(false)
     };
     let window = window.open(&mut open);
     window.show(ctx, |ui| {
@@ -70,13 +76,13 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
         let width = if fill {
             ui.available_width()
         } else {
-            (size.x - 34.0).max(300.0)
+            (size.x - 28.0).max(300.0)
         };
         ui.set_width(width);
 
         egui::ScrollArea::vertical()
             .id_salt("stormscope.synoptic.scroll")
-            .auto_shrink([false, fill])
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 header_ui(ui, &station);
                 ui.separator();
@@ -126,8 +132,14 @@ fn header_ui(ui: &mut egui::Ui, st: &SynopticStation) {
     let temp_c = temp_c(st);
     let kind = icon_kind(st);
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(52.0, 52.0), egui::Sense::hover());
-        draw_weather_icon(&ctx, ui.painter(), rect, kind);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 56.0), egui::Sense::hover());
+        // The rain/snow strokes extend below the glyph box; shift the glyph
+        // up slightly so it does not run into the station name underneath.
+        let icon_rect = egui::Rect::from_center_size(
+            rect.center() - egui::vec2(0.0, 4.0),
+            egui::vec2(44.0, 44.0),
+        );
+        draw_weather_icon(&ctx, ui.painter(), icon_rect, kind);
         ui.vertical(|ui| {
             match temp_c {
                 Some(c) => {
@@ -164,14 +176,16 @@ fn header_ui(ui: &mut egui::Ui, st: &SynopticStation) {
     }
     if !meta.is_empty() {
         // A softly pulsing "live" dot marks fresh data, matching the forecast.
-        let (dot, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
-        let pulse = 0.5 + 0.5 * (ctx.input(|i| i.time) * 2.0).sin();
-        ui.painter().circle_filled(
-            dot.center(),
-            4.5,
-            egui::Color32::from_rgba_unmultiplied(90, 220, 120, (110.0 + 110.0 * pulse) as u8),
-        );
-        ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+        ui.horizontal(|ui| {
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+            let pulse = 0.5 + 0.5 * (ctx.input(|i| i.time) * 2.0).sin();
+            ui.painter().circle_filled(
+                dot.center(),
+                4.5,
+                egui::Color32::from_rgba_unmultiplied(90, 220, 120, (110.0 + 110.0 * pulse) as u8),
+            );
+            ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+        });
     }
 }
 
@@ -326,6 +340,13 @@ pub(super) fn obs_rows(st: &SynopticStation) -> Vec<(String, String)> {
         "wet_bulb_temperature",
         "heat_index",
         "wind_chill",
+        "air_temp_high_6_hour",
+        "air_temp_low_6_hour",
+        "air_temp_high_24_hour",
+        "air_temp_low_24_hour",
+        "ceiling",
+        "peak_wind_speed",
+        "peak_wind_direction",
     ];
     present.sort_by_key(|b| ORDER.iter().position(|o| o == b).unwrap_or(ORDER.len()));
 
@@ -334,9 +355,15 @@ pub(super) fn obs_rows(st: &SynopticStation) -> Vec<(String, String)> {
         let Some((raw, unit)) = value_of(st, base) else {
             continue;
         };
+        // Synoptic flags code/text pseudo-variables; they are not readings.
+        if unit == "code" || unit == "text" {
+            continue;
+        }
         let (value, unit) = convert_units(base, raw, &unit);
         let value = if base == "wind_direction" {
             format!("{} ({:.0}°)", super::map::compass16(value), value)
+        } else if base.contains("direction") && unit.is_empty() {
+            format!("{value:.0}°")
         } else if unit.is_empty() {
             format_number(value, decimals_for(base))
         } else {
@@ -365,6 +392,12 @@ fn decimals_for(base: &str) -> usize {
         | "precip_accum_since_local_midnight"
         | "snow_depth" => 2,
         "visibility" => 1,
+        "air_temp_high_6_hour"
+        | "air_temp_low_6_hour"
+        | "air_temp_high_24_hour"
+        | "air_temp_low_24_hour" => 1,
+        "ceiling" => 0,
+        "peak_wind_speed" => 1,
         _ => 1,
     }
 }
@@ -379,18 +412,22 @@ fn convert_units(base: &str, v: f64, unit: &str) -> (f64, String) {
         "Celsius" | "degrees C" => (v * 9.0 / 5.0 + 32.0, "°F".into()),
         "Fahrenheit" => (v, "°F".into()),
         "Pascals" => (v / 3386.389, "inHg".into()),
-        "hectopascals" | "hPa" => (v * 0.029_529_983, "inHg".into()),
+        "hectopascals" | "Hectopascals" | "hPa" => (v * 0.029_529_983, "inHg".into()),
         "m/s" => (v * 2.236_936, "mph".into()),
         "km/h" => (v * 0.621_371, "mph".into()),
-        "knots" => (v * 1.150_779, "mph".into()),
-        "mph" => (v, "mph".into()),
-        "mm" => (v / 25.4, "in".into()),
-        "cm" => (v / 2.54, "in".into()),
-        "inches" => (v, "in".into()),
+        "knots" | "Knots" => (v * 1.150_779, "mph".into()),
+        "mph" | "Miles per hour" => (v, "mph".into()),
+        "Millimeters" | "mm" => (v / 25.4, "in".into()),
+        "Centimeters" | "cm" => (v / 2.54, "in".into()),
+        "inches" | "Inches" => (v, "in".into()),
+        "Statute miles" => (v, "mi".into()),
+        "Meters" if base == "visibility" => (v / 1609.344, "mi".into()),
         "meters" if base == "visibility" => (v / 1609.344, "mi".into()),
         "kilometers" if base == "visibility" => (v * 0.621_371, "mi".into()),
-        "percent" | "%" => (v, "%".into()),
-        "W/m^2" | "watts/m^2" => (v, "W/m²".into()),
+        "Meters" | "meters" => (v * 3.280_84, "ft".into()),
+        "Degrees" | "degrees" => (v, String::new()),
+        "percent" | "Percent" | "%" => (v, "%".into()),
+        "W/m^2" | "watts/m^2" | "Watts per square meter" => (v, "W/m²".into()),
         _ => (v, unit.to_string()),
     }
 }
@@ -418,6 +455,13 @@ fn label_for(base: &str) -> String {
         "wet_bulb_temperature" => "Wet bulb",
         "heat_index" => "Heat index",
         "wind_chill" => "Wind chill",
+        "air_temp_high_6_hour" => "High temp (6 h)",
+        "air_temp_low_6_hour" => "Low temp (6 h)",
+        "air_temp_high_24_hour" => "High temp (24 h)",
+        "air_temp_low_24_hour" => "Low temp (24 h)",
+        "ceiling" => "Ceiling",
+        "peak_wind_speed" => "Peak wind",
+        "peak_wind_direction" => "Peak wind direction",
         _ => "",
     };
     if known.is_empty() {
@@ -446,4 +490,59 @@ fn base_var(k: &str) -> &str {
         }
     }
     k
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The top-level UNITS map drives conversion; without it the popup showed
+    /// raw Celsius/Pascals (the reported bug).
+    #[test]
+    fn converts_metric_readings_to_us_units() {
+        let st = SynopticStation {
+            stid: "KTOP".into(),
+            name: "Topeka".into(),
+            network: String::new(),
+            coords: Some(radar_data::synoptic::SynopticCoords {
+                lat: 39.07,
+                lon: -95.62,
+            }),
+            elevation_m: Some(879.0),
+            obs: json!({
+                "air_temp_value_1": {"value": 19.0},
+                "altimeter_value_1": {"value": 102065.7},
+                "wind_speed_value_1": {"value": 3.6},
+                "precip_accum_24_hour_value_1": {"value": 1.78},
+                "visibility_value_1": {"value": 10.0},
+                "cloud_layer_1_code_value_1": {"value": 1.0},
+            }),
+            units: json!({
+                "air_temp": "Celsius",
+                "altimeter": "Pascals",
+                "wind_speed": "m/s",
+                "precip_accum_24_hour": "Millimeters",
+                "visibility": "Statute miles",
+                "cloud_layer_1_code": "code",
+            }),
+        };
+        let rows = obs_rows(&st);
+        let get = |label: &str| {
+            rows.iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(get("Temperature"), "66.2 °F");
+        assert_eq!(get("Altimeter"), "30.14 inHg");
+        assert_eq!(get("Wind speed"), "8.1 mph");
+        assert_eq!(get("Precip (24 h)"), "0.07 in");
+        assert_eq!(get("Visibility"), "10.0 mi");
+        // Code pseudo-variables must not appear.
+        assert!(
+            !rows.iter().any(|(l, _)| l.contains("Cloud layer")),
+            "code rows leaked: {rows:?}"
+        );
+    }
 }

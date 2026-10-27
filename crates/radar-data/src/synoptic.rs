@@ -73,7 +73,7 @@ impl SynopticSource {
         height: u32,
     ) -> Result<Vec<SynopticStation>> {
         let url = format!(
-            "{LATEST_URL}?token={}&bbox={:.4},{:.4},{:.4},{:.4}&width={}&height={}&spacing=28",
+            "{LATEST_URL}?token={}&bbox={:.4},{:.4},{:.4},{:.4}&width={}&height={}&spacing=28&within=120",
             urlenc(&self.token),
             bbox[0],
             bbox[1],
@@ -98,9 +98,19 @@ impl SynopticSource {
             .and_then(|x| x.as_array())
             .cloned()
             .unwrap_or_default();
+        // Synoptic puts the variable→unit map at the *top level* of the
+        // response, not inside each station (station UNITS only carries
+        // position/elevation). Keep it for every parsed station.
+        let global_units = v.get("UNITS").cloned().unwrap_or(Value::Null);
         let mut out = Vec::with_capacity(stations.len());
         for d in stations {
-            out.push(parse_station(&d));
+            let st = parse_station(&d, &global_units);
+            // Drop stations with no numeric observation (some entries are
+            // metadata-only or have gone silent).
+            if !has_numeric_obs(&st.obs) {
+                continue;
+            }
+            out.push(st);
         }
         Ok(out)
     }
@@ -119,6 +129,13 @@ fn urlenc(s: &str) -> String {
     out
 }
 
+fn has_numeric_obs(obs: &Value) -> bool {
+    obs.as_object().is_some_and(|o| {
+        o.values()
+            .any(|v| v.get("value").and_then(|x| x.as_f64()).is_some() || v.as_f64().is_some())
+    })
+}
+
 /// A JSON value that may be a number or a numeric string (Synoptic sends
 /// LATITUDE / LONGITUDE / ELEVATION as strings).
 fn loose_f64(v: &Value) -> Option<f64> {
@@ -126,7 +143,7 @@ fn loose_f64(v: &Value) -> Option<f64> {
         .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
 }
 
-fn parse_station(d: &Value) -> SynopticStation {
+fn parse_station(d: &Value, global_units: &Value) -> SynopticStation {
     let stid = d
         .get("STID")
         .and_then(|v| v.as_str())
@@ -148,9 +165,26 @@ fn parse_station(d: &Value) -> SynopticStation {
         (Some(lat), Some(lon)) => Some(SynopticCoords { lat, lon }),
         _ => None,
     };
-    let elevation_m = d.get("ELEVATION").and_then(loose_f64);
+    // Merge the top-level units with any station-level entries (station wins).
+    let mut units = global_units.clone();
+    if let (Some(dst), Some(src)) = (
+        units.as_object_mut(),
+        d.get("UNITS").and_then(|u| u.as_object()),
+    ) {
+        for (k, v) in src {
+            dst.insert(k.clone(), v.clone());
+        }
+    }
+    let elevation_m = d.get("ELEVATION").and_then(loose_f64).map(|raw| {
+        // Synoptic reports ELEVATION in the unit given by UNITS.elevation
+        // (usually feet). Convert to metres for the struct; the UI converts
+        // back to feet.
+        match units.get("elevation").and_then(|u| u.as_str()) {
+            Some("ft") | Some("feet") | Some("Feet") => raw / 3.280_84,
+            _ => raw,
+        }
+    });
     let obs = d.get("OBSERVATIONS").cloned().unwrap_or(Value::Null);
-    let units = d.get("UNITS").cloned().unwrap_or(Value::Null);
     SynopticStation {
         stid,
         name,
@@ -181,11 +215,26 @@ mod tests {
                 "air_temp_value_1": { "value": 19.0, "date_time": "2026-10-27T01:45:00Z" }
             }
         });
-        let st = parse_station(&json);
+        let st = parse_station(&json, &serde_json::json!({"air_temp": "Celsius"}));
         let c = st.coords.expect("string coordinates must parse");
         assert!((c.lat - 35.2435).abs() < 1e-6);
         assert!((c.lon + 97.4708).abs() < 1e-6);
         assert_eq!(st.elevation_m, Some(1182.0));
+    }
+
+    #[test]
+    fn converts_feet_elevation_to_metres() {
+        let json = serde_json::json!({
+            "STID": "KTOP",
+            "LATITUDE": "39.07",
+            "LONGITUDE": "-95.62",
+            "ELEVATION": "880.0",
+            "OBSERVATIONS": { "air_temp_value_1": { "value": 20.0 } },
+        });
+        let units = serde_json::json!({ "elevation": "ft", "air_temp": "Celsius" });
+        let st = parse_station(&json, &units);
+        let m = st.elevation_m.expect("elevation");
+        assert!((m - 268.2).abs() < 1.0, "got {m}");
     }
 
     #[test]
@@ -195,7 +244,7 @@ mod tests {
             "LATITUDE": 35.0,
             "LONGITUDE": -97.0,
         });
-        let st = parse_station(&json);
+        let st = parse_station(&json, &serde_json::json!({"air_temp": "Celsius"}));
         assert!(st.coords.is_some());
     }
 }

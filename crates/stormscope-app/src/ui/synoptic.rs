@@ -16,7 +16,7 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     }
     let fill = cfg!(target_os = "android");
     let scale = super::big_text_scale(app);
-    let size = super::popup_size(ctx, scale, 420.0, 620.0);
+    let size = super::popup_size(ctx, 1.0, 320.0, 1000.0);
     let mut open = app.state.synoptic_open;
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close_requested = false;
@@ -81,8 +81,8 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
             // Desktop: let the label/value table decide the width (with a
             // comfortable floor) instead of forcing a 420 pt box with a big
             // empty right-hand side.
-            ui.set_min_width(300.0);
-            ui.set_max_width(400.0);
+            ui.set_min_width(280.0);
+            ui.set_max_width(320.0);
         }
 
         egui::ScrollArea::vertical()
@@ -558,4 +558,135 @@ mod tests {
             "code rows leaked: {rows:?}"
         );
     }
+}
+
+/// Settings popup for the Synoptic token, mirroring the AI settings window.
+pub fn synoptic_settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
+    if !app.state.synoptic_settings_open {
+        return;
+    }
+    let fill = cfg!(target_os = "android");
+    let scale = super::big_text_scale(app);
+    let size = super::popup_size(ctx, scale, 540.0, 420.0);
+    let mut open = app.state.synoptic_settings_open;
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+
+    let mut window = egui::Window::new("Synoptic settings")
+        .id(egui::Id::new("stormscope.synoptic.settings"))
+        .default_pos(super::centered_popup_pos(ctx, size));
+    #[cfg(target_os = "android")]
+    if fill {
+        window = window.title_bar(false);
+    }
+    window = if fill {
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
+        window
+            .fixed_rect(inset)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(inset)
+    } else {
+        window
+            .fixed_size(size)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .resizable(false)
+    };
+    let window = window.open(&mut open);
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if fill {
+            close_requested |= super::phone_header(ui, "Synoptic settings");
+        }
+        super::apply_text_scale(ui, scale);
+        if !fill {
+            let w = (size.x - 40.0).max(320.0);
+            ui.set_width(w);
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("stormscope.synoptic.settings.scroll")
+            .auto_shrink([false, !fill])
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Broad-coverage station network: NWS ASOS/AWOS + state \
+                         mesonets + personal weather stations, all behind one \
+                         free token from synopticdata.com. Get the token under \
+                         Account → Data Credentials.",
+                    )
+                    .weak(),
+                );
+                ui.separator();
+                ui.label("API token");
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut app.state.synoptic_token)
+                            .password(!app.state.synoptic_show_token)
+                            .desired_width((ui.available_width() - 72.0).max(100.0))
+                            .hint_text("Synoptic API token"),
+                    );
+                    if ui
+                        .small_button(if app.state.synoptic_show_token {
+                            "Hide"
+                        } else {
+                            "Show"
+                        })
+                        .clicked()
+                    {
+                        app.state.synoptic_show_token = !app.state.synoptic_show_token;
+                    }
+                    if resp.lost_focus() {
+                        app.state.persist_synoptic();
+                        app.fetch_synoptic_now();
+                    }
+                });
+                if ui
+                    .checkbox(
+                        &mut app.state.synoptic_remember_token,
+                        "Remember the token on disk (plain text, 0600)",
+                    )
+                    .changed()
+                {
+                    app.state.persist_synoptic();
+                }
+                if ui
+                    .checkbox(&mut app.state.show_synoptic, "Show stations on the map")
+                    .changed()
+                {
+                    app.state.persist_synoptic();
+                }
+                ui.add_space(6.0);
+                if app.state.synoptic_pending {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Loading stations…");
+                    });
+                } else if let Some(e) = &app.state.synoptic_error {
+                    ui.label(
+                        egui::RichText::new(e)
+                            .small()
+                            .color(egui::Color32::from_rgb(255, 120, 120)),
+                    );
+                } else if !app.state.synoptic_stations.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} station{} loaded — stations refresh automatically",
+                            app.state.synoptic_stations.len(),
+                            if app.state.synoptic_stations.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ))
+                        .weak()
+                        .small(),
+                    );
+                }
+            });
+    });
+    if close_requested {
+        open = false;
+    }
+    app.state.synoptic_settings_open = open;
 }

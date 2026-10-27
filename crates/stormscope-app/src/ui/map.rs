@@ -336,21 +336,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     if let Some(mac) = app.state.ambient_hover.clone() {
         let elapsed = now - app.state.ambient_hover_at;
         if elapsed >= 1.0 {
-            if let Some(st) = app
-                .state
-                .ambient_stations
-                .iter()
-                .find(|s| s.mac_address == mac)
-            {
-                egui::Tooltip::always_open(
-                    ui.ctx().clone(),
-                    response.layer_id,
-                    egui::Id::new("stormscope.station.hover"),
-                    egui::PopupAnchor::Pointer,
-                )
-                .width(400.0)
-                .gap(16.0)
-                .show(|ui| ambient_tooltip(ui, st));
+            if let (Some(st), Some(pointer)) = (
+                app.state
+                    .ambient_stations
+                    .iter()
+                    .find(|s| s.mac_address == mac),
+                hover_pos,
+            ) {
+                station_tooltip_area(ui.ctx(), pointer, |ui| ambient_tooltip(ui, st));
             }
         } else {
             ui.ctx()
@@ -361,16 +354,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     } else if let Some(stid) = app.state.synoptic_hover.clone() {
         let elapsed = now - app.state.synoptic_hover_at;
         if elapsed >= 1.0 {
-            if let Some(st) = app.state.synoptic_stations.iter().find(|s| s.stid == stid) {
-                egui::Tooltip::always_open(
-                    ui.ctx().clone(),
-                    response.layer_id,
-                    egui::Id::new("stormscope.station.hover"),
-                    egui::PopupAnchor::Pointer,
-                )
-                .width(400.0)
-                .gap(16.0)
-                .show(|ui| synoptic_tooltip(ui, st));
+            if let (Some(st), Some(pointer)) = (
+                app.state.synoptic_stations.iter().find(|s| s.stid == stid),
+                hover_pos,
+            ) {
+                station_tooltip_area(ui.ctx(), pointer, |ui| synoptic_tooltip(ui, st));
             }
         } else {
             ui.ctx()
@@ -948,13 +936,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         draw_synoptic_stations(&painter, origin, &view, app);
     }
 
-    // --- Ambient Weather: my personal station ---
+    // --- User-placed pins (above radar + warnings, below measure tool) ---
+    draw_markers(&painter, origin, &view, app);
+
+    // --- Ambient Weather: my personal station (above pins, so a "Home"
+    // pin next to the station cannot hide its marker) ---
     if app.state.show_ambient {
         draw_ambient_stations(&painter, origin, &view, app);
     }
-
-    // --- User-placed pins (above radar + warnings, below measure tool) ---
-    draw_markers(&painter, origin, &view, app);
 
     // --- AI marks: suspected tornado, hail core, updraft (above pins) ----
     draw_ai_annotations(&painter, origin, &view, app);
@@ -2380,7 +2369,7 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
 /// Compact hover card for one Synoptic station: name, network and the first
 /// handful of observation values.
 fn synoptic_tooltip(ui: &mut egui::Ui, st: &radar_data::synoptic::SynopticStation) {
-    ui.set_min_width(340.0);
+    ui.set_max_width(320.0);
     ui.label(egui::RichText::new(st.label()).strong().size(17.0));
     let mut meta = String::new();
     if !st.network.is_empty() {
@@ -2413,9 +2402,29 @@ fn synoptic_tooltip(ui: &mut egui::Ui, st: &radar_data::synoptic::SynopticStatio
     ui.label(egui::RichText::new("click for all data").weak().size(12.0));
 }
 
+/// A hover card placed below-left of the pointer. It sizes to its content
+/// (no forced width), so there is no empty right-hand band, and it sits away
+/// from the marker label (which is painted to the right) and from a "Home"
+/// pin above the station.
+fn station_tooltip_area(ctx: &egui::Context, pointer: egui::Pos2, add: impl FnOnce(&mut egui::Ui)) {
+    let pos = pointer + egui::vec2(-14.0, 14.0);
+    egui::Area::new(egui::Id::new("stormscope.station.hover"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(pos)
+        .pivot(egui::Align2::RIGHT_TOP)
+        .constrain(true)
+        .movable(false)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                add(ui);
+            });
+        });
+}
+
 /// Compact hover card for the user's Ambient station.
 fn ambient_tooltip(ui: &mut egui::Ui, st: &radar_data::ambient::AmbientStation) {
-    ui.set_min_width(340.0);
+    ui.set_max_width(320.0);
     ui.label(egui::RichText::new(st.label()).strong().size(17.0));
     if !st.location.is_empty() {
         ui.label(egui::RichText::new(&st.location).weak().size(13.0));

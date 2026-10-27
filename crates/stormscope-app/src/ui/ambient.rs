@@ -16,7 +16,7 @@ pub fn ambient_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect)
     }
     let fill = cfg!(target_os = "android");
     let scale = super::big_text_scale(app);
-    let size = super::popup_size(ctx, scale, 420.0, 620.0);
+    let size = super::popup_size(ctx, 1.0, 320.0, 1000.0);
     let mut open = app.state.ambient_open;
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close_requested = false;
@@ -74,8 +74,8 @@ pub fn ambient_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect)
             // Desktop: let the label/value table decide the width (with a
             // comfortable floor) instead of forcing a 420 pt box with a big
             // empty right-hand side.
-            ui.set_min_width(300.0);
-            ui.set_max_width(400.0);
+            ui.set_min_width(280.0);
+            ui.set_max_width(320.0);
         }
 
         egui::ScrollArea::vertical()
@@ -315,4 +315,142 @@ pub(super) fn ambient_rows(st: &AmbientStation) -> Vec<(String, String)> {
         rows.push(("Last rain".to_string(), rain.to_string()));
     }
     rows
+}
+
+/// Settings popup for the Ambient Weather API + application keys.
+pub fn ambient_settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
+    if !app.state.ambient_settings_open {
+        return;
+    }
+    let fill = cfg!(target_os = "android");
+    let scale = super::big_text_scale(app);
+    let size = super::popup_size(ctx, scale, 540.0, 480.0);
+    let mut open = app.state.ambient_settings_open;
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+
+    let mut window = egui::Window::new("Ambient station settings")
+        .id(egui::Id::new("stormscope.ambient.settings"))
+        .default_pos(super::centered_popup_pos(ctx, size));
+    #[cfg(target_os = "android")]
+    if fill {
+        window = window.title_bar(false);
+    }
+    window = if fill {
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
+        window
+            .fixed_rect(inset)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(inset)
+    } else {
+        window
+            .fixed_size(size)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .resizable(false)
+    };
+    let window = window.open(&mut open);
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if fill {
+            close_requested |= super::phone_header(ui, "Ambient station settings");
+        }
+        super::apply_text_scale(ui, scale);
+        if !fill {
+            let w = (size.x - 40.0).max(320.0);
+            ui.set_width(w);
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("stormscope.ambient.settings.scroll")
+            .auto_shrink([false, !fill])
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Your own Ambient Weather personal station, shown as a \
+                         green thermometer next to the Synoptic network. Both \
+                         keys are free from AmbientWeather.net → Account → API \
+                         Keys: an API key and an Application key.",
+                    )
+                    .weak(),
+                );
+                ui.separator();
+                ui.label("API key");
+                let api_resp = ui.add(
+                    egui::TextEdit::singleline(&mut app.state.ambient_api_key)
+                        .password(!app.state.ambient_show_keys)
+                        .desired_width(ui.available_width())
+                        .hint_text("Ambient Weather API key"),
+                );
+                ui.label("Application key");
+                let app_resp = ui.add(
+                    egui::TextEdit::singleline(&mut app.state.ambient_app_key)
+                        .password(!app.state.ambient_show_keys)
+                        .desired_width(ui.available_width())
+                        .hint_text("Ambient Weather application key"),
+                );
+                if api_resp.lost_focus() || app_resp.lost_focus() {
+                    app.state.persist_ambient();
+                    app.fetch_ambient_now();
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .small_button(if app.state.ambient_show_keys {
+                            "Hide keys"
+                        } else {
+                            "Show keys"
+                        })
+                        .clicked()
+                    {
+                        app.state.ambient_show_keys = !app.state.ambient_show_keys;
+                    }
+                });
+                if ui
+                    .checkbox(
+                        &mut app.state.ambient_remember_keys,
+                        "Remember the keys on disk (plain text, 0600)",
+                    )
+                    .changed()
+                {
+                    app.state.persist_ambient();
+                }
+                if ui
+                    .checkbox(&mut app.state.show_ambient, "Show my station on the map")
+                    .changed()
+                {
+                    app.state.persist_ambient();
+                }
+                ui.add_space(6.0);
+                if app.state.ambient_pending {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Loading my station…");
+                    });
+                } else if let Some(e) = &app.state.ambient_error {
+                    ui.label(
+                        egui::RichText::new(e)
+                            .small()
+                            .color(egui::Color32::from_rgb(255, 120, 120)),
+                    );
+                } else if !app.state.ambient_stations.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} station{} loaded — your station refreshes automatically",
+                            app.state.ambient_stations.len(),
+                            if app.state.ambient_stations.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ))
+                        .weak()
+                        .small(),
+                    );
+                }
+            });
+    });
+    if close_requested {
+        open = false;
+    }
+    app.state.ambient_settings_open = open;
 }

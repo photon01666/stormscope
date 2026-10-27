@@ -568,11 +568,16 @@ pub struct AppState {
     // Ambient Weather) behind a single token.
     pub synoptic_token: String,
     pub synoptic_remember_token: bool,
+    pub synoptic_show_token: bool,
     pub synoptic_open: bool,
+    /// The Settings → "Synoptic settings…" popup.
+    pub synoptic_settings_open: bool,
     pub synoptic_selected: Option<String>,
     pub synoptic_stations: Vec<radar_data::synoptic::SynopticStation>,
     pub synoptic_last_fetch: Option<std::time::Instant>,
     pub synoptic_last_attempt: Option<std::time::Instant>,
+    /// Last map centre the Synoptic fetch was made for (lat, lon, zoom).
+    pub synoptic_last_view: Option<(f64, f64, f64)>,
     pub synoptic_error: Option<String>,
     pub synoptic_pending: bool,
     pub show_synoptic: bool,
@@ -581,7 +586,10 @@ pub struct AppState {
     pub ambient_api_key: String,
     pub ambient_app_key: String,
     pub ambient_remember_keys: bool,
+    pub ambient_show_keys: bool,
     pub ambient_open: bool,
+    /// The Settings → "Ambient station settings…" popup.
+    pub ambient_settings_open: bool,
     pub ambient_selected: Option<String>,
     pub ambient_stations: Vec<radar_data::ambient::AmbientStation>,
     pub ambient_last_fetch: Option<std::time::Instant>,
@@ -1136,11 +1144,14 @@ impl Default for AppState {
                 .or(synoptic.token.clone())
                 .unwrap_or_default(),
             synoptic_remember_token: synoptic.remember_token.unwrap_or(synoptic.token.is_some()),
+            synoptic_show_token: false,
             synoptic_open: false,
+            synoptic_settings_open: false,
             synoptic_selected: None,
             synoptic_stations: Vec::new(),
             synoptic_last_fetch: None,
             synoptic_last_attempt: None,
+            synoptic_last_view: None,
             synoptic_error: None,
             synoptic_pending: false,
             show_synoptic: synoptic.show.unwrap_or(true),
@@ -1155,7 +1166,9 @@ impl Default for AppState {
                 .or(ambient.app_key.clone())
                 .unwrap_or_default(),
             ambient_remember_keys: ambient.remember_keys.unwrap_or(ambient.api_key.is_some()),
+            ambient_show_keys: false,
             ambient_open: false,
+            ambient_settings_open: false,
             ambient_selected: None,
             ambient_stations: Vec::new(),
             ambient_last_fetch: None,

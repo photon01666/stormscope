@@ -700,6 +700,48 @@ impl StormApp {
         let _ = self.tx.send(crate::app::DataCmd::SetSite(id.to_string()));
     }
 
+    /// Fetch the user's Ambient station now (no-op without both keys).
+    pub(crate) fn fetch_ambient_now(&mut self) {
+        if self.state.ambient_api_key.trim().is_empty()
+            || self.state.ambient_app_key.trim().is_empty()
+        {
+            return;
+        }
+        let _ = self.tx.send(DataCmd::SetAmbientKeys {
+            api_key: self.state.ambient_api_key.clone(),
+            app_key: self.state.ambient_app_key.clone(),
+        });
+        let _ = self.tx.send(DataCmd::LoadAmbient);
+        self.state.ambient_pending = true;
+        self.state.ambient_last_attempt = Some(std::time::Instant::now());
+    }
+
+    /// Fetch Synoptic stations for the current map view now.
+    pub(crate) fn fetch_synoptic_now(&mut self) {
+        if self.state.synoptic_token.trim().is_empty() {
+            return;
+        }
+        let view = &self.state.view;
+        let w = view.width() as f64;
+        let h = view.height() as f64;
+        let (x0, y0) = view.view_px_to_lonlat(0.0, 0.0);
+        let (x1, y1) = view.view_px_to_lonlat(w, h);
+        let bbox = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
+        let (width, height) = (view.width() as u32, view.height() as u32);
+        let center = (view.center_lat, view.center_lon, view.zoom);
+        let _ = self
+            .tx
+            .send(DataCmd::SetSynopticToken(self.state.synoptic_token.clone()));
+        let _ = self.tx.send(DataCmd::LoadSynoptic {
+            bbox,
+            width,
+            height,
+        });
+        self.state.synoptic_pending = true;
+        self.state.synoptic_last_attempt = Some(std::time::Instant::now());
+        self.state.synoptic_last_view = Some(center);
+    }
+
     /// Send the app's alert lists through the shared voice notifier. The
     /// data thread calls the same notifier, so desktop speech does not depend
     /// on UI frames (e.g. a hidden Wayland workspace); the shared seen set
@@ -3254,52 +3296,6 @@ impl StormApp {
                     asset_suffix: "-android.apk".into(),
                 });
             }
-            // Synoptic: push token + fetch the current view when configured.
-            if !self.state.synoptic_pending
-                && !self.state.synoptic_token.is_empty()
-                && (self.state.synoptic_last_fetch.is_none()
-                    || self.state.synoptic_stations.is_empty())
-                && self
-                    .state
-                    .synoptic_last_attempt
-                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60))
-            {
-                self.state.synoptic_last_attempt = Some(std::time::Instant::now());
-                let _ = self
-                    .tx
-                    .send(DataCmd::SetSynopticToken(self.state.synoptic_token.clone()));
-                let view = &self.state.view;
-                let w = view.width() as f64;
-                let h = view.height() as f64;
-                let (x0, y0) = view.view_px_to_lonlat(0.0, 0.0);
-                let (x1, y1) = view.view_px_to_lonlat(w, h);
-                let bbox = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
-                let _ = self.tx.send(DataCmd::LoadSynoptic {
-                    bbox,
-                    width: view.width() as u32,
-                    height: view.height() as u32,
-                });
-                self.state.synoptic_pending = true;
-            }
-            // Ambient Weather: push keys + fetch when configured.
-            if !self.state.ambient_pending
-                && !self.state.ambient_api_key.is_empty()
-                && !self.state.ambient_app_key.is_empty()
-                && (self.state.ambient_last_fetch.is_none()
-                    || self.state.ambient_stations.is_empty())
-                && self
-                    .state
-                    .ambient_last_attempt
-                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60))
-            {
-                self.state.ambient_last_attempt = Some(std::time::Instant::now());
-                let _ = self.tx.send(DataCmd::SetAmbientKeys {
-                    api_key: self.state.ambient_api_key.clone(),
-                    app_key: self.state.ambient_app_key.clone(),
-                });
-                let _ = self.tx.send(DataCmd::LoadAmbient);
-                self.state.ambient_pending = true;
-            }
             self.pump_gemini_live();
             // Sessions are event-driven, but the footer meter, status and
             // transcript need a frame even when the user is not touching the
@@ -3308,6 +3304,48 @@ impl StormApp {
             if self.state.voice_convo {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
+        // Synoptic: auto-fetch on startup, every 10 minutes, and after a
+        // meaningful pan/zoom (throttled so panning cannot hammer the free
+        // tier).
+        if !self.state.synoptic_pending && !self.state.synoptic_token.trim().is_empty() {
+            let (lat, lon, zoom) = (
+                self.state.view.center_lat,
+                self.state.view.center_lon,
+                self.state.view.zoom,
+            );
+            let view_moved = self.state.synoptic_last_view.is_none_or(|(l, o, z)| {
+                (l - lat).abs() > 0.75 || (o - lon).abs() > 1.0 || (z - zoom).abs() > 0.35
+            });
+            let aged_secs = if view_moved { 180 } else { 600 };
+            let due = self
+                .state
+                .synoptic_last_fetch
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(aged_secs));
+            let throttled = self
+                .state
+                .synoptic_last_attempt
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60));
+            if due && throttled {
+                self.fetch_synoptic_now();
+            }
+        }
+        // Ambient: auto-fetch on startup and every 5 minutes.
+        if !self.state.ambient_pending
+            && !self.state.ambient_api_key.trim().is_empty()
+            && !self.state.ambient_app_key.trim().is_empty()
+        {
+            let due = self
+                .state
+                .ambient_last_fetch
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(300));
+            let throttled = self
+                .state
+                .ambient_last_attempt
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60));
+            if due && throttled {
+                self.fetch_ambient_now();
             }
         }
         #[cfg(windows)]

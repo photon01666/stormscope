@@ -191,6 +191,14 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     if ui.ctx().input(|i| i.key_pressed(egui::Key::BrowserBack)) {
         if app.state.fullscreen {
             set_fullscreen(ui.ctx(), app);
+        } else if app.state.synoptic_settings_open {
+            app.state.synoptic_settings_open = false;
+        } else if app.state.ambient_settings_open {
+            app.state.ambient_settings_open = false;
+        } else if app.state.synoptic_open {
+            app.state.synoptic_open = false;
+        } else if app.state.ambient_open {
+            app.state.ambient_open = false;
         } else if app.state.ai_settings_open {
             app.state.ai_settings_open = false;
         } else if app.state.ai_open {
@@ -297,6 +305,8 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     totals::totals_window(ui.ctx(), app, pane_area);
     synoptic::synoptic_window(ui.ctx(), app, pane_area);
     ambient::ambient_window(ui.ctx(), app, pane_area);
+    synoptic::synoptic_settings_window(ui.ctx(), app, pane_area);
+    ambient::ambient_settings_window(ui.ctx(), app, pane_area);
 
     // Archive popup (opened from Settings).
     archive_window(ui.ctx(), app, pane_area);
@@ -2689,32 +2699,6 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
 /// section (each gated behind [`confirm_clear_dialog`]).
 fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
     {
-        ui.label(egui::RichText::new("Disk cache").strong());
-        ui.add_space(4.0);
-        cache_row(
-            ui,
-            "Radar data",
-            "Downloaded radar volumes",
-            app.state.cache_radar_bytes,
-            crate::app::ClearTarget::Radar,
-            app,
-        );
-        ui.separator();
-        cache_row(
-            ui,
-            "Map data",
-            "Cached basemap tiles",
-            app.state.cache_tile_bytes,
-            crate::app::ClearTarget::Tiles,
-            app,
-        );
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new("cap 10 GB across both — oldest evicted first")
-                .weak()
-                .small(),
-        );
-        ui.separator();
         ui.label(egui::RichText::new("Data").strong());
         ui.add_space(4.0);
         if ui
@@ -2765,46 +2749,24 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(
-                    "Broad-coverage station network: NWS ASOS/AWOS + state                      mesonets + personal weather stations (incl. Ambient                      Weather), all behind one free token from synopticdata.com.",
+                    "Broad-coverage station network: NWS ASOS/AWOS + state \
+                     mesonets + personal weather stations, behind one free token.",
                 )
                 .weak()
                 .small(),
             );
-            ui.label("API token");
-            ui.add(
-                egui::TextEdit::singleline(&mut app.state.synoptic_token)
-                    .desired_width(ui.available_width())
-                    .hint_text("Synoptic API token"),
-            );
-            ui.checkbox(
-                &mut app.state.synoptic_remember_token,
-                "Remember the token on disk (plain text, 0600)",
-            );
-            ui.checkbox(&mut app.state.show_synoptic, "Show stations on the map");
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Refresh stations")
-                    .on_hover_text("Fetch stations in the current map view now")
-                    .clicked()
-                {
-                    let view = &app.state.view;
-                    let w = view.width() as f64;
-                    let h = view.height() as f64;
-                    let (x0, y0) = view.view_px_to_lonlat(0.0, 0.0);
-                    let (x1, y1) = view.view_px_to_lonlat(w, h);
-                    let bbox = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
-                    let _ = app.tx.send(crate::app::DataCmd::SetSynopticToken(
-                        app.state.synoptic_token.clone(),
-                    ));
-                    let _ = app.tx.send(crate::app::DataCmd::LoadSynoptic {
-                        bbox,
-                        width: view.width() as u32,
-                        height: view.height() as u32,
-                    });
-                    app.state.synoptic_pending = true;
-                    app.state.persist_synoptic();
-                }
-            });
+            if ui
+                .button("Synoptic settings…")
+                .on_hover_text("Enter the Synoptic API token")
+                .clicked()
+            {
+                app.state.synoptic_settings_open = true;
+                app.state.ambient_settings_open = false;
+                app.state.archive_popup_open = false;
+                app.state.ai_settings_open = false;
+                app.state.sidebar_pinned = false;
+                app.state.sidebar_dismissed = true;
+            }
             if app.state.synoptic_pending {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -2812,7 +2774,7 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                 });
             } else if let Some(e) = &app.state.synoptic_error {
                 ui.label(
-                    egui::RichText::new(e)
+                    egui::RichText::new(format!("error: {e}"))
                         .small()
                         .color(egui::Color32::from_rgb(255, 120, 120)),
                 );
@@ -2830,6 +2792,8 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                     .weak()
                     .small(),
                 );
+            } else if app.state.synoptic_token.is_empty() {
+                ui.label(egui::RichText::new("No token set").weak().small());
             }
         }
         {
@@ -2839,44 +2803,23 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             ui.label(
                 egui::RichText::new(
                     "Your own personal weather station, shown as a green \
-                     thermometer next to the Synoptic network. Requires both \
-                     keys from AmbientWeather.net → Account → API Keys.",
+                     thermometer next to the Synoptic network.",
                 )
                 .weak()
                 .small(),
             );
-            ui.label("API key");
-            ui.add(
-                egui::TextEdit::singleline(&mut app.state.ambient_api_key)
-                    .desired_width(ui.available_width())
-                    .hint_text("Ambient Weather API key"),
-            );
-            ui.label("Application key");
-            ui.add(
-                egui::TextEdit::singleline(&mut app.state.ambient_app_key)
-                    .desired_width(ui.available_width())
-                    .hint_text("Ambient Weather application key"),
-            );
-            ui.checkbox(
-                &mut app.state.ambient_remember_keys,
-                "Remember the keys on disk (plain text, 0600)",
-            );
-            ui.checkbox(&mut app.state.show_ambient, "Show my station on the map");
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Refresh my station")
-                    .on_hover_text("Fetch your Ambient station + latest observation")
-                    .clicked()
-                {
-                    let _ = app.tx.send(crate::app::DataCmd::SetAmbientKeys {
-                        api_key: app.state.ambient_api_key.clone(),
-                        app_key: app.state.ambient_app_key.clone(),
-                    });
-                    let _ = app.tx.send(crate::app::DataCmd::LoadAmbient);
-                    app.state.ambient_pending = true;
-                    app.state.persist_ambient();
-                }
-            });
+            if ui
+                .button("Ambient station settings…")
+                .on_hover_text("Enter your Ambient Weather API + application keys")
+                .clicked()
+            {
+                app.state.ambient_settings_open = true;
+                app.state.synoptic_settings_open = false;
+                app.state.archive_popup_open = false;
+                app.state.ai_settings_open = false;
+                app.state.sidebar_pinned = false;
+                app.state.sidebar_dismissed = true;
+            }
             if app.state.ambient_pending {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -2884,7 +2827,7 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                 });
             } else if let Some(e) = &app.state.ambient_error {
                 ui.label(
-                    egui::RichText::new(e)
+                    egui::RichText::new(format!("error: {e}"))
                         .small()
                         .color(egui::Color32::from_rgb(255, 120, 120)),
                 );
@@ -2902,6 +2845,8 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                     .weak()
                     .small(),
                 );
+            } else if app.state.ambient_api_key.is_empty() || app.state.ambient_app_key.is_empty() {
+                ui.label(egui::RichText::new("No keys set").weak().small());
             }
         }
         {
@@ -3072,6 +3017,33 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             ui.label(egui::RichText::new(engine_note).weak().small());
         }
     }
+    ui.separator();
+    ui.label(egui::RichText::new("Disk cache").strong());
+    ui.add_space(4.0);
+    cache_row(
+        ui,
+        "Radar data",
+        "Downloaded radar volumes",
+        app.state.cache_radar_bytes,
+        crate::app::ClearTarget::Radar,
+        app,
+    );
+    ui.separator();
+    cache_row(
+        ui,
+        "Map data",
+        "Cached basemap tiles",
+        app.state.cache_tile_bytes,
+        crate::app::ClearTarget::Tiles,
+        app,
+    );
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("cap 10 GB across both — oldest evicted first")
+            .weak()
+            .small(),
+    );
+    ui.separator();
     ui.add_space(8.0);
     ui.separator();
     ui.label(

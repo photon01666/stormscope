@@ -57,7 +57,16 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.dbz_crosshair_pos = Some((lat, lon));
         }
     }
-    if response.dragged() && !measuring && !crosshair_mode {
+    // Android: a two-finger pinch also looks like a drag to egui. Suppress
+    // panning while the pinch delta is non-neutral so the map only zooms.
+    #[cfg(target_os = "android")]
+    let pinch_now = ui.input(|i| i.zoom_delta());
+    #[cfg(target_os = "android")]
+    let pinching = (pinch_now - 1.0).abs() > 0.0005;
+    #[cfg(not(target_os = "android"))]
+    let pinching = false;
+
+    if response.dragged() && !measuring && !crosshair_mode && !pinching {
         let drag = response.drag_delta();
         if drag != egui::Vec2::ZERO {
             pan_view(&mut app.state.view, view, drag.x as f64, drag.y as f64);
@@ -388,10 +397,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 .ctx()
                 .input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
             let mut z = app.state.view.zoom;
-            // Touch pinch on Android arrives as much larger deltas than a
-            // trackpad; dampen it so a two-finger zoom doesn't overshoot.
+            // Android has no wheel: two-finger gestures can also surface a
+            // scroll delta, which must not sneak extra zoom in alongside the
+            // pinch. Dampen the pinch hard (touch deltas are much larger than
+            // a trackpad's) and cap the per-frame step.
             #[cfg(target_os = "android")]
-            let pinch = 1.0 + (pinch - 1.0) * 0.4;
+            let wheel = 0.0;
+            #[cfg(target_os = "android")]
+            let pinch = (1.0 + (pinch - 1.0) * 0.16).clamp(0.90, 1.10);
             let zd = pinch as f64;
             if zd != 1.0 {
                 z *= zd;

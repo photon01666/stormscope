@@ -113,7 +113,8 @@ pub fn system_prompt() -> String {
      - `futurecast` is NOAA HRRR model-simulated reflectivity for future hours, not observed \
      radar. Use it for arrival timing and storm evolution, always call it a forecast, and never \
      present it as a current observation. Its per-point `frames` list has `valid_utc` and `dbz`; \
-     a future time is useful even when the current radar is clear.\n\
+     a future time is useful even when the current radar is clear. If it is not loaded, request it \
+     with DATA: a full run can take 30–60 seconds to download, so tell the user it is downloading.\n\
      - Lead with the answer in the first sentence: is anything dangerous coming, when, and what \
      should the reader do? For `current_location` and each marker write 2-4 short sentences: what \
      is happening now, what the next 30-90 minutes look like, the specific hazard \
@@ -152,9 +153,9 @@ pub fn system_prompt() -> String {
      whole disk (not a single point).\n\
      - If the answer needs data that `data_status` says is missing — MRMS, GOES, the NWS \
      forecast, station totals, or a different SPC day/type — reply with ONLY:\n\
-     DATA: {\"mrms\": true, \"goes\": true, \"forecast\": {\"lat\": 39.05, \"lon\": -95.68, \
-     \"label\": \"Topeka\"}, \"totals\": {\"lat\": 39.05, \"lon\": -95.68}, \"spc\": {\"day\": 2, \
-     \"kind\": \"tornado\"}}\n\
+     DATA: {\"mrms\": true, \"goes\": true, \"futurecast\": true, \"forecast\": {\"lat\": 39.05, \
+     \"lon\": -95.68, \"label\": \"Topeka\"}, \"totals\": {\"lat\": 39.05, \"lon\": -95.68}, \
+     \"spc\": {\"day\": 2, \"kind\": \"tornado\"}}\n\
      Include only what you need. The app fetches it and sends a second snapshot; then answer \
      fully. One DATA round per question.\n\
      - `cuts` lists every elevation at each sampled column (reflectivity, velocity, ZDR, CC), so \
@@ -346,7 +347,7 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             "spc_day": input.outlook.map(|o| o.day),
             "spc_type": input.outlook.map(|o| o.ty.label()),
             "srm_loaded": input.srm_volume.is_some(),
-            "note": "MRMS/GOES/futurecast/forecast/totals/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them. `futurecast` is HRRR simulated reflectivity, a model forecast, not observed radar. Rain/snow values are in `rain_snow_totals`, in inches.",
+            "note": "MRMS/GOES/futurecast/forecast/totals/spc/srm are only present when loaded; the model can request missing layers with DATA and the app fetches them. A futurecast request downloads a full HRRR run (18 or 48 hours) and can take 30-60 seconds, so tell the user it is downloading before answering. `futurecast` is HRRR simulated reflectivity, a model forecast, not observed radar. Rain/snow values are in `rain_snow_totals`, in inches.",
         }),
     );
 

@@ -2447,7 +2447,14 @@ impl StormApp {
                 extended: self.state.futurecast_extended,
             });
             waiting.push("futurecast".into());
-            notes.push("HRRR FutureCast".into());
+            let horizon = if self.state.futurecast_extended {
+                "48-hour"
+            } else {
+                "18-hour"
+            };
+            notes.push(format!(
+                "HRRR FutureCast ({horizon} run — downloading, this can take 30–60 s)"
+            ));
         }
         if let Some(point) = &request.forecast {
             self.state.forecast = None;
@@ -2500,10 +2507,14 @@ impl StormApp {
             return false;
         }
         self.state.ai_data_depth = 1;
+        let mut looking = format!("loading {}", notes.join(", "));
+        if waiting.iter().any(|l| l == "futurecast") {
+            looking.push_str(" — FutureCast downloads a full HRRR run; this usually takes 30–60 s");
+        }
+        self.state.ai_looking_at = Some(looking);
         self.state.ai_pending_data = waiting;
         self.state.ai_pending_data_at = Some(std::time::Instant::now());
         self.state.ai_pending = true;
-        self.state.ai_looking_at = Some(format!("loading {}", notes.join(", ")));
         self.ai_note(format!("Fetching {} for the analysis…", notes.join(", ")));
         true
     }

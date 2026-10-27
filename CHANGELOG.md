@@ -3,6 +3,20 @@
 Notable changes per release. The project's early history lives in the commit
 log; entries start at the first public release.
 
+## v1.6.0 — 2026-10-27
+
+**Radar site**
+- Desktop starts on **Norman (KTLX)** when there is no GPS; Android still
+  picks the radar nearest to the first GPS fix.
+- **Set default** in Controls stores the selected site and uses it on every
+  launch. A saved default also stops the GPS-nearest choice from taking over.
+- Controls show which default is in effect: the saved site, GPS-nearest, or
+  Norman.
+- Changing radar sites refreshes the weather-station layer immediately
+  instead of waiting for the 20-minute Synoptic timer. **Apply site** and
+  **Set default** also move the map to the chosen radar; map, GPS, alert and
+  AI site changes keep the station layer in step.
+
 ## v1.5.19 — 2026-10-27
 
 **Weather stations on the map**

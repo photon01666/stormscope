@@ -136,6 +136,9 @@ pub fn run(
     };
     let alerts = AlertSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
+    let mut ambient_keys: Option<(String, String)> = None;
+    let mut ambient_inflight = false;
+    let mut last_ambient = already_elapsed(std::time::Duration::from_secs(300));
     let forecasts = radar_data::ForecastSource::new(USER_AGENT).ok();
     // Both feeds hold caches (report texts, MCD pages) and a cold fill can
     // take tens of seconds (up to 80 product texts), so each poll runs on a
@@ -185,6 +188,7 @@ pub fn run(
     let mut last_watchdog = std::time::Instant::now();
     const ARCHIVE_CATCHUP_INTERVAL: Duration = Duration::from_secs(60);
 
+    const AMBIENT_REFRESH: Duration = Duration::from_secs(300);
     let _ = out.send(DataMsg::Status("starting live feed…".into()));
     start_live(&source, radar_core::DEFAULT_SITE, &mut live, &out);
     // Restore the recent scans already on disk (instant) and top up with the
@@ -913,8 +917,75 @@ pub fn run(
                         let _ = out.send(DataMsg::UpdateDownload(result));
                     });
                 }
+                DataCmd::SetAmbientKeys { api_key, app_key } => {
+                    let (a, b) = (api_key.trim().to_string(), app_key.trim().to_string());
+                    if a.is_empty() || b.is_empty() {
+                        ambient_keys = None;
+                    } else {
+                        ambient_keys = Some((a, b));
+                    }
+                }
+                DataCmd::LoadAmbient => {
+                    if !ambient_inflight {
+                        if let Some((ak, apk)) = ambient_keys.clone() {
+                            ambient_inflight = true;
+                            let out = out.clone();
+                            std::thread::spawn(move || {
+                                let src =
+                                    radar_data::ambient::AmbientSource::new(USER_AGENT, &ak, &apk);
+                                match src {
+                                    Ok(s) => match s.stations() {
+                                        Ok(stations) => {
+                                            let _ = out.send(DataMsg::AmbientStations(stations));
+                                        }
+                                        Err(e) => {
+                                            let _ =
+                                                out.send(DataMsg::AmbientError(format!("{e:#}")));
+                                        }
+                                    },
+                                    Err(e) => {
+                                        let _ = out.send(DataMsg::AmbientError(format!("{e:#}")));
+                                    }
+                                }
+                            });
+                        } else {
+                            let _ = out.send(DataMsg::AmbientError(
+                                "Ambient Weather API key / application key not set".into(),
+                            ));
+                        }
+                    }
+                }
             },
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Periodic Ambient Weather refresh when keys are configured.
+                if !ambient_inflight
+                    && ambient_keys.is_some()
+                    && last_ambient.elapsed() >= AMBIENT_REFRESH
+                {
+                    last_ambient = std::time::Instant::now();
+                    if let Some((ak, apk)) = ambient_keys.clone() {
+                        ambient_inflight = true;
+                        let out = out.clone();
+                        std::thread::spawn(move || {
+                            let src =
+                                radar_data::ambient::AmbientSource::new(USER_AGENT, &ak, &apk);
+                            match src {
+                                Ok(s) => match s.stations() {
+                                    Ok(stations) => {
+                                        let _ = out.send(DataMsg::AmbientStations(stations));
+                                    }
+                                    Err(e) => {
+                                        let _ = out.send(DataMsg::AmbientError(format!("{e:#}")));
+                                    }
+                                },
+                                Err(e) => {
+                                    let _ = out.send(DataMsg::AmbientError(format!("{e:#}")));
+                                }
+                            }
+                        });
+                    }
+                }
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
 

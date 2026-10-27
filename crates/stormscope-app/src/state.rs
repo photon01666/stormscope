@@ -563,6 +563,18 @@ pub struct AppState {
     pub forecast_site: String,
     /// Coordinates already requested (dedupes sends while one is in flight).
     pub forecast_requested: Option<(f64, f64)>,
+    // Ambient Weather personal weather stations (PWS). Optional and off
+    // until the user enters an API key + application key in Settings.
+    pub ambient_api_key: String,
+    pub ambient_app_key: String,
+    pub ambient_remember_keys: bool,
+    pub ambient_open: bool,
+    pub ambient_selected: Option<String>,
+    pub ambient_stations: Vec<radar_data::ambient::AmbientStation>,
+    pub ambient_last_fetch: Option<std::time::Instant>,
+    pub ambient_error: Option<String>,
+    pub ambient_pending: bool,
+    pub show_ambient: bool,
     /// When the forecast/observation currently on screen was fetched, for the
     /// auto-refresh cadence.
     pub forecast_fetched_at: Option<std::time::Instant>,
@@ -959,6 +971,7 @@ impl Default for AppState {
         // environment. The base URL and model default to OpenCode Go
         // (`deepseek-v4.1-flash`); the key is left for the user to paste.
         let ai = load_ai_prefs();
+        let ambient = load_ambient_prefs();
         let ai_base_url = std::env::var("STORMSCOPE_AI_BASE_URL")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -1096,6 +1109,24 @@ impl Default for AppState {
             forecast_requested: None,
             forecast_fetched_at: None,
             observation_fetched_at: None,
+            ambient_api_key: std::env::var("STORMSCOPE_AMBIENT_API_KEY")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .or(ambient.api_key.clone())
+                .unwrap_or_default(),
+            ambient_app_key: std::env::var("STORMSCOPE_AMBIENT_APP_KEY")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .or(ambient.app_key.clone())
+                .unwrap_or_default(),
+            ambient_remember_keys: ambient.remember_keys.unwrap_or(ambient.api_key.is_some()),
+            ambient_open: false,
+            ambient_selected: None,
+            ambient_stations: Vec::new(),
+            ambient_last_fetch: None,
+            ambient_error: None,
+            ambient_pending: false,
+            show_ambient: ambient.show.unwrap_or(true),
             uv_index: None,
             gps_fix: None,
             gps_polled_at: f64::NEG_INFINITY,
@@ -1448,6 +1479,29 @@ fn load_ai_prefs() -> AiPrefs {
     }
 }
 
+fn ambient_path() -> std::path::PathBuf {
+    config_dir().join("ambient.json")
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct AmbientPrefs {
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    app_key: Option<String>,
+    #[serde(default)]
+    remember_keys: Option<bool>,
+    #[serde(default)]
+    show: Option<bool>,
+}
+
+fn load_ambient_prefs() -> AmbientPrefs {
+    match std::fs::read_to_string(ambient_path()) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => AmbientPrefs::default(),
+    }
+}
+
 fn load_markers() -> Vec<MapMarker> {
     match std::fs::read_to_string(markers_path()) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
@@ -1565,6 +1619,39 @@ impl AppState {
                 }
             }
             Err(e) => log::warn!("AI settings open: {e}"),
+        }
+    }
+
+    /// Write the Ambient Weather configuration (best-effort, 0600).
+    pub fn persist_ambient(&self) {
+        let prefs = AmbientPrefs {
+            api_key: self
+                .ambient_remember_keys
+                .then(|| self.ambient_api_key.clone()),
+            app_key: self
+                .ambient_remember_keys
+                .then(|| self.ambient_app_key.clone()),
+            remember_keys: Some(self.ambient_remember_keys),
+            show: Some(self.show_ambient),
+        };
+        let Ok(json) = serde_json::to_string_pretty(&prefs) else {
+            return;
+        };
+        let path = ambient_path();
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            log::warn!("ambient settings dir: {e}");
+            return;
+        }
+        use std::io::Write;
+        match private_writer(&path) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(json.as_bytes()) {
+                    log::warn!("ambient settings write: {e}");
+                }
+            }
+            Err(e) => log::warn!("ambient settings open: {e}"),
         }
     }
 

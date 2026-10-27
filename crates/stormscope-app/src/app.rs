@@ -78,6 +78,11 @@ pub enum DataMsg {
     Observation(radar_core::forecast::Observation),
     /// Rain/snow totals for the stations around a requested point.
     Totals(Vec<radar_data::StationTotals>),
+    /// Ambient Weather personal weather stations on the account, with their
+    /// latest observation.
+    AmbientStations(Vec<radar_data::ambient::AmbientStation>),
+    /// Ambient Weather fetch failed (surfaced in Settings).
+    AmbientError(String),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
     /// Forecaster discussion text for one outlook day.
@@ -225,6 +230,13 @@ pub enum DataCmd {
     },
     /// Fetch the newest MRMS multi-radar composite (the overlay's data).
     LoadMrms,
+    /// Update the Ambient Weather credentials held by the data thread.
+    SetAmbientKeys {
+        api_key: String,
+        app_key: String,
+    },
+    /// Fetch the Ambient Weather stations now (uses the stored credentials).
+    LoadAmbient,
     /// Fetch the latest GOES frame for the chosen layer/satellite.
     LoadGoes {
         layer: radar_data::goes::GoesLayer,
@@ -901,6 +913,17 @@ impl StormApp {
                     self.state.totals_fetched_at = Some(std::time::Instant::now());
                     log::debug!("totals loaded from {} stations", self.state.totals.len());
                     self.pump_ai_data();
+                }
+                DataMsg::AmbientStations(v) => {
+                    self.state.ambient_stations = v;
+                    self.state.ambient_last_fetch = Some(std::time::Instant::now());
+                    self.state.ambient_pending = false;
+                    self.state.ambient_error = None;
+                    log::debug!("ambient stations: {}", self.state.ambient_stations.len());
+                }
+                DataMsg::AmbientError(e) => {
+                    self.state.ambient_pending = false;
+                    self.state.ambient_error = Some(e);
                 }
                 DataMsg::Forecast(f) => {
                     log::debug!(
@@ -3208,6 +3231,21 @@ impl StormApp {
                     current: env!("CARGO_PKG_VERSION").to_string(),
                     asset_suffix: "-android.apk".into(),
                 });
+            }
+            // Ambient Weather: push keys to the data thread and fetch when
+            // configured (or re-fetch if keys changed and we have none).
+            if !self.state.ambient_pending
+                && (!self.state.ambient_api_key.is_empty()
+                    || !self.state.ambient_app_key.is_empty())
+                && (self.state.ambient_last_fetch.is_none()
+                    || self.state.ambient_stations.is_empty())
+            {
+                let _ = self.tx.send(DataCmd::SetAmbientKeys {
+                    api_key: self.state.ambient_api_key.clone(),
+                    app_key: self.state.ambient_app_key.clone(),
+                });
+                let _ = self.tx.send(DataCmd::LoadAmbient);
+                self.state.ambient_pending = true;
             }
             self.pump_gemini_live();
             // Sessions are event-driven, but the footer meter, status and

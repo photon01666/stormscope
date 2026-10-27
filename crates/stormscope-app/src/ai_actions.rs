@@ -128,6 +128,10 @@ pub struct DataRequest {
     pub goes: Option<bool>,
     #[serde(default)]
     pub futurecast: Option<bool>,
+    /// 18 or 48: which HRRR horizon to load with `futurecast`. Omitted =
+    /// whatever the map toggle is currently set to.
+    #[serde(default)]
+    pub futurecast_hours: Option<u32>,
     #[serde(default)]
     pub forecast: Option<DataPoint>,
     #[serde(default)]

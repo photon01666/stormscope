@@ -459,6 +459,8 @@ pub struct StormApp {
     pub live_pending_tool: Option<LivePendingTool>,
     #[cfg(not(target_os = "android"))]
     pub live_pending_tool: Option<()>,
+    /// The pending DATA fetch came from a Gemini Live tool, not the text AI.
+    pub ai_data_from_live: bool,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -616,6 +618,7 @@ impl StormApp {
             live_pending_tool: None,
             #[cfg(not(target_os = "android"))]
             live_pending_tool: None,
+            ai_data_from_live: false,
         }
     }
 
@@ -1792,6 +1795,61 @@ impl StormApp {
                  lack access to rainfall or snow totals while this section lists stations.\n",
             );
         }
+        if let Some(fc) = &self.state.futurecast
+            && fc.loaded() > 0
+        {
+            out.push_str(&format!(
+                "HRRR FutureCast ({}h run, initialized {}Z, {} frames loaded):\n",
+                if fc.extended { 48 } else { 18 },
+                fc.init.format("%H"),
+                fc.loaded()
+            ));
+            let mut points: Vec<(String, f64, f64)> = Vec::new();
+            if let Some((lat, lon)) = self.state.gps_fix {
+                points.push(("GPS".into(), lat, lon));
+            }
+            for m in self.state.markers.iter().take(2) {
+                points.push((m.display(), m.lat, m.lon));
+            }
+            for (label, lat, lon) in points {
+                let mut line = String::new();
+                for (info, frame) in fc.plan.iter().zip(fc.frames.iter()) {
+                    let Some(frame) = frame else { continue };
+                    let Some(dbz) = frame.dbz_at(lat, lon) else {
+                        continue;
+                    };
+                    if dbz < 5.0 {
+                        continue;
+                    }
+                    let ptype = match frame.ptype_at(lat, lon) {
+                        Some(2) => " snow",
+                        Some(4) => " ice",
+                        Some(1) => " rain",
+                        _ => "",
+                    };
+                    line.push_str(&format!(
+                        " {}Z {:.0}dBZ{};",
+                        info.valid.format("%H"),
+                        dbz,
+                        ptype
+                    ));
+                    if line.len() > 220 {
+                        break;
+                    }
+                }
+                if line.is_empty() {
+                    out.push_str(&format!(
+                        "- {label}: no simulated echo above 5 dBZ in the loaded frames.\n"
+                    ));
+                } else {
+                    out.push_str(&format!("- {label}:{line}\n"));
+                }
+            }
+            out.push_str(
+                "FutureCast is an HRRR model forecast, not observed radar; use it for \
+                 arrival timing and always call it a forecast.\n",
+            );
+        }
         if let Some(obs) = self.state.observation.as_ref() {
             let to_f = |c: f32| c * 9.0 / 5.0 + 32.0;
             let to_mph = |kmh: f32| kmh * 0.621_371;
@@ -1882,7 +1940,12 @@ impl StormApp {
              If the transcription of the user's speech is garbled, ask one short clarifying \
              question instead of guessing. You can move the map, inspect other areas, fetch extra \
              data and mark features with the provided tools when it helps answer; keep spoken \
-             replies short and say what you are showing.\n\n\
+             replies short and say what you are showing. Do not narrate intermediate steps: \
+             while a fetch_data call is running, say ONE short line that the data is downloading \
+             and then stay silent until the tool result arrives. Never repeat that you are \
+             checking or downloading. The standard HRRR FutureCast run is 18 hours; if the user \
+             asks for the 48-hour extended outlook, call fetch_data with futurecast true and \
+             futurecast_hours 48. A run can take 30-60 seconds to download, so tell the user once.\n\n\
              CURRENT SUMMARY:\n",
         );
         prompt.push_str(&summary);
@@ -2032,6 +2095,10 @@ impl StormApp {
             live.respond_tool(id, name, result);
         }
         self.live_pending_tool = None;
+        // A live tool answer is not a text-AI request: stop the text
+        // window's spinner and clear its "looking at" line.
+        self.state.ai_pending = false;
+        self.state.ai_looking_at = None;
     }
 
     #[cfg(target_os = "android")]
@@ -2116,6 +2183,7 @@ impl StormApp {
     #[cfg(target_os = "android")]
     fn live_fetch_data(&mut self, id: String, request: crate::ai_actions::DataRequest) {
         if self.ai_request_data(request) {
+            self.ai_data_from_live = true;
             self.live_pending_tool = Some(LivePendingTool {
                 id,
                 name: "fetch_data".into(),
@@ -2423,12 +2491,16 @@ impl StormApp {
             waiting.push("goes".into());
             notes.push("GOES".into());
         }
+        let want_extended = request
+            .futurecast_hours
+            .map(|h| h >= 48)
+            .unwrap_or(self.state.futurecast_extended);
         if request.futurecast == Some(true)
             && self
                 .state
                 .futurecast
                 .as_ref()
-                .is_none_or(|fc| fc.loaded() == 0 || fc.extended != self.state.futurecast_extended)
+                .is_none_or(|fc| fc.loaded() == 0 || fc.extended != want_extended)
         {
             let Some(site) = radar_core::sites::site(&self.state.site_id) else {
                 return false;
@@ -2437,6 +2509,7 @@ impl StormApp {
                 self.ai_note("HRRR FutureCast covers the CONUS only.".into());
                 return false;
             }
+            self.state.futurecast_extended = want_extended;
             self.state.show_futurecast = true;
             self.state.futurecast_pending = true;
             self.state.futurecast_requested_at = Some(std::time::Instant::now());
@@ -2444,14 +2517,10 @@ impl StormApp {
             let bbox = radar_data::futurecast::forecast_box(site.latitude, site.longitude);
             let _ = self.tx.send(DataCmd::LoadFuturecast {
                 bbox,
-                extended: self.state.futurecast_extended,
+                extended: want_extended,
             });
             waiting.push("futurecast".into());
-            let horizon = if self.state.futurecast_extended {
-                "48-hour"
-            } else {
-                "18-hour"
-            };
+            let horizon = if want_extended { "48-hour" } else { "18-hour" };
             notes.push(format!(
                 "HRRR FutureCast ({horizon} run — downloading, this can take 30–60 s)"
             ));
@@ -2524,10 +2593,18 @@ impl StormApp {
         if self.state.ai_pending_data.is_empty() {
             return;
         }
+        // A 48-hour FutureCast run can take a minute or more to deliver its
+        // first frames; do not time it out on the short 45 s budget used by
+        // the other layers.
+        let timeout_secs = if self.state.ai_pending_data.iter().any(|l| l == "futurecast") {
+            120
+        } else {
+            45
+        };
         let timed_out = self
             .state
             .ai_pending_data_at
-            .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(45));
+            .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(timeout_secs));
         let missing: Vec<String> = self
             .state
             .ai_pending_data
@@ -2538,6 +2615,8 @@ impl StormApp {
         if !missing.is_empty() && !timed_out {
             return;
         }
+        let from_live = self.ai_data_from_live;
+        self.ai_data_from_live = false;
         self.state.ai_pending_data.clear();
         self.state.ai_pending_data_at = None;
         self.state.ai_looking_at = None;
@@ -2557,6 +2636,10 @@ impl StormApp {
             );
             #[cfg(not(target_os = "android"))]
             let _ = tool;
+        } else if from_live {
+            // The voice session ended while the data was downloading; drop
+            // the request instead of turning it into a text-AI question.
+            self.state.ai_pending = false;
         } else {
             self.state.ai_pending = true;
             let question = self.state.ai_question_ctx.clone();

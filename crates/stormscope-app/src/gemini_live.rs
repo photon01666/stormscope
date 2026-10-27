@@ -299,6 +299,10 @@ async fn run(
                                     "mrms": { "type": "boolean" },
                                     "goes": { "type": "boolean" },
                                     "futurecast": { "type": "boolean" },
+                                    "futurecast_hours": {
+                                        "type": "integer",
+                                        "description": "18 for the standard HRRR run, 48 for the extended outlook. Default 18."
+                                    },
                                     "forecast": {
                                         "type": "object",
                                         "properties": {

@@ -530,7 +530,14 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
             }
         }
         super::apply_text_scale(ui, text_scale);
-        ui.set_min_width(400.0);
+        // The phone window is already edge-to-edge; forcing the desktop
+        // 400-point minimum here made the content wider than the screen and
+        // clipped the right side of every long line.
+        if fill {
+            ui.set_min_width(0.0);
+        } else {
+            ui.set_min_width(400.0);
+        }
 
         let configured = app.state.ai_config().is_configured();
         // No markers is not an error state: keep the full chat layout and
@@ -610,7 +617,7 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 ui.set_max_width((ui.available_width() - 14.0).max(120.0));
                 ui.separator();
                 if live_tab {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if !configured {
                             if ui.button("Open AI settings").clicked() {
                                 live_settings = true;
@@ -722,13 +729,26 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
             });
 
         if live_tab {
-            live_center(
-                ui,
-                app,
-                &mut live_toggle,
-                &mut live_speak,
-                &mut live_settings,
-            );
+            egui::CentralPanel::no_frame().show(ui, |ui| {
+                let lane = (ui.available_width() - if fill { 4.0 } else { 14.0 }).max(80.0);
+                ui.allocate_ui(egui::vec2(lane, ui.available_height()), |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("stormscope.ai.live")
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                        )
+                        .show(ui, |ui| {
+                            live_center(
+                                ui,
+                                app,
+                                &mut live_toggle,
+                                &mut live_speak,
+                                &mut live_settings,
+                            );
+                        });
+                });
+            });
         } else {
             egui::CentralPanel::no_frame().show(ui, |ui| {
                 let lane = (ui.available_width() - 14.0).max(80.0);
@@ -954,7 +974,7 @@ fn live_center(
     live_settings: &mut bool,
 ) {
     let configured = app.state.ai_config().is_configured();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.checkbox(live_toggle, "Live AI tracking").on_hover_text(
             "Analyze each new full Level II volume scan automatically. The selected radar \
                  site and its existing marker/GPS point are used; the station itself is the \
@@ -967,7 +987,7 @@ fn live_center(
         }
     });
     let status = app.live_ai.status_text(configured, *live_toggle);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if *live_toggle {
             let color = if configured {
                 egui::Color32::from_rgb(110, 220, 150)
@@ -991,10 +1011,15 @@ fn live_center(
         }
     });
     if !configured {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Live tracking needs the same AI endpoint and key as Chat.")
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(
+                        "Live tracking needs the same AI endpoint and key as Chat.",
+                    )
                     .weak(),
+                )
+                .wrap(),
             );
             if ui.small_button("Open AI settings").clicked() {
                 *live_settings = true;
@@ -1004,18 +1029,21 @@ fn live_center(
     if let Some(assessment) = app.live_ai.latest_assessment() {
         ui.add_space(2.0);
         let color = threat_color(assessment.threat);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.colored_label(color, assessment.threat.label());
-            ui.label(egui::RichText::new(&assessment.headline).strong());
+            ui.add(egui::Label::new(egui::RichText::new(&assessment.headline).strong()).wrap());
         });
-        ui.label(
-            egui::RichText::new(format!(
-                "{} · {}",
-                assessment.location.feed_label(),
-                assessment.location.source.label().replace('_', " ")
-            ))
-            .small()
-            .weak(),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!(
+                    "{} · {}",
+                    assessment.location.feed_label(),
+                    assessment.location.source.label().replace('_', " ")
+                ))
+                .small()
+                .weak(),
+            )
+            .wrap(),
         );
     }
     ui.separator();
@@ -1034,17 +1062,20 @@ fn live_center(
                 .wrap(),
             );
         } else {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if app.live_ai.in_flight.is_some() {
                     ui.spinner();
                 }
-                ui.label(
-                    egui::RichText::new(if app.live_ai.in_flight.is_some() {
-                        "Sampling the volume and preparing the first live update…"
-                    } else {
-                        "Waiting for the next volume scan…"
-                    })
-                    .weak(),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(if app.live_ai.in_flight.is_some() {
+                            "Sampling the volume and preparing the first live update…"
+                        } else {
+                            "Waiting for the next volume scan…"
+                        })
+                        .weak(),
+                    )
+                    .wrap(),
                 );
             });
         }
@@ -1066,7 +1097,7 @@ fn live_entry_card(ui: &mut egui::Ui, entry: &LiveEntry) {
         threat_color(entry.threat)
     };
     ui.group(|ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new(format!(
                     "{} · {}",
@@ -1091,16 +1122,14 @@ fn live_entry_card(ui: &mut egui::Ui, entry: &LiveEntry) {
                         .strong(),
                 );
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{} ms", entry.latency_ms))
-                        .small()
-                        .weak(),
-                );
-            });
+            ui.label(
+                egui::RichText::new(format!("{} ms", entry.latency_ms))
+                    .small()
+                    .weak(),
+            );
         });
-        ui.label(egui::RichText::new(&entry.headline).strong());
-        ui.label(egui::RichText::new(&entry.location).small().weak());
+        ui.add(egui::Label::new(egui::RichText::new(&entry.headline).strong()).wrap());
+        ui.add(egui::Label::new(egui::RichText::new(&entry.location).small().weak()).wrap());
         ui.add(
             egui::Label::new(egui::RichText::new(clean_report(&entry.body)))
                 .selectable(true)

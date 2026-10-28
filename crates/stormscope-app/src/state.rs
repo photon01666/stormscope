@@ -111,6 +111,14 @@ impl MapMarker {
     }
 }
 
+/// Which pane the AI window is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AiTab {
+    #[default]
+    Chat,
+    Live,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Follow the newest volume from the live poller.
@@ -1041,6 +1049,16 @@ pub struct AppState {
     pub ai_open: bool,
     /// Shrink the report to a small bar so the map the model moved stays visible.
     pub ai_compact: bool,
+    /// Which tab the report window is showing.
+    pub ai_tab: AiTab,
+    /// Automatic scan-by-scan analysis (Live AI Tracking).
+    pub live_ai_enabled: bool,
+    /// Speak a short alert when a new storm crosses an arrival threshold.
+    pub live_ai_speak: bool,
+    /// The user has seen and accepted the live-tracking privacy/cost notice.
+    pub live_ai_consent: bool,
+    /// The consent modal is open (first enable only).
+    pub live_ai_consent_open: bool,
     /// The Settings → "AI meteorologist…" popup (endpoint/model/key).
     pub ai_settings_open: bool,
     pub ai_base_url: String,
@@ -1608,6 +1626,12 @@ impl Default for AppState {
             measure_bubble_rect: None,
             ai_open: false,
             ai_compact: false,
+            ai_tab: AiTab::Chat,
+            live_ai_enabled: ai.live_ai_enabled.unwrap_or(false)
+                && ai.live_ai_consent.unwrap_or(false),
+            live_ai_speak: ai.live_ai_speak.unwrap_or(true),
+            live_ai_consent: ai.live_ai_consent.unwrap_or(false),
+            live_ai_consent_open: false,
             ai_settings_open: false,
             ai_base_url,
             ai_model,
@@ -1794,6 +1818,12 @@ struct AiPrefs {
     gemini_voice: Option<String>,
     #[serde(default)]
     gemini_remember_key: Option<bool>,
+    #[serde(default)]
+    live_ai_enabled: Option<bool>,
+    #[serde(default)]
+    live_ai_speak: Option<bool>,
+    #[serde(default)]
+    live_ai_consent: Option<bool>,
 }
 
 /// `~/.config/stormscope/ai-chat.json`: the last conversation, capped, so a
@@ -1981,6 +2011,9 @@ impl AppState {
             gemini_model: Some(self.gemini_model.clone()),
             gemini_voice: Some(self.gemini_voice.clone()),
             gemini_remember_key: Some(self.gemini_remember_key),
+            live_ai_enabled: Some(self.live_ai_enabled),
+            live_ai_speak: Some(self.live_ai_speak),
+            live_ai_consent: Some(self.live_ai_consent),
         };
         let Ok(json) = serde_json::to_string_pretty(&prefs) else {
             return;

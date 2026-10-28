@@ -1212,6 +1212,7 @@ pub fn run(
                     });
                 }
                 DataCmd::AiBrief {
+                    kind,
                     config,
                     system,
                     history,
@@ -1229,7 +1230,7 @@ pub fn run(
                             &config, &system, &turns, &user, &session,
                         )
                         .map_err(|e| format!("{e:#}"));
-                        let _ = out.send(DataMsg::AiBrief(result));
+                        let _ = out.send(DataMsg::AiBrief { kind, result });
                     });
                 }
                 DataCmd::AiTest { config } => {

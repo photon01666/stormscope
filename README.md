@@ -37,7 +37,7 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 - **Live and archive radar** — NEXRAD Level II, every standard moment, derived products, timeline playback and a 3D volume view.
 - **Storm awareness** — NWS warnings, SPC outlooks, local storm reports, mesoscale discussions, storm tracks with arrival ETAs, MRMS and GOES satellite.
 - **Weather stations** — Synoptic network observations, free METAR airport reports, and your own Ambient Weather station, shown as temperature badges with readable popups.
-- **Forecasting** — 18- or 48-hour HRRR FutureCast with precipitation-type colouring, plus an optional AI meteorologist that can inspect the radar, move the view and talk through the weather.
+- **Forecasting** — 18- or 48-hour HRRR FutureCast with precipitation-type colouring, plus an optional AI meteorologist that can inspect the radar, move the view and talk through the weather. **Live AI Tracking** can analyze every new volume scan, remember the previous scans and tell you when a storm core is heading toward your point.
 - **Forecast videos** — the three newest uploads from Ryan Hall and Max Velocity, opened from the forecast window and played in-app on desktop or in the YouTube app on Android.
 - **Voice alerts** — spoken warnings near your GPS fix or a map marker; Android Storm Watch keeps watching when the app is closed.
 - **Analysis tools** — model, RAP and observed-RAOB soundings, radar-derived VAD wind profiles, dealiased velocity, rotation/TVS signatures, hail cores and storm growth/decay trends.
@@ -111,6 +111,7 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 - **Mid-level wind** — animated HRRR 500 mb wind speed, height contours and wind barbs, stepping through the 18-hour forecast.
 - **Forecast videos** — the three newest uploads from Ryan Hall, Y'all and Max Velocity, refreshed on open and every 30 minutes. Desktop plays them in the app, full-screen; Android opens the installed YouTube app.
 - **AI meteorologist** is optional. Connect an OpenAI-compatible endpoint (OpenCode Go with `deepseek-v4.1-flash` by default), OpenAI, a local Ollama/LM Studio server, or Anthropic Claude (native Messages API; `claude-sonnet-5-5` by default) for per-marker briefs and a persistent chat. It can look at other areas, fetch MRMS/GOES/forecast/totals/SPC data, read the loaded sounding/VAD/rotation/hail/QPE analysis and HRRR point forecast, move the 2D/3D views and mark features.
+- **Live AI Tracking** is an opt-in mode inside the AI window. It analyzes one new full Level II volume scan every few minutes, keeps the previous six scans as context (including tracked-cell positions and trends), and shows a deterministic arrival time for your GPS or marker. If neither point is inside the selected radar's coverage, it uses that radar station explicitly as the fallback. Spoken alerts fire only when the arrival threshold crosses 30 or 10 minutes. It runs while the app is open, does not move the map and does not request extra layers.
 - **Android Gemini Live** adds a natural voice conversation with the same live radar context. The microphone pauses while Gemini speaks.
 - The AI can request an 18- or 48-hour FutureCast if it is not loaded, announces the 30–60 s download and includes it in the live voice summary.
 - Off until configured. Only the decoded JSON snapshot is sent for chart/chat requests — never a screenshot. Gemini Live streams microphone audio only while a conversation is active.
@@ -185,7 +186,7 @@ Android 8+ on arm64-v8a is required. The app checks GitHub Releases for updates;
 
 - **No Stormscope account, analytics or telemetry.** Core requests are anonymous, cached on disk and rate-limited.
 - Optional AI keys and station keys stay in local app storage. They are sent only to the provider you configure. On desktop the config is written with `0600` permissions.
-- AI chart/chat requests send only the decoded JSON snapshot, never a screenshot. Gemini Live sends microphone audio to Google while a conversation is active.
+- AI chart/chat requests send only the decoded JSON snapshot, never a screenshot. With **Live AI Tracking** enabled, that snapshot includes your marker/GPS point (when inside the selected radar's coverage) and is sent on each new volume scan. Gemini Live sends microphone audio to Google while a conversation is active.
 - Release builds check GitHub for updates; there is no background analytics.
 - Stormscope is not an official warning source and is not affiliated with NOAA or the NWS. Always heed official warnings.
 - Basemap attribution: © OpenStreetMap contributors (ODbL) and Wikimedia.

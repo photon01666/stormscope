@@ -1,7 +1,7 @@
 //! Top-level layout: auto-hiding controls sidebar, central map, bottom timeline.
 
 use crate::app::StormApp;
-use crate::state::{Mode, PaneMax};
+use crate::state::{AiTab, Mode, PaneMax};
 use radar_core::Moment;
 
 mod ai;
@@ -856,7 +856,10 @@ fn ai_chip(ui: &mut egui::Ui, rect: egui::Rect, app: &mut StormApp, scale: f32) 
     // an in-flight transcript) on one side, the model's audio on the other.
     let user_talking = app.state.voice_convo
         && (app.state.voice_level > 0.04 || !app.state.voice_partial.trim().is_empty());
-    let active = app.state.voice_speaking || user_talking || app.state.ai_pending;
+    let active = app.state.voice_speaking
+        || user_talking
+        || app.state.ai_pending
+        || app.live_ai.in_flight.is_some();
     let time = ui.ctx().input(|i| i.time) as f32;
     let pulse = 0.5 + 0.5 * (time * 6.0).sin();
     let accent = egui::Color32::from_rgb(90, 180, 255);
@@ -895,8 +898,32 @@ fn ai_chip(ui: &mut egui::Ui, rect: egui::Rect, app: &mut StormApp, scale: f32) 
         egui::FontId::proportional(20.0 * scale),
         egui::Color32::from_gray(235),
     );
+    // Small green live dot plus unread count. The dot is deliberately outside
+    // the AI text so it reads as a mode, not a status of the last answer.
+    if app.state.live_ai_enabled {
+        let dot = egui::pos2(center.x + diameter * 0.34, center.y - diameter * 0.34);
+        ui.painter()
+            .circle_filled(dot, 7.0 * scale, egui::Color32::from_rgb(110, 220, 150));
+        ui.painter().circle_stroke(
+            dot,
+            7.0 * scale,
+            egui::Stroke::new(1.0 * scale, egui::Color32::from_black_alpha(220)),
+        );
+        if app.live_ai.unread > 0 {
+            ui.painter().text(
+                dot,
+                egui::Align2::CENTER_CENTER,
+                app.live_ai.unread.min(9).to_string(),
+                egui::FontId::proportional(9.0 * scale),
+                egui::Color32::from_black_alpha(230),
+            );
+        }
+    }
     if resp.clicked() {
         log::debug!("AI meteorologist circle clicked");
+        if app.live_ai.unread > 0 && app.state.live_ai_enabled {
+            app.state.ai_tab = AiTab::Live;
+        }
         if app.state.ai_open && !app.state.ai_compact {
             app.state.ai_compact = true;
         } else {

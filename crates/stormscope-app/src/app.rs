@@ -2,7 +2,7 @@
 //! their channels each frame, and drives the UI.
 
 use crate::brief::LookPointSample;
-use crate::state::{AiChatMessage, AiRole, AppState, LoopState};
+use crate::state::{AiChatMessage, AiRole, AiTab, AppState, LoopState};
 use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -55,6 +55,18 @@ fn apply_dark_window_frame(cc: &eframe::CreationContext<'_>) {
             );
         }
     }
+}
+
+/// Which conversation a model request belongs to. Live updates have their own
+/// path so they never enter the manual chat transcript and cannot block Ask.
+#[derive(Debug, Clone)]
+pub enum AiRequestKind {
+    Chat,
+    Live {
+        scan: chrono::DateTime<chrono::Utc>,
+        site: String,
+        seq: u64,
+    },
 }
 
 /// Messages from background data threads -> UI.
@@ -211,7 +223,10 @@ pub enum DataMsg {
         bytes: u64,
     },
     /// The AI meteorologist's reply, or the error to show in its window.
-    AiBrief(Result<String, String>),
+    AiBrief {
+        kind: AiRequestKind,
+        result: Result<String, String>,
+    },
     /// Result of the Settings popup's connectivity test.
     AiTest(Result<String, String>),
     /// Android self-update: latest release lookup / APK download.
@@ -387,6 +402,7 @@ pub enum DataCmd {
     /// Ask the AI meteorologist for a brief or an answer (spawned on its own
     /// thread so a slow model never holds up the data coordinator).
     AiBrief {
+        kind: AiRequestKind,
         config: radar_data::ai::AiConfig,
         system: String,
         history: Vec<(String, String)>,
@@ -597,9 +613,12 @@ pub struct StormApp {
     pub live_pending_tool: Option<()>,
     /// The pending DATA fetch came from a Gemini Live tool, not the text AI.
     pub ai_data_from_live: bool,
+    /// Automatic per-scan Live AI Tracking state, rolling memory and feed.
+    pub live_ai: crate::live_ai::LiveAi,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
+#[derive(Debug, Clone)]
 pub struct MarkerEta {
     /// Minutes until the cell's closest approach.
     pub minutes: f64,
@@ -767,6 +786,7 @@ impl StormApp {
             #[cfg(not(target_os = "android"))]
             live_pending_tool: None,
             ai_data_from_live: false,
+            live_ai: crate::live_ai::LiveAi::default(),
         };
         // The data thread boots on the hard-coded default; if the user saved
         // a different startup site, switch it immediately.
@@ -890,6 +910,9 @@ impl StormApp {
             return;
         }
         self.state.site_id = id.to_string();
+        // Live AI trends belong to one radar; do not compare cells across a
+        // site switch. Keep the visible feed as history.
+        self.live_ai.reset_for_site(id);
         // Tracks from the old site must not smooth into the new site's.
         self.prev_tracks.clear();
         self.tracks_cache = None;
@@ -1721,38 +1744,44 @@ impl StormApp {
                     }
                     self.pump_ai_data();
                 }
-                DataMsg::AiBrief(result) => match result {
-                    Ok(reply) => {
-                        let (prose, action, look, data) = crate::ai_actions::split_reply(&reply);
-                        let can_look = self.state.ai_look_depth < 2;
-                        let looked = can_look && look.is_some_and(|look| self.ai_look(look));
-                        if !looked {
-                            let can_fetch = self.state.ai_data_depth == 0;
-                            let fetched =
-                                can_fetch && data.is_some_and(|data| self.ai_request_data(data));
-                            if !fetched {
-                                self.ai_finish(prose, action);
+                DataMsg::AiBrief { kind, result } => match kind {
+                    AiRequestKind::Chat => match result {
+                        Ok(reply) => {
+                            let (prose, action, look, data) =
+                                crate::ai_actions::split_reply(&reply);
+                            let can_look = self.state.ai_look_depth < 2;
+                            let looked = can_look && look.is_some_and(|look| self.ai_look(look));
+                            if !looked {
+                                let can_fetch = self.state.ai_data_depth == 0;
+                                let fetched = can_fetch
+                                    && data.is_some_and(|data| self.ai_request_data(data));
+                                if !fetched {
+                                    self.ai_finish(prose, action);
+                                }
                             }
                         }
-                    }
-                    Err(error) => {
-                        log::warn!("AI meteorologist: {error}");
-                        self.state.ai_pending = false;
-                        self.state.ai_look_depth = 0;
-                        self.state.ai_looking_at = None;
-                        self.state.ai_pending_look = None;
-                        self.state.ai_pending_site = None;
-                        self.state.ai_pending_site_at = None;
-                        self.state.ai_data_depth = 0;
-                        self.state.ai_pending_data.clear();
-                        self.state.ai_pending_data_at = None;
-                        self.state.ai_error = None;
-                        let hint = if error.to_ascii_lowercase().contains("unavailable") {
-                            " — the AI provider may be having a temporary outage; press Retry."
-                        } else {
-                            ""
-                        };
-                        self.ai_note(format!("Request failed: {error}{hint}"));
+                        Err(error) => {
+                            log::warn!("AI meteorologist: {error}");
+                            self.state.ai_pending = false;
+                            self.state.ai_look_depth = 0;
+                            self.state.ai_looking_at = None;
+                            self.state.ai_pending_look = None;
+                            self.state.ai_pending_site = None;
+                            self.state.ai_pending_site_at = None;
+                            self.state.ai_data_depth = 0;
+                            self.state.ai_pending_data.clear();
+                            self.state.ai_pending_data_at = None;
+                            self.state.ai_error = None;
+                            let hint = if error.to_ascii_lowercase().contains("unavailable") {
+                                " — the AI provider may be having a temporary outage; press Retry."
+                            } else {
+                                ""
+                            };
+                            self.ai_note(format!("Request failed: {error}{hint}"));
+                        }
+                    },
+                    AiRequestKind::Live { scan, site, seq } => {
+                        self.finish_live_ai(scan, site, seq, result);
                     }
                 },
                 DataMsg::AiTest(result) => {
@@ -3659,6 +3688,7 @@ impl StormApp {
         if self
             .tx
             .send(DataCmd::AiBrief {
+                kind: AiRequestKind::Chat,
                 config: self.state.ai_config(),
                 system: brief.system,
                 history,
@@ -3675,6 +3705,276 @@ impl StormApp {
         self.state.ai_error = None;
         self.state.ai_snapshot = Some(brief.label);
         self.state.ai_last_question = question.map(|q| q.trim().to_string());
+    }
+
+    /// Turn Live AI Tracking on/off. Enabling for the first time opens the
+    /// consent notice instead of starting silently.
+    pub fn set_live_ai_enabled(&mut self, enabled: bool) {
+        if enabled && !self.state.live_ai_consent {
+            self.state.live_ai_consent_open = true;
+            return;
+        }
+        self.state.live_ai_enabled = enabled;
+        if enabled {
+            self.state.ai_tab = AiTab::Live;
+            self.state.ai_open = true;
+            if self.live_ai.last_site.as_deref() != Some(self.state.site_id.as_str()) {
+                self.live_ai.reset_for_site(&self.state.site_id);
+            } else {
+                self.live_ai.last_scan = None;
+                self.live_ai.retry_at = None;
+            }
+            self.live_ai.mark_alerts(&self.state.alerts);
+        } else {
+            self.live_ai.stop();
+        }
+        self.state.persist_ai();
+    }
+
+    /// Accept the live-tracking notice, then start.
+    pub fn confirm_live_ai(&mut self) {
+        self.state.live_ai_consent = true;
+        self.state.live_ai_consent_open = false;
+        self.set_live_ai_enabled(true);
+    }
+
+    /// Start the next live scan when the data and provider are ready. Called
+    /// every UI frame; the newest-scan check makes it idempotent.
+    fn pump_live_ai(&mut self) {
+        if !self.state.live_ai_enabled || self.state.mode != crate::state::Mode::Live {
+            return;
+        }
+        let site_id = self.state.site_id.clone();
+        if self.live_ai.last_site.as_deref() != Some(site_id.as_str()) {
+            self.live_ai.reset_for_site(&site_id);
+            self.live_ai.mark_alerts(&self.state.alerts);
+        }
+        if self.live_ai.in_flight.is_some() || self.state.ai_pending {
+            return;
+        }
+        if !self.state.ai_config().is_configured() {
+            return;
+        }
+        if self
+            .live_ai
+            .retry_at
+            .is_some_and(|at| at > std::time::Instant::now())
+        {
+            return;
+        }
+        self.live_ai.retry_at = None;
+        let Some(scan) = self.state.newest_start() else {
+            return;
+        };
+        if self.live_ai.last_scan.is_some_and(|last| scan <= last) {
+            return;
+        }
+        if self.state.ring.len() < 2 {
+            return;
+        }
+        let Some(site) = radar_core::sites::site(&site_id) else {
+            return;
+        };
+        let n = self.state.ring.len();
+        let (prev_volume, volume) = {
+            let prev = &self.state.ring[n - 2];
+            let cur = &self.state.ring[n - 1];
+            (Arc::clone(&prev.volume), Arc::clone(&cur.volume))
+        };
+        // A site switch clears the ring asynchronously. Do not analyze the
+        // previous radar's final volume against the new site's coordinates.
+        if (volume.meta.site_id != site_id && volume.meta.site_id != "UNKNOWN")
+            || (prev_volume.meta.site_id != site_id && prev_volume.meta.site_id != "UNKNOWN")
+        {
+            return;
+        }
+        let raw = radar_render::compute_tracks(
+            &prev_volume,
+            &volume,
+            crate::live_ai::TRACK_TILT_DEG,
+            site.latitude,
+            site.longitude,
+        );
+        let tracks = crate::live_ai::smooth_tracks(&self.live_ai.prev_tracks, raw);
+        self.live_ai.prev_tracks = tracks.clone();
+
+        let now = chrono::Utc::now();
+        let primary = crate::live_ai::LiveLocation::resolve(&self.state, site, &volume);
+        let assessment =
+            crate::live_ai::assess(&volume, site, &tracks, &self.state.alerts, &primary, now);
+        let marker_etas = crate::live_ai::marker_etas(&tracks, &self.state.markers);
+        // First scan after enabling (or a site switch): seed the alert set so
+        // the existing warnings are context, not a burst of "new" ones.
+        if self.live_ai.seen_alerts.is_empty() {
+            self.live_ai.mark_alerts(&self.state.alerts);
+        }
+        let new_warnings = self.live_ai.new_warning_events(&self.state.alerts, now);
+        let memory: Vec<crate::live_ai::LiveMemory> = self.live_ai.memory.iter().cloned().collect();
+        let scan_interval_min = Some(
+            (self.state.ring[n - 1].volume_start - self.state.ring[n - 2].volume_start)
+                .num_minutes()
+                .max(1),
+        );
+        let brief = crate::brief::build_live(&crate::brief::LiveBriefInputs {
+            site,
+            volume: &volume,
+            min_dbz: self.state.min_dbz,
+            markers: &self.state.markers,
+            marker_etas: &marker_etas,
+            tracks: &tracks,
+            alerts: &self.state.alerts,
+            outlook: self.state.outlook.as_ref(),
+            forecast: self.state.forecast.as_ref(),
+            observation: self.state.observation.as_ref(),
+            gps_fix: self.state.gps_fix,
+            primary: &primary,
+            assessment: &assessment,
+            memory: &memory,
+            new_warnings: &new_warnings,
+            scan_number: self.live_ai.scan_number + 1,
+            scan_interval_min,
+            now,
+        });
+
+        let request = self
+            .live_ai
+            .begin(scan, site.id.to_string(), assessment, &self.state.alerts);
+        log::info!(
+            "Live AI: analyzing {} scan {} (primary {}, {} tracked cells)",
+            site.id,
+            scan.format("%H:%MZ"),
+            primary.feed_label(),
+            tracks.len()
+        );
+        let session = format!("stormscope-live-{}", chrono::Utc::now().timestamp_millis());
+        if self
+            .tx
+            .send(DataCmd::AiBrief {
+                kind: AiRequestKind::Live {
+                    scan,
+                    site: site.id.to_string(),
+                    seq: request.seq,
+                },
+                config: self.state.ai_config(),
+                system: brief.system,
+                history: Vec::new(),
+                user: brief.user,
+                session,
+            })
+            .is_err()
+        {
+            self.live_ai.in_flight = None;
+            self.live_ai.last_scan = None;
+            log::warn!("Live AI: data thread is not running");
+        }
+    }
+
+    fn finish_live_ai(
+        &mut self,
+        _scan: chrono::DateTime<chrono::Utc>,
+        site: String,
+        seq: u64,
+        result: Result<String, String>,
+    ) {
+        let matches = self
+            .live_ai
+            .in_flight
+            .as_ref()
+            .is_some_and(|request| request.seq == seq);
+        if !matches {
+            return;
+        }
+        let request = self.live_ai.in_flight.take().expect("checked above");
+        if !self.state.live_ai_enabled || site != self.state.site_id {
+            return;
+        }
+        let assessment = request.assessment;
+        let latency_ms = request.started.elapsed().as_millis() as u64;
+        match result {
+            Ok(reply) => {
+                let (prose, _action, _look, _data) = crate::ai_actions::split_reply(&reply);
+                let body = prose.trim().to_string();
+                if body.is_empty() {
+                    self.live_ai_error(
+                        request.scan,
+                        site,
+                        assessment,
+                        "the model returned an empty update".to_string(),
+                        latency_ms,
+                    );
+                    return;
+                }
+                log::info!(
+                    "Live AI: scan {} answered in {} ms ({} chars)",
+                    request.scan.format("%H:%MZ"),
+                    latency_ms,
+                    body.len()
+                );
+                let entry = crate::live_ai::LiveEntry {
+                    scan: request.scan,
+                    site: site.clone(),
+                    generated_at: chrono::Utc::now(),
+                    location: assessment.location.feed_label(),
+                    source: assessment.location.source,
+                    eta_min: assessment.eta.as_ref().map(|eta| eta.minutes),
+                    threat: assessment.threat,
+                    headline: assessment.headline.clone(),
+                    body: body.clone(),
+                    error: false,
+                    latency_ms,
+                };
+                self.live_ai.remember(request.scan, &assessment, &body);
+                self.live_ai.seen_alerts = request.alerts_at_start;
+                self.live_ai.last_assessment = Some(assessment.clone());
+                self.live_ai.failures = 0;
+                self.live_ai.retry_at = None;
+                self.live_ai.push(entry);
+                if self.state.live_ai_speak
+                    && self.state.voice_alerts
+                    && !self.state.voice_convo
+                    && let Some(speech) = self.live_ai.speech_for(&assessment)
+                {
+                    crate::voice::announce(speech);
+                }
+            }
+            Err(error) => {
+                log::warn!("Live AI scan failed: {error}");
+                self.live_ai_error(request.scan, site, assessment, error, latency_ms);
+            }
+        }
+    }
+
+    fn live_ai_error(
+        &mut self,
+        scan: chrono::DateTime<chrono::Utc>,
+        site: String,
+        assessment: crate::live_ai::LiveAssessment,
+        error: String,
+        latency_ms: u64,
+    ) {
+        let entry = crate::live_ai::LiveEntry {
+            scan,
+            site,
+            generated_at: chrono::Utc::now(),
+            location: assessment.location.feed_label(),
+            source: assessment.location.source,
+            eta_min: assessment.eta.as_ref().map(|eta| eta.minutes),
+            threat: assessment.threat,
+            headline: "Live analysis failed".to_string(),
+            body: format!("{error} — the next scan will try again."),
+            error: true,
+            latency_ms,
+        };
+        self.live_ai.push(entry);
+        self.live_ai.last_assessment = Some(assessment);
+        self.live_ai.failures = self.live_ai.failures.saturating_add(1);
+        let delay = match self.live_ai.failures {
+            0 | 1 => 120,
+            2 => 300,
+            _ => 900,
+        };
+        self.live_ai.retry_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(delay));
     }
 
     /// Send a tiny prompt to check the endpoint, model and key.
@@ -4086,6 +4386,7 @@ impl StormApp {
         self.pump_lightning();
         self.pump_ai_site();
         self.pump_ai_data();
+        self.pump_live_ai();
         // The foreground service writes the Storm Watch toggle when its
         // notification Stop action is used; keep the Settings checkbox in
         // sync without polling Java every frame.

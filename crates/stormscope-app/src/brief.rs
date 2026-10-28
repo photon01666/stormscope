@@ -16,6 +16,7 @@ use radar_core::{Moment, Volume};
 use serde_json::{Map, Value, json};
 
 use crate::app::MarkerEta;
+use crate::live_ai::{LiveAssessment, LiveLocation, LiveMemory, MEMORY_IN_PROMPT};
 use crate::state::MapMarker;
 use crate::ui::alerts::ring_contains;
 
@@ -104,6 +105,32 @@ pub struct Brief {
     pub system: String,
     pub user: String,
     pub label: String,
+}
+
+/// Inputs for the automatic per-scan update. Deliberately narrower than the
+/// manual brief: no sounding profiles, full forecast periods, model fields or
+/// optional overlays. The live prompt is sent every few minutes, so it carries
+/// the radar, the primary point, the memory of previous scans and just enough
+/// context to explain them.
+pub struct LiveBriefInputs<'a> {
+    pub site: &'a radar_core::sites::RadarSite,
+    pub volume: &'a Volume,
+    pub min_dbz: f32,
+    pub markers: &'a [MapMarker],
+    pub marker_etas: &'a [Option<MarkerEta>],
+    pub tracks: &'a [radar_render::StormTrack],
+    pub alerts: &'a [radar_core::warnings::Warning],
+    pub outlook: Option<&'a radar_core::outlooks::Outlook>,
+    pub forecast: Option<&'a radar_core::forecast::Forecast>,
+    pub observation: Option<&'a radar_core::forecast::Observation>,
+    pub gps_fix: Option<(f64, f64)>,
+    pub primary: &'a LiveLocation,
+    pub assessment: &'a LiveAssessment,
+    pub memory: &'a [LiveMemory],
+    pub new_warnings: &'a [String],
+    pub scan_number: u64,
+    pub scan_interval_min: Option<i64>,
+    pub now: DateTime<Utc>,
 }
 
 /// The model's role and its rules. Kept short: every sentence here is paid
@@ -249,6 +276,48 @@ pub fn system_prompt() -> String {
      30 mph'). Only after both are absent say motion is unavailable — then give the line's \
      orientation and the trend you can support, and name what is missing (the next scan). Never \
      guess a bearing."
+        .to_string()
+}
+
+/// The live mode contract. It is shorter than the manual brief because it is
+/// paid for every 4-6 minutes, but it is explicit about the two things the
+/// model must never get wrong: this is a new volume scan, and it has a memory
+/// of the previous scans.
+pub fn live_system_prompt() -> String {
+    "You are a meteorologist giving a live radar update to a spotter. \
+     Every request is ONE NEW FULL LEVEL II VOLUME SCAN. All elevation slices in that \
+     volume arrive together; this is not a single sweep and it is not an independent \
+     question. The app receives a new volume every 4-6 minutes and sends you the next one \
+     automatically.\n\
+     Rules:\n\
+     - `scan_series.history` is your memory of the previous volume scans: each entry has \
+     the scan time, the primary location, the deterministic arrival estimate, the warnings, \
+     the nearby tracked cells and the previous summary. Use it to compare and describe trends. \
+     Never claim to remember a scan that is not in that array.\n\
+     - Lead with what changed since the previous scan. If nothing meaningful changed, say so \
+     in one sentence instead of repeating the last update.\n\
+     - The app computes `live.primary.eta`. Quote that number and clock time exactly. Never \
+     calculate an arrival time yourself. If it is absent, say no tracked core is heading there; \
+     do not turn that into \"no storm.\"\n\
+     - The ETA is for the >=40 dBZ storm core, not the leading rain shield. Say that when it \
+     matters. A warning in effect at the location outranks an ETA.\n\
+     - `live.primary.source` matters. If it is `selected_station`, there is no marker or GPS \
+     inside the selected radar's coverage, so the estimate is for that radar site. Say \
+     \"the <site id from radar.site> radar site\" and NEVER call it the spotter's location. If it is \
+     `gps` or `marker`, speak about that point normally.\n\
+     - The primary location is already chosen. If there are additional markers, mention them \
+     only if they add something the primary point does not.\n\
+     - Use only the snapshot. Never invent a measurement, warning, time or place. Keep clock \
+     times in the user's local timezone and give everyday units (miles, mph, °F, inches). \
+     Do not recite radar acronyms unless the snapshot's plain meaning needs them.\n\
+     - No tables, code blocks, headings, markdown or directives. Do not emit LOOK:, DATA: or \
+     MAP: lines; live tracking must not move the map or fetch more layers.\n\
+     - Length: 80-140 words. Structure: what changed; whether anything is heading to the \
+     primary location and when; the hazard and confidence; one final line starting \
+     \"Watch for:\".\n\
+     - If a warning covers the primary location, say so in the first sentence. If the surface \
+     already has precipitation, say it is overhead now. If the scan has no motion yet (first \
+     volume), say arrival timing is unavailable until the next scan."
         .to_string()
 }
 
@@ -834,6 +903,383 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
             )
         },
     }
+}
+
+/// Build the compact, scan-aware live update.
+///
+/// The snapshot intentionally repeats the previous six scans in
+/// `scan_series.history`: a model that only sees the current volume cannot
+/// tell whether a cell is strengthening, whether the line is accelerating, or
+/// whether it already said "quiet" on the previous scan.
+pub fn build_live(input: &LiveBriefInputs<'_>) -> Brief {
+    let site = input.site;
+    let volume = input.volume;
+    let scan = volume.meta.volume_start;
+    let age_min = (input.now - scan).num_minutes().max(0);
+
+    // The existing marker sampler expects marker-aligned ETAs. Append the
+    // primary point after the pins so its column is sampled the same way.
+    let mut probe_etas = input.marker_etas.to_vec();
+    probe_etas.push(input.assessment.eta.as_ref().map(|eta| MarkerEta {
+        minutes: eta.minutes,
+        speed_mph: eta.speed_mph,
+        compass: eta.heading,
+    }));
+    let probe = BriefInputs {
+        site,
+        mode: "live",
+        volume,
+        min_dbz: input.min_dbz,
+        markers: input.markers,
+        marker_etas: &probe_etas,
+        tracks: input.tracks,
+        alerts: input.alerts,
+        outlook: input.outlook,
+        mcds: &[],
+        lsrs: &[],
+        forecast: input.forecast,
+        forecast_point: None,
+        gps_fix: input.gps_fix,
+        forecast_age_min: None,
+        observation: input.observation,
+        totals: &[],
+        sounding: None,
+        sounding_age_min: None,
+        rotation: &[],
+        hail: &[],
+        vad: None,
+        qpe: None,
+        qpe_age_min: None,
+        hrrr: None,
+        hrrr_hour: 0,
+        model_field: None,
+        model_field_age_min: None,
+        mrms: None,
+        view_moment: Moment::Reflectivity,
+        view_tilt_deg: 0.5,
+        view_center: (site.latitude, site.longitude),
+        view_zoom: 7.5,
+        view3d_open: false,
+        show_melting_layer: false,
+        look_points: &[],
+        srm_volume: None,
+        goes: None,
+        futurecast: None,
+        scan_interval_min: input.scan_interval_min,
+        now: input.now,
+    };
+
+    let primary_marker = MapMarker {
+        lat: input.primary.lat,
+        lon: input.primary.lon,
+        label: input.primary.feed_label(),
+    };
+    let mut primary_sample = marker_snapshot(&probe, &primary_marker, input.markers.len());
+    if let Some(obj) = primary_sample.as_object_mut()
+        && let Some(eta) = &input.assessment.eta
+    {
+        obj.insert("next_arrival_min".into(), eta_json(eta, input.now));
+    }
+
+    let local_now = input.now.with_timezone(&chrono::Local);
+    let mut root = Map::new();
+    root.insert(
+        "as_of".into(),
+        json!(input.now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+    );
+    root.insert(
+        "as_of_local".into(),
+        json!(local_now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+    );
+    root.insert(
+        "local_timezone".into(),
+        json!(iana_time_zone::get_timezone().unwrap_or_else(|_| "local".to_string())),
+    );
+    root.insert(
+        "local_utc_offset".into(),
+        json!(local_now.format("%:z").to_string()),
+    );
+    root.insert(
+        "radar".into(),
+        json!({
+            "site": site.id,
+            "name": site.name,
+            "scan_time_utc": scan.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "scan_age_min": age_min,
+            "vcp": volume.meta.vcp,
+            "elevation_cuts": volume.meta.sweep_count,
+            "products": volume.meta.moments.iter().map(|m| m.label()).collect::<Vec<_>>(),
+            "min_dbz_filter": round(input.min_dbz),
+        }),
+    );
+
+    let mut history: Vec<Value> = input
+        .memory
+        .iter()
+        .rev()
+        .take(MEMORY_IN_PROMPT)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(memory_json)
+        .collect();
+    // If the caller handed fewer than the prompt budget, that is fine; the
+    // array is intentionally small on the first few scans.
+    history.shrink_to_fit();
+    root.insert(
+        "scan_series".into(),
+        json!({
+            "scan_number": input.scan_number,
+            "scan_time_utc": scan.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "scan_interval_min": input.scan_interval_min,
+            "cadence": "A new full Level II volume scan arrives every 4-6 minutes; all elevation slices in one volume arrive together.",
+            "history": history,
+        }),
+    );
+
+    root.insert(
+        "live".into(),
+        json!({
+            "primary": {
+                "name": input.primary.feed_label(),
+                "label": input.primary.label,
+                "lat": round4(input.primary.lat),
+                "lon": round4(input.primary.lon),
+                "source": input.primary.source.label(),
+                "coverage_km": round1(input.primary.coverage_km),
+                "eta": input.assessment.eta.as_ref().map(|eta| eta_json(eta, input.now)),
+                "surface_reflectivity_dbz": input.assessment.surface_dbz.map(round),
+                "warning": input.assessment.warning,
+                "nearest_cell": input.assessment.nearest.as_ref().map(nearest_json),
+                "threat": input.assessment.threat.label(),
+                "headline": input.assessment.headline,
+                "sample": primary_sample,
+            },
+            "new_warnings": input.new_warnings,
+            "markers": input.markers.iter().enumerate().map(|(i, marker)| {
+                let mut sample = marker_snapshot(&probe, marker, i);
+                if let Some(obj) = sample.as_object_mut()
+                    && let Some(eta) = input.marker_etas.get(i).and_then(|e| e.as_ref())
+                {
+                    obj.insert("next_arrival_min".into(), json!({
+                        "minutes": round1(eta.minutes),
+                        "cell_speed_mph": round1(eta.speed_mph),
+                        "cell_heading": eta.compass,
+                    }));
+                }
+                sample
+            }).collect::<Vec<_>>(),
+            "note": "The primary point is chosen by the app: GPS, then a marker inside the selected radar's coverage, then the selected radar site itself. Never call the station fallback the spotter's location.",
+        }),
+    );
+
+    let mut cells: Vec<Value> = input
+        .tracks
+        .iter()
+        .take(16)
+        .map(|track| {
+            let distance_mi = radar_render::surface_distance_m(
+                input.primary.lon,
+                input.primary.lat,
+                track.lon,
+                track.lat,
+            ) / 1609.344;
+            json!({
+                "lat": round4(track.lat),
+                "lon": round4(track.lon),
+                "peak_dbz": round(track.max_dbz),
+                "delta_dbz": round1f(track.delta_dbz()),
+                "delta_cells": track.delta_cells(),
+                "speed_mph": round1(track.speed_kmh / 1.609_344),
+                "heading": compass16(track.bearing_deg),
+                "bearing_deg": round1(track.bearing_deg),
+                "distance_from_primary_mi": round1(distance_mi),
+                "trend": track.trend_label(),
+            })
+        })
+        .collect();
+    cells.shrink_to_fit();
+    root.insert(
+        "storm_cells_all".into(),
+        json!({
+            "count": input.tracks.len(),
+            "cells": cells,
+            "note": "Tracked >=40 dBZ cores. delta_dbz and delta_cells compare this scan with the previous one; positive values mean intensifying/growing.",
+        }),
+    );
+
+    root.insert(
+        "echo_regions".into(),
+        json!(echo_regions(volume, site, input.markers, input.tracks)),
+    );
+
+    let mut near: Vec<&radar_core::warnings::Warning> = input
+        .alerts
+        .iter()
+        .filter(|w| w.expires > input.now && w.centroid().is_some())
+        .collect();
+    near.sort_by_key(|w| w.expires);
+    root.insert(
+        "warnings_near_radar".into(),
+        json!(
+            near.into_iter()
+                .take(8)
+                .map(|w| json!({
+                    "event": w.event,
+                    "severity": w.severity,
+                    "expires_in_min": (w.expires - input.now).num_minutes().max(0),
+                    "contains_primary": w.polygon.as_ref().is_some_and(|rings| {
+                        rings
+                            .iter()
+                            .any(|ring| ring_contains(ring, input.primary.lon, input.primary.lat))
+                    }),
+                    "area": clip(&w.area, 120),
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
+
+    if let Some(obs) = input.observation {
+        root.insert(
+            "surface_observation".into(),
+            json!({
+                "station": obs.station_id,
+                "name": obs.station_name,
+                "time_utc": obs.timestamp.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                "conditions": obs.text,
+                "temperature_f": obs.temperature_c.map(c_to_f).map(round1f),
+                "dewpoint_f": obs.dewpoint_c.map(c_to_f).map(round1f),
+                "wind_mph": obs.wind_speed_kmh.map(kmh_to_mph).map(round1f),
+                "gust_mph": obs.wind_gust_kmh.map(kmh_to_mph).map(round1f),
+                "visibility_mi": obs.visibility_m.map(|m| round1f(m / 1609.344)),
+            }),
+        );
+    }
+
+    if let Some(forecast) = input.forecast {
+        root.insert(
+            "forecast".into(),
+            json!({
+                "place": forecast.place,
+                "office": forecast.office,
+                "updated_utc": forecast.updated.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                "periods": forecast.periods.iter().take(4).map(|p| json!({
+                    "name": p.name,
+                    "start_utc": p.start.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "temperature_f": round(p.temperature),
+                    "wind": p.wind,
+                    "short": p.short,
+                })).collect::<Vec<_>>(),
+            }),
+        );
+    }
+
+    if let Some(outlook) = input.outlook {
+        root.insert(
+            "spc_outlook".into(),
+            json!({
+                "day": outlook.day,
+                "type": outlook.ty.label(),
+                "features": outlook.features.iter().take(6).map(|f| json!({
+                    "label": f.label,
+                    "name": f.name,
+                    "risk_level": f.risk_level(),
+                })).collect::<Vec<_>>(),
+            }),
+        );
+    }
+
+    root.insert(
+        "data_status".into(),
+        json!({
+            "forecast_loaded": input.forecast.is_some(),
+            "observation_loaded": input.observation.is_some(),
+            "spc_outlook_loaded": input.outlook.is_some(),
+            "warnings_loaded": !input.alerts.is_empty(),
+            "note": "This is a live mode snapshot. Do not request additional layers; answer from what is here.",
+        }),
+    );
+
+    let mut user = format!(
+        "New full Level II volume scan #{scan_number} for {site_id}. This is one scan in a \
+         time series, not a standalone question. `scan_series.history` contains your previous \
+         analyses and the actual tracked cells from those scans; compare against it and lead \
+         with what changed since scan {previous}.\n\nSnapshot (JSON):\n",
+        scan_number = input.scan_number,
+        site_id = site.id,
+        previous = input
+            .memory
+            .iter()
+            .rev()
+            .find(|m| m.scan < scan)
+            .map(|m| m.scan_number.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+    );
+    user.push_str(&serde_json::to_string(&Value::Object(root)).unwrap_or_else(|_| "{}".into()));
+    user.push_str(
+        "\n\nWrite the short live update now. Quote `live.primary.eta` exactly if present. \
+         Use `radar.site` for the station id and do not substitute a different site. \
+         If `live.primary.source` is `selected_station`, name that radar site and do not call it \
+         the spotter's location. Do not use LOOK, DATA or MAP directives.",
+    );
+
+    Brief {
+        system: live_system_prompt(),
+        user,
+        label: format!("{} {} · live", site.id, scan.format("%H:%M")),
+    }
+}
+
+fn eta_json(eta: &crate::live_ai::LiveEta, now: DateTime<Utc>) -> Value {
+    let arrival = now + chrono::Duration::seconds((eta.minutes * 60.0).round() as i64);
+    json!({
+        "minutes": round1(eta.minutes),
+        "arrival_local": arrival
+            .with_timezone(&chrono::Local)
+            .format("%-I:%M %p %Z")
+            .to_string(),
+        "speed_mph": round1(eta.speed_mph),
+        "heading": eta.heading,
+        "bearing_deg": round1(eta.bearing_deg),
+        "miss_mi": round1(eta.miss_mi),
+        "peak_dbz": round(eta.peak_dbz),
+        "trend_dbz": round1f(eta.delta_dbz),
+        "trend_cells": eta.delta_cells,
+        "note": "App-calculated closest approach of a >=40 dBZ core, not a rain-shield arrival.",
+    })
+}
+
+fn nearest_json(nearest: &crate::live_ai::LiveNearest) -> Value {
+    json!({
+        "distance_mi": round1(nearest.distance_mi),
+        "direction": nearest.direction,
+        "speed_mph": round1(nearest.speed_mph),
+        "heading": nearest.heading,
+        "peak_dbz": round(nearest.peak_dbz),
+    })
+}
+
+fn memory_json(memory: &LiveMemory) -> Value {
+    json!({
+        "scan_number": memory.scan_number,
+        "scan_time_utc": memory.scan.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "location": memory.location,
+        "source": memory.source.label(),
+        "eta_min": memory.eta_min.map(round1),
+        "threat": memory.threat.label(),
+        "warning": memory.warning,
+        "cells": memory.cells.iter().map(|cell| json!({
+            "lat": round4(cell.lat),
+            "lon": round4(cell.lon),
+            "distance_mi": round1(cell.distance_mi),
+            "peak_dbz": round(cell.peak_dbz),
+            "delta_dbz": round1f(cell.delta_dbz),
+            "delta_cells": cell.delta_cells,
+            "speed_mph": round1(cell.speed_mph),
+            "heading": cell.heading,
+        })).collect::<Vec<_>>(),
+        "previous_summary": clip(&memory.summary, 900),
+    })
 }
 
 /// Connected areas of ≥20 dBZ on the lowest reflectivity cut — a coarse
@@ -2055,6 +2501,16 @@ fn compass16(deg: f64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_prompt_knows_the_volume_cadence_and_memory() {
+        let prompt = live_system_prompt();
+        assert!(prompt.contains("ONE NEW FULL LEVEL II VOLUME SCAN"));
+        assert!(prompt.contains("4-6 minutes"));
+        assert!(prompt.contains("scan_series.history"));
+        assert!(prompt.contains("selected_station"));
+        assert!(prompt.contains("Do not emit LOOK"));
+    }
 
     /// A volume with a 40 dBZ column over the marker, one warning polygon
     /// around it, an SPC risk area and an MRMS pixel — enough to prove the

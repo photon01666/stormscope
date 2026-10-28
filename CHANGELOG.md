@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.7.1 — 2026-10-28
+
+**Live AI Tracking**
+- New **Live** tab in the AI meteorologist with an optional **Live AI tracking**
+  toggle. It analyzes each new full Level II volume scan automatically; it does
+  not call the model once per elevation sweep.
+- Every update sees a rolling memory of the previous six scans, including the
+  actual tracked-cell positions, strengths and trends, so the model can say
+  what changed instead of treating each scan as a new conversation.
+- The app — not the model — computes the storm-core arrival time from the
+  current tracks. The fixed ETA is shown in the feed and quoted by the model.
+- **ME** is the GPS or marker inside the selected radar's coverage. If neither
+  is inside it, the selected radar station is used explicitly as the fallback;
+  the AI is told never to call that fallback the spotter's location.
+- Spoken alerts only when a storm core newly crosses the 30- or 10-minute
+  arrival threshold. Live tracking runs while the app is open and does not move
+  the map or request extra layers.
+- The first enable shows a frequency/privacy notice. Live updates stay in their
+  own feed and never enter the manual chat transcript.
+
 ## v1.7.0 — 2026-10-28
 
 **Forecast videos**

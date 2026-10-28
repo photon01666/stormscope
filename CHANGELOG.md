@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.7.0 — 2026-10-28
+
+**Forecast videos**
+- New **Forecast videos** window, opened from the NWS forecast header.
+- Shows the three newest uploads from **Ryan Hall, Y'all** and **Max Velocity** only.
+- Loads on first open and automatically checks again every 30 minutes; the
+  manual Refresh button is gone.
+- Desktop plays videos in-app, full-screen, with a Close button over the video.
+- Android hands playback to the installed YouTube app, falling back to the
+  browser. YouTube's WebView player currently rejects embedded playback with
+  a sign-in/bot check, so the YouTube app is the reliable path.
+- YouTube requests use a real browser User-Agent and Referer; channel fetches
+  retry serially and fall back to the channel RSS feed when YouTube serves a
+  consent/bot page instead of the normal video grid.
+- The full-screen button and separate OS video window are gone.
+
 ## v1.6.3 — 2026-10-27
 
 **Observations**

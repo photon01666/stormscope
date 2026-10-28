@@ -128,6 +128,15 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
                 );
             }
             if ui
+                .button("Forecast videos")
+                .on_hover_text(
+                    "The three newest uploads from each weather forecaster, playable in the app",
+                )
+                .clicked()
+            {
+                app.state.youtube_open = true;
+            }
+            if ui
                 .small_button("Refresh now")
                 .on_hover_text("Fetch the latest forecast and observation")
                 .clicked()

@@ -745,6 +745,15 @@ pub fn run(
                         ));
                     }
                 }
+                DataCmd::LoadYouTubeFeed => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let result = radar_data::YouTubeSource::new(USER_AGENT)
+                            .and_then(|source| source.latest())
+                            .map_err(|error| format!("{error:#}"));
+                        let _ = out.send(DataMsg::YouTubeFeed(result));
+                    });
+                }
                 DataCmd::LoadGoes {
                     layer,
                     west_satellite,

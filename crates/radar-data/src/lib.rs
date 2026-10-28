@@ -40,6 +40,7 @@ pub mod terrain;
 pub mod update;
 pub mod verify;
 pub mod warnings_archive;
+pub mod youtube;
 
 pub use alerts::AlertSource;
 pub use ambient::{AmbientSource, AmbientStation};
@@ -60,3 +61,4 @@ pub use sounding::{SoundingSeries, SoundingSource};
 pub use synoptic::{SynopticSource, SynopticStation};
 pub use terrain::TerrainSource;
 pub use verify::{QpeGaugePair, QpeVerification};
+pub use youtube::{YouTubeChannel, YouTubeSource, YouTubeThumbnail, YouTubeVideo};

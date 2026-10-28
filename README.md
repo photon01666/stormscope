@@ -20,11 +20,13 @@
 
 | Platform | Release file | Requirements |
 | --- | --- | --- |
-| **Linux** | `stormscope-<version>-linux-x86_64.AppImage` | x86_64, Vulkan, Wayland or X11 |
-| **Windows** | `stormscope-<version>-windows-x86_64-setup.exe` | Windows 10/11, x86_64, DX12 |
-| **Android** | `stormscope-<version>-android.apk` | Android 8+, arm64-v8a |
+| **Linux** | `stormscope-<version>-linux-x86_64.AppImage` | x86_64, Vulkan, Wayland or X11, WebKitGTK 4.1 |
+| **Windows** | `stormscope-<version>-windows-x86_64-setup.exe` | Windows 10/11, x86_64, DX12, WebView2 runtime |
+| **Android** | `stormscope-<version>-android.apk` | Android 8+, arm64-v8a, YouTube app for video playback |
 
 **Coverage:** the radar network is US NEXRAD — CONUS, Alaska, Hawaii, Guam and Puerto Rico. The basemap is worldwide. There is no macOS or iOS build.
+
+> **Forecast videos:** desktop uses the platform WebView for in-app playback (WebKitGTK on Linux, WebView2 on Windows). On Android, YouTube's embedded player is blocked by its sign-in/bot check, so playback opens the installed YouTube app (or the browser if YouTube is absent).
 
 Release builds check GitHub for updates. Keep the Linux AppImage in a writable folder so it can replace itself. Android asks for install permission once; after that it can update itself from GitHub Releases.
 
@@ -36,6 +38,7 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 - **Storm awareness** — NWS warnings, SPC outlooks, local storm reports, mesoscale discussions, storm tracks with arrival ETAs, MRMS and GOES satellite.
 - **Weather stations** — Synoptic network observations, free METAR airport reports, and your own Ambient Weather station, shown as temperature badges with readable popups.
 - **Forecasting** — 18- or 48-hour HRRR FutureCast with precipitation-type colouring, plus an optional AI meteorologist that can inspect the radar, move the view and talk through the weather.
+- **Forecast videos** — the three newest uploads from Ryan Hall and Max Velocity, opened from the forecast window and played in-app on desktop or in the YouTube app on Android.
 - **Voice alerts** — spoken warnings near your GPS fix or a map marker; Android Storm Watch keeps watching when the app is closed.
 - **Analysis tools** — model, RAP and observed-RAOB soundings, radar-derived VAD wind profiles, dealiased velocity, rotation/TVS signatures, hail cores and storm growth/decay trends.
 - **Rainfall and hydrology** — MRMS multi-sensor and radar-only QPE accumulations plus FLASH flash-flood guidance, and a QPE-vs-gauge verification window.
@@ -106,6 +109,7 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 - **Ensemble plume** — GEFS member plumes for temperature, wind, precipitation and CAPE, with mean and 10–90% range.
 - **Model comparison** — side-by-side Open-Meteo, RAP, HRRR and optional observed-RAOB parameters at the selected site.
 - **Mid-level wind** — animated HRRR 500 mb wind speed, height contours and wind barbs, stepping through the 18-hour forecast.
+- **Forecast videos** — the three newest uploads from Ryan Hall, Y'all and Max Velocity, refreshed on open and every 30 minutes. Desktop plays them in the app, full-screen; Android opens the installed YouTube app.
 - **AI meteorologist** is optional. Connect an OpenAI-compatible endpoint (OpenCode Go with `deepseek-v4.1-flash` by default), OpenAI, a local Ollama/LM Studio server, or Anthropic Claude (native Messages API; `claude-sonnet-5-5` by default) for per-marker briefs and a persistent chat. It can look at other areas, fetch MRMS/GOES/forecast/totals/SPC data, read the loaded sounding/VAD/rotation/hail/QPE analysis and HRRR point forecast, move the 2D/3D views and mark features.
 - **Android Gemini Live** adds a natural voice conversation with the same live radar context. The microphone pauses while Gemini speaks.
 - The AI can request an 18- or 48-hour FutureCast if it is not loaded, announces the 30–60 s download and includes it in the live voice summary.

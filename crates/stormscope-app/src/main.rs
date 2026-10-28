@@ -62,6 +62,27 @@ fn main() -> eframe::Result {
     install_panic_log();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // wry's Linux child WebView needs an X11 window; the app still runs
+    // through XWayland on Wayland desktops. Without this the embedded player
+    // would have no parent surface.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        // SAFETY: this runs before the event loop, GTK or any other thread.
+        unsafe {
+            std::env::set_var("GDK_BACKEND", "x11");
+            // XWayland does not expose the compositor's per-monitor scale to
+            // X11 clients. GDK_SCALE is the scale the desktop already uses
+            // for GTK apps; hand the same value to winit so the radar UI is
+            // not rendered at 1x on a HiDPI display.
+            if let Ok(scale) = std::env::var("GDK_SCALE")
+                && scale.parse::<f64>().is_ok()
+            {
+                std::env::set_var("WINIT_X11_SCALE_FACTOR", scale);
+            }
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+    }
+
     eframe::run_native(
         "Stormscope",
         native_options(),

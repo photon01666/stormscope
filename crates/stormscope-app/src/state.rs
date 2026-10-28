@@ -384,6 +384,13 @@ pub struct Frame {
     pub bytes: usize,
 }
 
+/// The video currently open in the in-app player.
+#[derive(Debug, Clone)]
+pub struct YouTubePlayer {
+    pub id: String,
+    pub title: String,
+}
+
 pub struct AppState {
     pub mode: Mode,
     /// Selected archive day (Central-date; edited in the Archive popup).
@@ -626,6 +633,18 @@ pub struct AppState {
     pub show_ambient: bool,
     pub ambient_hover: Option<String>,
     pub ambient_hover_at: f64,
+    // Curated weather YouTube feed. The window always shows at most the
+    // three newest uploads from each channel in `radar_data::youtube::CHANNELS`.
+    pub youtube_open: bool,
+    pub youtube_videos: Vec<std::sync::Arc<radar_data::YouTubeVideo>>,
+    pub youtube_pending: bool,
+    pub youtube_fetched_at: Option<std::time::Instant>,
+    pub youtube_last_attempt: Option<std::time::Instant>,
+    pub youtube_error: Option<String>,
+    /// The video open in the in-app full-screen player.
+    pub youtube_player: Option<YouTubePlayer>,
+    /// The embedded player (or Android WebView) failed to open.
+    pub youtube_player_error: Option<String>,
     /// Station currently hovered on the map, and when that hover began (for
     /// the one-second tooltip delay).
     pub synoptic_hover: Option<String>,
@@ -1348,6 +1367,14 @@ impl Default for AppState {
             show_ambient: true,
             ambient_hover: None,
             ambient_hover_at: 0.0,
+            youtube_open: std::env::var_os("STORMSCOPE_YOUTUBE_OPEN").is_some(),
+            youtube_videos: Vec::new(),
+            youtube_pending: false,
+            youtube_fetched_at: None,
+            youtube_last_attempt: None,
+            youtube_error: None,
+            youtube_player: None,
+            youtube_player_error: None,
             synoptic_hover: None,
             synoptic_hover_at: 0.0,
             uv_index: None,

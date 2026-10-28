@@ -19,6 +19,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
     "json",
     "rustls-tls",
+    "gzip",
 ] }
 flate2 = "1"
 # GOES GLM Level 2 is NetCDF-4/HDF5. This reader is pure Rust (no libhdf5 /
@@ -29,7 +30,7 @@ netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf
 grib = { version = "0.20.2", default-features = false }
 # MRMS ships PNG-packed GRIB2 (template 5.41): the data section is a 16-bit
 # grayscale PNG. Only the PNG decoder is needed.
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # S3 listing/downloading for the NOAA OpenData buckets (anonymous).
 nexrad-data = { version = "=1.0.0-rc.7", default-features = false, features = ["aws"] }
 # nexrad-data's aws API is async (reqwest); driven from dedicated

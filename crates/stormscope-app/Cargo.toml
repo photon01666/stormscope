@@ -63,6 +63,14 @@ libc = "0.2"
 # script gates on CARGO_CFG_TARGET_OS, not the host.
 winresource = "0.1"
 
+# In-app YouTube playback uses a platform WebView parented to the main
+# window. Linux is X11/XWayland only for this child view; the app selects the
+# X11 backend before eframe starts (see main.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+raw-window-handle = "0.6"
+wry = { version = "0.57", default-features = false, features = ["os-webview", "x11"] }
+
 # Force the native window frame dark (the app itself is always dark).
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
@@ -70,6 +78,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
 ] }
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 
 [dev-dependencies]
 # Headless render smoke test (`tests/render3d_smoke.rs`, ignored by default):

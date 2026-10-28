@@ -1,11 +1,14 @@
 package com.stormscope.app;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Color;
 import android.net.Uri;
 import java.io.File;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationListener;
@@ -17,6 +20,14 @@ import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewGroup;
+import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 
 import java.util.ArrayDeque;
 import java.util.Locale;
@@ -68,6 +79,9 @@ public class MainActivity extends GameActivity {
     /** Soft-keyboard height in px, straight from GameActivity's IME insets. */
     private static volatile int sImeInset;
 
+    /** In-app YouTube player overlay (null when closed). */
+    private static volatile WebView sVideoView;
+
     private static final String TAG = "stormscope";
     private static final int TTS_PENDING_MAX = 8;
     /** Android's system TTS engine; announcements are queued until it is ready. */
@@ -111,6 +125,10 @@ public class MainActivity extends GameActivity {
         }
         sHasResumed = true;
         GeminiLiveAudio.resumeCapture();
+        WebView video = sVideoView;
+        if (video != null) {
+            video.onResume();
+        }
     }
 
     @Override
@@ -120,6 +138,10 @@ public class MainActivity extends GameActivity {
         // Gemini Live WebSocket can stay connected for a short background
         // spell, and onResume restarts capture.
         GeminiLiveAudio.pauseCapture();
+        WebView video = sVideoView;
+        if (video != null) {
+            video.onPause();
+        }
         super.onPause();
     }
 
@@ -200,6 +222,137 @@ public class MainActivity extends GameActivity {
         } catch (Exception e) {
             Log.e(TAG, "stormscopeInstallApk failed", e);
         }
+    }
+
+    /**
+     * Called from Rust (JNI, UI thread): open a video in the installed YouTube
+     * app, falling back to the browser if YouTube is not available. The embed
+     * player is unreliable in Android WebViews (sign-in/bot interstitial).
+     */
+    public void stormscopeOpenYouTube(String videoId) {
+        String watchUrl = "https://www.youtube.com/watch?v=" + videoId;
+        try {
+            Intent app = new Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:" + videoId));
+            app.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(app);
+            return;
+        } catch (Exception e) {
+            Log.w(TAG, "YouTube app unavailable, opening browser", e);
+        }
+        try {
+            Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(watchUrl));
+            browser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(browser);
+        } catch (Exception e) {
+            Log.e(TAG, "stormscopeOpenYouTube failed", e);
+        }
+    }
+
+    /**
+     * In-app WebView player retained as a fallback implementation. YouTube's
+     * bot check currently makes it unreliable on Android.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    public void stormscopeOpenVideo(String html) {
+        runOnUiThread(() -> {
+            closeVideo();
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+            setVideoFullscreen(true);
+            WebView web = new WebView(this);
+            WebSettings settings = web.getSettings();
+            settings.setJavaScriptEnabled(true);
+            settings.setDomStorageEnabled(true);
+            settings.setMediaPlaybackRequiresUserGesture(false);
+            settings.setAllowFileAccess(false);
+            settings.setAllowContentAccess(false);
+            // WebView's default UA contains `; wv` and the app package, which
+            // makes YouTube treat the player as an automation client. Present
+            // the same desktop Chrome identity the Linux/Windows player uses.
+            settings.setUserAgentString(
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                            + "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            + "Chrome/140.0.0.0 Safari/537.36");
+            CookieManager cookies = CookieManager.getInstance();
+            cookies.setAcceptCookie(true);
+            cookies.setAcceptThirdPartyCookies(web, true);
+            cookies.setCookie("https://www.youtube.com", "CONSENT=YES+cb");
+            cookies.setCookie("https://www.youtube-nocookie.com", "CONSENT=YES+cb");
+            cookies.flush();
+            web.setBackgroundColor(Color.BLACK);
+            web.setKeepScreenOn(true);
+            web.addJavascriptInterface(new VideoBridge(), "StormscopeVideo");
+            web.setWebViewClient(new WebViewClient());
+            web.setWebChromeClient(new WebChromeClient());
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT);
+            addContentView(web, params);
+            sVideoView = web;
+            // A real HTTPS base URL gives the YouTube iframe the Referer it
+            // requires (missing Referer shows YouTube error 153).
+            web.loadDataWithBaseURL(
+                    "https://github.com/photon01666/stormscope/",
+                    html,
+                    "text/html",
+                    "utf-8",
+                    null);
+        });
+    }
+
+    private void closeVideo() {
+        WebView web = sVideoView;
+        sVideoView = null;
+        setVideoFullscreen(false);
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+        if (web != null) {
+            try {
+                web.stopLoading();
+                web.loadUrl("about:blank");
+                ViewGroup parent = (ViewGroup) web.getParent();
+                if (parent != null) {
+                    parent.removeView(web);
+                }
+                web.destroy();
+            } catch (Exception e) {
+                Log.w(TAG, "closing video WebView failed", e);
+            }
+        }
+    }
+
+    private void setVideoFullscreen(boolean fullscreen) {
+        View decor = getWindow().getDecorView();
+        if (fullscreen) {
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        } else {
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        }
+    }
+
+    private final class VideoBridge {
+        @JavascriptInterface
+        public void command(String command) {
+            runOnUiThread(() -> {
+                if ("close".equals(command)) {
+                    closeVideo();
+                }
+            });
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (sVideoView != null) {
+            closeVideo();
+            return;
+        }
+        super.onBackPressed();
     }
 
     /** True while the game window is resumed; the service stays silent then. */

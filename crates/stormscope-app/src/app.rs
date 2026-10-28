@@ -137,6 +137,8 @@ pub enum DataMsg {
     AmbientStations(Vec<radar_data::ambient::AmbientStation>),
     /// Ambient Weather fetch failed.
     AmbientError(String),
+    /// Newest videos from the curated weather YouTube channels.
+    YouTubeFeed(Result<Vec<radar_data::YouTubeVideo>, String>),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
     /// Forecaster discussion text for one outlook day.
@@ -320,6 +322,8 @@ pub enum DataCmd {
     },
     /// Fetch the Ambient Weather stations now.
     LoadAmbient,
+    /// Refresh the curated weather YouTube feed (three uploads per channel).
+    LoadYouTubeFeed,
     /// Fetch the latest GOES frame for the chosen layer/satellite.
     LoadGoes {
         layer: radar_data::goes::GoesLayer,
@@ -494,6 +498,13 @@ pub struct StormApp {
     pub midlevel_tex: Vec<(usize, egui::TextureHandle)>,
     /// Cached FutureCast textures, keyed by frame Arc identity.
     pub futurecast_tex: Vec<(usize, egui::TextureHandle)>,
+    /// Cached YouTube thumbnail textures, keyed by video id.
+    pub youtube_tex: Vec<(String, egui::TextureHandle)>,
+    /// Native child WebView embedded over the in-app video window.
+    #[cfg(not(target_os = "android"))]
+    pub video_embed: Option<crate::video_embed::VideoEmbed>,
+    /// Screen-space rectangle the WebView should cover this frame.
+    pub youtube_video_rect: Option<egui::Rect>,
     /// Geometry key of the cross-section curtain currently uploaded (the
     /// pane rebuilds it when the azimuth, product or volume changes).
     pub view3d_section_key: Option<u64>,
@@ -711,6 +722,10 @@ impl StormApp {
             level3_tex: Vec::new(),
             midlevel_tex: Vec::new(),
             futurecast_tex: Vec::new(),
+            youtube_tex: Vec::new(),
+            #[cfg(not(target_os = "android"))]
+            video_embed: crate::video_embed::VideoEmbed::new(cc),
+            youtube_video_rect: None,
             view3d_section_key: None,
             prev_tracks: Vec::new(),
             marker_etas: Vec::new(),
@@ -1369,6 +1384,30 @@ impl StormApp {
                 DataMsg::AmbientError(e) => {
                     self.state.ambient_pending = false;
                     self.state.ambient_error = Some(e);
+                }
+                DataMsg::YouTubeFeed(result) => {
+                    self.state.youtube_pending = false;
+                    self.state.youtube_fetched_at = Some(std::time::Instant::now());
+                    match result {
+                        Ok(videos) => {
+                            log::info!("YouTube feed: {} videos", videos.len());
+                            self.state.youtube_videos =
+                                videos.into_iter().map(std::sync::Arc::new).collect();
+                            self.state.youtube_error = None;
+                            // Scripted smoke test: open the newest video
+                            // automatically when the feed lands.
+                            if self.state.youtube_player.is_none()
+                                && std::env::var_os("STORMSCOPE_VIDEO_OPEN").is_some()
+                                && let Some(video) = self.state.youtube_videos.first().cloned()
+                            {
+                                let _ = crate::player::open(self, &video.id, &video.title);
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("YouTube feed failed: {error}");
+                            self.state.youtube_error = Some(error);
+                        }
+                    }
                 }
                 DataMsg::Sounding(s) => {
                     log::debug!("sounding loaded: {} levels", s.levels.len());
@@ -4320,6 +4359,23 @@ impl eframe::App for StormApp {
         // nothing). Both numbers feed the stats line in `record_frame_stats`.
         let t0 = std::time::Instant::now();
         self.ui_frame(ui, frame);
+        #[cfg(not(target_os = "android"))]
+        if let Some(embed) = &mut self.video_embed {
+            if embed.take_close_requested() {
+                self.state.youtube_player = None;
+                self.youtube_video_rect = None;
+            }
+            if let Err(error) = embed.sync(
+                self.state.youtube_player.as_ref(),
+                self.youtube_video_rect,
+                ui.ctx().pixels_per_point(),
+            ) {
+                log::warn!("embedded video: {error}");
+                self.state.youtube_player_error = Some(error);
+                self.state.youtube_player = None;
+                self.youtube_video_rect = None;
+            }
+        }
         self.record_frame_stats(t0.elapsed(), ui.ctx());
     }
 }

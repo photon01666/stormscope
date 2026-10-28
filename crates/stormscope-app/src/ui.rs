@@ -21,6 +21,7 @@ mod trends;
 mod vad;
 mod verify;
 mod volume3d;
+mod youtube;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the
 /// hover hysteresis below — keep the two in sync.
@@ -326,6 +327,8 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     totals::totals_window(ui.ctx(), app, pane_area);
     verify::verification_window(ui.ctx(), app, pane_area);
     trends::storm_trends_window(ui.ctx(), app, pane_area);
+    youtube::youtube_window(ui.ctx(), app, pane_area);
+    youtube::youtube_player_window(ui.ctx(), app, pane_area);
     synoptic::synoptic_window(ui.ctx(), app, pane_area);
     ambient::ambient_window(ui.ctx(), app, pane_area);
     synoptic::synoptic_settings_window(ui.ctx(), app, pane_area);

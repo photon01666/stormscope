@@ -79,6 +79,7 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     stormscope_app::android_location::register(app.clone());
     stormscope_app::android_storm_watch::register(app.clone());
     stormscope_app::android_tts::register(app.clone());
+    stormscope_app::android_video::register(app.clone());
 
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

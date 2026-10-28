@@ -22,6 +22,8 @@ pub mod android_location;
 pub mod android_storm_watch;
 #[cfg(target_os = "android")]
 pub mod android_tts;
+#[cfg(target_os = "android")]
+pub mod android_video;
 mod app;
 mod background;
 mod brief;
@@ -29,11 +31,14 @@ mod brief;
 mod embedded_piper;
 #[cfg(target_os = "android")]
 pub mod gemini_live;
+mod player;
 pub mod render3d;
 mod state;
 mod timefmt;
 mod timeline;
 mod ui;
+#[cfg(not(target_os = "android"))]
+mod video_embed;
 mod voice;
 
 pub use app::StormApp;

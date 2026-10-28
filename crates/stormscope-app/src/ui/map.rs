@@ -742,12 +742,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         || app.state.loop_state == crate::state::LoopState::Playing
                             && app.view3d_interact_at.elapsed()
                                 < std::time::Duration::from_millis(150);
-                    let raster_scale: f32 = if motion && !response.dragged() {
-                        0.5
-                    } else {
-                        1.0
-                    };
-
+                    let raster_scale: f32 = 1.0;
                     use std::hash::{Hash, Hasher};
                     let mut h = std::collections::hash_map::DefaultHasher::new();
                     frame.volume_start.timestamp_millis().hash(&mut h);
@@ -777,17 +772,18 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         // the drag offset when painting (below), instead of
                         // letting it rubber-band against the moving tiles.
                         //
-                        // The measured traffic that made this conditional:
-                        // trackpad zoom emits steps at frame rate, and with a
-                        // drag-only gate every step rasterized — real logs
-                        // showed 16–46 rasters/s of pure churn. 100 ms caps
-                        // every non-drag gesture at ~10/s. Drags raster every
-                        // frame instead of translating a stale texture: the
-                        // translated overlay was visibly swimming under the
-                        // pointer, and a locked map is worth the extra raster.
+                        // During a drag the map must never rasterize: the full
+                        // raster took 17–30 ms and a half-res raster still took
+                        // 6–16 ms, both enough to drop frames while the pointer
+                        // is moving. Translate the last full-resolution texture
+                        // for the duration of the drag and raster once it stops.
+                        // That keeps the basemap, radar and pointer in lockstep;
+                        // the small uncovered edge is preferable to a lagging
+                        // overlay.
                         let settle_ms = if response.dragged() { 0 } else { 100 };
-                        let settling = app.radar_last_raster.elapsed()
-                            >= std::time::Duration::from_millis(settle_ms);
+                        let settling = !response.dragged()
+                            && app.radar_last_raster.elapsed()
+                                >= std::time::Duration::from_millis(settle_ms);
                         if settling {
                             let min_dbz = match app.state.moment {
                                 radar_core::Moment::Reflectivity

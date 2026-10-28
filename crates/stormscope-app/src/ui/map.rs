@@ -777,16 +777,15 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         // the drag offset when painting (below), instead of
                         // letting it rubber-band against the moving tiles.
                         //
-                        // The measured traffic that made this unconditional:
+                        // The measured traffic that made this conditional:
                         // trackpad zoom emits steps at frame rate, and with a
                         // drag-only gate every step rasterized — real logs
                         // showed 16–46 rasters/s of pure churn. 100 ms caps
-                        // every non-drag gesture at ~10/s; drags keep 150 ms
-                        // (their translation path is cheaper and panning
-                        // benefits from freshness); playback's 8 fps (125 ms
-                        // spacing) stays under the window, so loops never
-                        // drop a frame.
-                        let settle_ms = if response.dragged() { 150 } else { 100 };
+                        // every non-drag gesture at ~10/s. Drags raster every
+                        // frame instead of translating a stale texture: the
+                        // translated overlay was visibly swimming under the
+                        // pointer, and a locked map is worth the extra raster.
+                        let settle_ms = if response.dragged() { 0 } else { 100 };
                         let settling = app.radar_last_raster.elapsed()
                             >= std::time::Duration::from_millis(settle_ms);
                         if settling {

@@ -334,6 +334,9 @@ pub fn storm_histories(
         let time = pair[1].meta.volume_start;
         let mut used = vec![false; chains.len()];
         for track in tracks {
+            // A previous track may have created a new chain; keep the
+            // one-to-one matcher in step with it.
+            used.resize(chains.len(), false);
             let mut best: Option<(usize, f64)> = None;
             for (i, chain) in chains.iter().enumerate() {
                 if used[i] {

@@ -73,6 +73,20 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
             return;
         };
 
+        if station.source == radar_data::synoptic::StationSource::Metar
+            && app.state.metar_history.as_ref().map(|h| h.stid.as_str())
+                != Some(station.stid.as_str())
+            && app.state.metar_history_requested.as_deref() != Some(station.stid.as_str())
+            && !app.state.metar_history_pending
+        {
+            app.state.metar_history_error = None;
+            app.state.metar_history_requested = Some(station.stid.clone());
+            app.state.metar_history_pending = true;
+            let _ = app
+                .tx
+                .send(crate::app::DataCmd::LoadMetarHistory(station.stid.clone()));
+        }
+
         if fill {
             // Phone: full pane width.
             let w = ui.available_width();
@@ -107,6 +121,56 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
                         });
                 }
 
+                if station.source == radar_data::synoptic::StationSource::Metar {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.label(egui::RichText::new("Recent METAR trend").strong());
+                    if app.state.metar_history_pending {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("loading 6-hour history…");
+                        });
+                    }
+                    if let Some(err) = app.state.metar_history_error.clone() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("History: {err}"))
+                                    .weak()
+                                    .small(),
+                            );
+                            if ui.small_button("Retry").clicked() {
+                                app.state.metar_history_error = None;
+                                app.state.metar_history_requested = None;
+                                app.state.metar_history_pending = false;
+                            }
+                        });
+                    }
+                    if let Some(history) = app.state.metar_history.as_ref()
+                        && history.stid == station.stid
+                    {
+                        metar_history_chart(ui, history);
+                        ui.add_space(4.0);
+                        for obs in history.observations.iter().take(8) {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}Z · {} · {:.0}°F / {:.0}°F · {}",
+                                    obs.time.format("%H:%M"),
+                                    obs.cover.as_deref().unwrap_or("—"),
+                                    obs.temp_c.map(|c| c * 9.0 / 5.0 + 32.0).unwrap_or(f64::NAN),
+                                    obs.dewpoint_c
+                                        .map(|c| c * 9.0 / 5.0 + 32.0)
+                                        .unwrap_or(f64::NAN),
+                                    obs.wind_speed_ms
+                                        .map(|v| format!("{:.0} mph", v * 2.236_94))
+                                        .unwrap_or_else(|| "—".into()),
+                                ))
+                                .weak()
+                                .small(),
+                            );
+                        }
+                    }
+                }
+
                 if app.state.synoptic_pending {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -128,6 +192,105 @@ pub fn synoptic_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
         open = false;
     }
     app.state.synoptic_open = open;
+}
+
+fn metar_history_chart(ui: &mut egui::Ui, history: &radar_data::MetarHistory) {
+    let mut obs = history
+        .observations
+        .iter()
+        .filter(|o| o.time.timestamp() > 0)
+        .collect::<Vec<_>>();
+    obs.sort_by_key(|o| o.time);
+    let temps = obs
+        .iter()
+        .filter_map(|o| o.temp_c.map(|c| c * 9.0 / 5.0 + 32.0))
+        .chain(
+            obs.iter()
+                .filter_map(|o| o.dewpoint_c.map(|c| c * 9.0 / 5.0 + 32.0)),
+        )
+        .collect::<Vec<_>>();
+    if temps.is_empty() {
+        ui.label(
+            egui::RichText::new("No temperature reports in this window.")
+                .weak()
+                .small(),
+        );
+        return;
+    }
+    let mut lo = temps.iter().copied().fold(f64::INFINITY, f64::min);
+    let mut hi = temps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let pad = (hi - lo).abs().max(2.0) * 0.12;
+    lo -= pad;
+    hi += pad;
+    let width = ui.available_width().clamp(220.0, 520.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 130.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, 4.0, egui::Color32::from_gray(10));
+    let left = rect.left() + 34.0;
+    let right = rect.right() - 6.0;
+    let top = rect.top() + 8.0;
+    let bottom = rect.bottom() - 18.0;
+    for i in 0..=3 {
+        let t = i as f32 / 3.0;
+        let y = top + t * (bottom - top);
+        p.line_segment(
+            [egui::pos2(left, y), egui::pos2(right, y)],
+            egui::Stroke::new(0.5, egui::Color32::from_gray(35)),
+        );
+        let v = hi - f64::from(t) * (hi - lo);
+        p.text(
+            egui::pos2(rect.left() + 2.0, y),
+            egui::Align2::LEFT_CENTER,
+            format!("{v:.0}"),
+            egui::FontId::monospace(9.0),
+            egui::Color32::from_gray(120),
+        );
+    }
+    let t0 = obs.first().map(|o| o.time).unwrap_or_else(chrono::Utc::now);
+    let t1 = obs.last().map(|o| o.time).unwrap_or(t0);
+    let span = (t1 - t0).num_seconds().max(1) as f64;
+    let x = |t: chrono::DateTime<chrono::Utc>| {
+        left + ((t - t0).num_seconds() as f64 / span).clamp(0.0, 1.0) as f32 * (right - left)
+    };
+    let y = |v: f64| bottom - ((v - lo) / (hi - lo).max(f64::EPSILON)) as f32 * (bottom - top);
+    let temp: fn(&radar_data::MetarObservation) -> Option<f64> = |o| o.temp_c;
+    let dew: fn(&radar_data::MetarObservation) -> Option<f64> = |o| o.dewpoint_c;
+    for (key, color) in [
+        (temp, egui::Color32::from_rgb(255, 120, 100)),
+        (dew, egui::Color32::from_rgb(100, 220, 140)),
+    ] {
+        let pts = obs
+            .iter()
+            .filter_map(|o| key(o).map(|c| egui::pos2(x(o.time), y(c * 9.0 / 5.0 + 32.0))))
+            .collect::<Vec<_>>();
+        if pts.len() > 1 {
+            p.add(egui::Shape::line(pts, egui::Stroke::new(1.8, color)));
+        }
+    }
+    let mid = t0 + chrono::Duration::seconds((t1 - t0).num_seconds() / 2);
+    for (i, t) in [t0, mid, t1].into_iter().enumerate() {
+        p.text(
+            egui::pos2(left + i as f32 * (right - left) / 2.0, rect.bottom() - 2.0),
+            egui::Align2::CENTER_BOTTOM,
+            t.format("%HZ").to_string(),
+            egui::FontId::monospace(9.0),
+            egui::Color32::from_gray(120),
+        );
+    }
+    p.text(
+        egui::pos2(rect.left() + 2.0, rect.top() + 2.0),
+        egui::Align2::LEFT_TOP,
+        "°F",
+        egui::FontId::monospace(9.0),
+        egui::Color32::from_gray(120),
+    );
+    p.text(
+        egui::pos2(right, rect.top() + 2.0),
+        egui::Align2::RIGHT_TOP,
+        "temp / dew",
+        egui::FontId::monospace(9.0),
+        egui::Color32::from_gray(140),
+    );
 }
 
 /// Temperature headline with an animated condition glyph, then the station's
@@ -518,6 +681,7 @@ mod tests {
             stid: "KTOP".into(),
             name: "Topeka".into(),
             network: String::new(),
+            source: radar_data::synoptic::StationSource::Synoptic,
             coords: Some(radar_data::synoptic::SynopticCoords {
                 lat: 39.07,
                 lon: -95.62,

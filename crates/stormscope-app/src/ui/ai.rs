@@ -23,6 +23,16 @@ const GO_MODELS: &[&str] = &[
     "longcat-2.0",
 ];
 
+/// Current Claude models for the Anthropic Messages API. The model field is
+/// editable, so a newly released model can be typed in immediately.
+const CLAUDE_MODELS: &[&str] = &[
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-haiku-4-5-20251001",
+];
+
 pub fn ai_windows(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     // Gboard overlays the app instead of resizing the native window, so the
     // filled report window would otherwise put its question box underneath
@@ -178,6 +188,16 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     {
                         preset = Some(("https://api.openai.com/v1", "gpt-4o-mini"));
                     }
+                    if ui
+                        .button("Claude (Anthropic)")
+                        .on_hover_text("Anthropic Messages API; get a key at platform.claude.com")
+                        .clicked()
+                    {
+                        preset = Some((
+                            radar_data::ai::ANTHROPIC_BASE,
+                            radar_data::ai::ANTHROPIC_MODEL,
+                        ));
+                    }
                 });
                 if let Some((base, model)) = preset {
                     app.state.ai_base_url = base.to_string();
@@ -185,32 +205,49 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 }
 
                 ui.add_space(4.0);
-                ui.label("Base URL (OpenAI-compatible)");
+                ui.label("Base URL (OpenAI-compatible or Anthropic)");
                 ui.add(
                     egui::TextEdit::singleline(&mut app.state.ai_base_url)
                         .desired_width(ui.available_width())
                         .hint_text("https://opencode.ai/inference/go/v1"),
                 );
 
+                let anthropic = app
+                    .state
+                    .ai_base_url
+                    .to_ascii_lowercase()
+                    .contains("anthropic.com");
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("Model");
-                    ui.menu_button("OpenCode Go models", |ui| {
-                        for model in GO_MODELS {
-                            if ui
-                                .selectable_label(app.state.ai_model == *model, *model)
-                                .clicked()
-                            {
-                                app.state.ai_model = (*model).to_string();
-                                ui.close();
+                    ui.menu_button(
+                        if anthropic {
+                            "Claude models"
+                        } else {
+                            "OpenCode Go models"
+                        },
+                        |ui| {
+                            let models = if anthropic { CLAUDE_MODELS } else { GO_MODELS };
+                            for model in models {
+                                if ui
+                                    .selectable_label(app.state.ai_model == *model, *model)
+                                    .clicked()
+                                {
+                                    app.state.ai_model = (*model).to_string();
+                                    ui.close();
+                                }
                             }
-                        }
-                    });
+                        },
+                    );
                 });
                 ui.add(
                     egui::TextEdit::singleline(&mut app.state.ai_model)
                         .desired_width(ui.available_width())
-                        .hint_text("deepseek-v4.1-flash"),
+                        .hint_text(if anthropic {
+                            "claude-sonnet-5-5"
+                        } else {
+                            "deepseek-v4.1-flash"
+                        }),
                 );
 
                 ui.add_space(6.0);
@@ -220,7 +257,11 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                         egui::TextEdit::singleline(&mut app.state.ai_api_key)
                             .password(!app.state.ai_show_key)
                             .desired_width((ui.available_width() - 72.0).max(100.0))
-                            .hint_text("Paste your OpenCode Go key"),
+                            .hint_text(if anthropic {
+                                "Paste your Anthropic API key"
+                            } else {
+                                "Paste your OpenCode Go key"
+                            }),
                     );
                     if ui
                         .small_button(if app.state.ai_show_key {
@@ -238,13 +279,17 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     "Remember the key on disk (plain text, 0600)",
                 );
                 ui.label(
-            egui::RichText::new(
-                "The OPENCODE_API_KEY environment variable is read at launch; a key set here \
-                     overrides it. Keys are sent only to the base URL above.",
-            )
-            .weak()
-            .small(),
-        );
+                    egui::RichText::new(if anthropic {
+                        "The ANTHROPIC_API_KEY environment variable is read at launch when the \
+                         Anthropic endpoint is selected; a key set here overrides it. Keys are \
+                         sent only to the base URL above."
+                    } else {
+                        "The OPENCODE_API_KEY environment variable is read at launch; a key set \
+                         here overrides it. Keys are sent only to the base URL above."
+                    })
+                    .weak()
+                    .small(),
+                );
 
                 #[cfg(target_os = "android")]
                 {
@@ -357,14 +402,18 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 }
                 ui.add_space(4.0);
                 ui.label(
-            egui::RichText::new(
-                "OpenCode Go: subscribe in the OpenCode Console, copy the API key, paste it \
-                     above. The default model is DeepSeek V4.1 Flash — fast and inexpensive \
-                     enough for a brief every scan.",
-            )
-            .weak()
-            .small(),
-        );
+                    egui::RichText::new(if anthropic {
+                        "Claude: create an API key at platform.claude.com, paste it above, and \
+                         pick a model. Sonnet 5.5 is a good balance of speed and analysis quality \
+                         for a brief every scan; Haiku 5.5 is the cheaper, faster option."
+                    } else {
+                        "OpenCode Go: subscribe in the OpenCode Console, copy the API key, paste \
+                         it above. The default model is DeepSeek V4.1 Flash — fast and inexpensive \
+                         enough for a brief every scan."
+                    })
+                    .weak()
+                    .small(),
+                );
                 ui.add_space(16.0 + ime_pad);
             });
     });
@@ -622,14 +671,24 @@ fn report_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .show(ui, |ui| {
                         if !configured {
+                            let anthropic = app
+                                .state
+                                .ai_base_url
+                                .to_ascii_lowercase()
+                                .contains("anthropic.com");
+                            let (provider, model) = if anthropic {
+                                ("Claude", "claude-sonnet-5-5")
+                            } else {
+                                ("OpenCode Go", "deepseek-v4.1-flash")
+                            };
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(
-                                        "Paste your OpenCode Go API key in Settings → AI \
-                                             meteorologist. The fields are already set to \
-                                             OpenCode Go (deepseek-v4.1-flash), and the chat is \
-                                             ready as soon as the key is in.",
-                                    )
+                                    egui::RichText::new(format!(
+                                        "Paste your {provider} API key in Settings → AI \
+                                         meteorologist. The fields are already set to \
+                                         {provider} ({model}), and the chat is ready as soon \
+                                         as the key is in."
+                                    ))
                                     .weak(),
                                 )
                                 .wrap(),

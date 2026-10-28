@@ -158,6 +158,29 @@ pub struct Mosaic {
     pub values: Vec<f32>,
 }
 
+impl Mosaic {
+    /// Nearest-cell value at a latitude/longitude, if the point is inside the
+    /// decoded grid.
+    pub fn value_at(&self, lat: f64, lon: f64) -> Option<f32> {
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+        if !(self.south..=self.north).contains(&lat) || !(self.west..=self.east).contains(&lon) {
+            return None;
+        }
+        let x = ((lon - self.west) / (self.east - self.west)
+            * (self.width.saturating_sub(1) as f64))
+            .round()
+            .clamp(0.0, self.width.saturating_sub(1) as f64) as usize;
+        let y = ((self.north - lat) / (self.north - self.south)
+            * (self.height.saturating_sub(1) as f64))
+            .round()
+            .clamp(0.0, self.height.saturating_sub(1) as f64) as usize;
+        let value = *self.values.get(y * self.width + x)?;
+        value.is_finite().then_some(value)
+    }
+}
+
 /// Fetch + cache driver for the mosaic.
 pub struct MrmsSource {
     cache: DiskCache,

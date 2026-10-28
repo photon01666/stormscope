@@ -50,6 +50,36 @@ pub struct StormTrack {
     pub bearing_deg: f64,
     /// Peak reflectivity in the cell, dBZ.
     pub max_dbz: f32,
+    /// Peak reflectivity of the same cell in the previous scan, dBZ.
+    pub prev_max_dbz: f32,
+    /// Number of 4 km grid cells in the current core.
+    pub cells: usize,
+    /// Number of 4 km grid cells in the previous core.
+    pub prev_cells: usize,
+}
+
+impl StormTrack {
+    /// Change in peak reflectivity since the previous scan, dBZ.
+    pub fn delta_dbz(&self) -> f32 {
+        self.max_dbz - self.prev_max_dbz
+    }
+
+    /// Change in core area since the previous scan, grid cells.
+    pub fn delta_cells(&self) -> isize {
+        self.cells as isize - self.prev_cells as isize
+    }
+
+    /// A compact trend label for the map (`↑ 6 dBZ`, `↓ 3 dBZ`, `steady`).
+    pub fn trend_label(&self) -> String {
+        let d = self.delta_dbz();
+        if d >= 4.0 {
+            format!("↑ {d:.0} dBZ")
+        } else if d <= -4.0 {
+            format!("↓ {:.0} dBZ", d.abs())
+        } else {
+            "steady".to_string()
+        }
+    }
 }
 
 /// Grid dimensions in cells for one axis.
@@ -115,6 +145,8 @@ struct Blob {
     e: f64,
     n: f64,
     max_dbz: f32,
+    /// Connected cells in the 4 km tracking grid.
+    cells: usize,
 }
 
 /// Connected-component labeling (4-connectivity) of cells >= TRACK_DBZ.
@@ -158,6 +190,7 @@ fn find_blobs(grid: &[f32], n: usize) -> Vec<Blob> {
                 e: sum_e / cnt as f64,
                 n: sum_n / cnt as f64,
                 max_dbz,
+                cells: cnt,
             });
         }
     }
@@ -236,9 +269,117 @@ pub fn compute_tracks(
             speed_kmh: kmh,
             bearing_deg: bearing,
             max_dbz: cb.max_dbz,
+            prev_max_dbz: pb.max_dbz,
+            cells: cb.cells,
+            prev_cells: pb.cells,
         });
     }
     out
+}
+
+/// One time step of a tracked cell's history.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StormHistoryPoint {
+    pub time: chrono::DateTime<chrono::Utc>,
+    pub lat: f64,
+    pub lon: f64,
+    pub max_dbz: f32,
+    /// Core area in km² (4 km tracking cells).
+    pub area_km2: f64,
+    pub speed_kmh: f64,
+    pub bearing_deg: f64,
+}
+
+/// A cell's points across the loaded animation ring.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StormHistory {
+    pub points: Vec<StormHistoryPoint>,
+}
+
+impl StormHistory {
+    pub fn latest(&self) -> Option<&StormHistoryPoint> {
+        self.points.last()
+    }
+
+    pub fn delta_dbz(&self) -> f32 {
+        match (self.points.first(), self.points.last()) {
+            (Some(a), Some(b)) => b.max_dbz - a.max_dbz,
+            _ => 0.0,
+        }
+    }
+
+    pub fn delta_area_km2(&self) -> f64 {
+        match (self.points.first(), self.points.last()) {
+            (Some(a), Some(b)) => b.area_km2 - a.area_km2,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Build cell histories across consecutive volumes. The matcher is
+/// intentionally light: a cell is the nearest last point within 25 km, which
+/// is plenty for a short animation-ring trend and avoids inventing IDs.
+pub fn storm_histories(
+    volumes: &[&Volume],
+    tilt_deg: f32,
+    radar_lat: f64,
+    radar_lon: f64,
+) -> Vec<StormHistory> {
+    if volumes.len() < 2 {
+        return Vec::new();
+    }
+    let mut chains: Vec<StormHistory> = Vec::new();
+    for pair in volumes.windows(2) {
+        let tracks = compute_tracks(pair[0], pair[1], tilt_deg, radar_lat, radar_lon);
+        let time = pair[1].meta.volume_start;
+        let mut used = vec![false; chains.len()];
+        for track in tracks {
+            let mut best: Option<(usize, f64)> = None;
+            for (i, chain) in chains.iter().enumerate() {
+                if used[i] {
+                    continue;
+                }
+                let Some(last) = chain.points.last() else {
+                    continue;
+                };
+                let d = surface_km(last.lat, last.lon, track.lat, track.lon);
+                if d <= 25.0 && best.map_or(true, |(_, bd)| d < bd) {
+                    best = Some((i, d));
+                }
+            }
+            let point = StormHistoryPoint {
+                time,
+                lat: track.lat,
+                lon: track.lon,
+                max_dbz: track.max_dbz,
+                area_km2: track.cells as f64 * 16.0,
+                speed_kmh: track.speed_kmh,
+                bearing_deg: track.bearing_deg,
+            };
+            if let Some((i, _)) = best {
+                used[i] = true;
+                chains[i].points.push(point);
+            } else {
+                chains.push(StormHistory {
+                    points: vec![point],
+                });
+            }
+        }
+    }
+    chains.retain(|c| c.points.len() >= 2);
+    chains.sort_by(|a, b| {
+        let aa = a.latest().map(|p| p.max_dbz).unwrap_or(0.0);
+        let bb = b.latest().map(|p| p.max_dbz).unwrap_or(0.0);
+        bb.partial_cmp(&aa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    chains.truncate(32);
+    chains
+}
+
+fn surface_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let dy = (lat2 - lat1) * 110.574;
+    let dx = (lon2 - lon1) * 111.320 * ((lat1 + lat2) * 0.5).to_radians().cos();
+    (dx * dx + dy * dy).sqrt()
 }
 
 /// Lat/lon of a point `minutes` ahead along a track (the nowcast target).
@@ -401,7 +542,33 @@ mod tests {
             speed_kmh: 60.0,
             bearing_deg: 90.0,
             max_dbz: 55.0,
+            prev_max_dbz: 50.0,
+            cells: 20,
+            prev_cells: 18,
         }
+    }
+
+    #[test]
+    fn histories_chain_across_three_scans() {
+        let v0 = vol_with_core(20, 0);
+        let v1 = vol_with_core(30, 5);
+        let v2 = vol_with_core(40, 10);
+        let histories = storm_histories(&[&v0, &v1, &v2], 0.5, RADAR_LAT, RADAR_LON);
+        assert_eq!(histories.len(), 1);
+        assert_eq!(histories[0].points.len(), 2);
+        assert!(histories[0].latest().is_some());
+    }
+
+    #[test]
+    fn trend_label_reports_growth_and_decay() {
+        let mut t = head_on_track();
+        t.prev_max_dbz = 49.0;
+        assert_eq!(t.trend_label(), "↑ 6 dBZ");
+        t.prev_max_dbz = 59.0;
+        assert_eq!(t.trend_label(), "↓ 4 dBZ");
+        t.prev_max_dbz = 54.0;
+        assert_eq!(t.trend_label(), "steady");
+        assert_eq!(t.delta_cells(), 2);
     }
 
     #[test]

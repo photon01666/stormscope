@@ -1,5 +1,52 @@
 # Changelog
 
+## v1.6.3 — 2026-10-27
+
+**Observations**
+- Observed RAOB profiles from the Wyoming radiosonde archive, alongside
+  Open-Meteo model soundings and a new RAP 13 km analysis profile.
+- METAR airport observations from aviationweather.gov, merged into the map's
+  station layer and sharing the existing observation popup.
+- Synoptic and METAR refreshes no longer overwrite each other.
+
+**Satellite and lightning**
+- GOES water vapor and Air Mass RGB alongside infrared and GeoColor.
+- GLM flash-density field for the last 20 minutes, with the individual strike
+  glyphs still available.
+
+**Radar and storm evolution**
+- Official NEXRAD Level III N0Q composite overlay from the Iowa Environmental
+  Mesonet, with its own opacity control.
+- Storm-track labels now show reflectivity trend (growth/decay) and core
+  area change alongside speed.
+- **Storm trends** window: multi-scan peak-reflectivity and core-area charts
+  for any tracked cell in the loaded animation ring.
+
+**Model and verification**
+- RAP 2D QPF, CAPE and 0–6 km shear fields alongside HRRR.
+- QPE-vs-gauge verification window for 1, 3, 6 and 24 hours, with bias,
+  MAE, RMSE and station-by-station comparisons.
+- GEFS ensemble plume window for temperature, wind, precipitation and CAPE,
+  with every member plus mean and 10–90% range.
+- Animated HRRR 500 mb mid-level wind overlay: wind-speed fill, 500 mb
+  height contours, wind barbs and 2-hourly forecast animation. The compact
+  window stays fixed-size, and contours/barbs are cached or deferred while dragging and
+  zooming to keep the map responsive.
+- Side-by-side model comparison: Open-Meteo model, RAP analysis, HRRR
+  forecast and optional observed RAOB. The compact window stays a fixed, table-sized panel.
+- Android: the new QPE, storm-trend, ensemble, 500 mb wind, model-comparison
+  windows fill the map area like the forecast window.
+- Stations and METAR airport observations now start off by default.
+- METAR station popups now include a 6-hour temperature/dew-point trend and
+  recent report list.
+- Storm trends now includes a 60-minute GLM lightning flash-rate chart with
+  last-minute rate, peak rate, 1-minute change and 10/30/60-minute totals.
+- AI meteorologist settings now offer **Claude (Anthropic)** using the native
+  Messages API (`claude-sonnet-5-5` by default), alongside OpenCode Go, OpenAI
+  and local Ollama/LM Studio endpoints.
+- Model comparison and Storm trends now open at fixed compact sizes instead of
+  remembering an old full-screen size or expanding while a new station loads.
+
 ## v1.6.1 — 2026-10-27
 
 **Analysis**

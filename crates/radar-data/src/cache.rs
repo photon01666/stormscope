@@ -323,8 +323,6 @@ mod tests {
         assert!(parse_cached_name("KTWX", "KTWX_nonsense.gz").is_none());
     }
 
-    use super::*;
-
     fn scratch(rel: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "stormscope-cache-test-{}-{}",

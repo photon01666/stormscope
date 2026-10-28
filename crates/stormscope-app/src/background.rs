@@ -609,27 +609,33 @@ pub fn run(
                         }
                     });
                 }
-                DataCmd::LoadModelField { kind, hour } => {
+                DataCmd::LoadModelField { model, kind, hour } => {
                     let out = out.clone();
                     let site = current_site.clone();
                     std::thread::spawn(move || {
                         let source = match radar_data::HrrrFieldSource::new() {
                             Ok(s) => s,
                             Err(e) => {
-                                let _ = out.send(DataMsg::Error(format!("HRRR field: {e:#}")));
+                                let _ = out.send(DataMsg::Error(format!("model field: {e:#}")));
                                 return;
                             }
                         };
                         let bbox = radar_core::sites::site(&site)
                             .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude))
                             .unwrap_or([35.0, -100.0, 43.0, -92.0]);
-                        match source.fetch_latest(kind, hour, bbox) {
+                        let result = match model {
+                            radar_data::FieldModel::Hrrr => source.fetch_latest(kind, hour, bbox),
+                            radar_data::FieldModel::Rap => {
+                                source.fetch_latest_rap(kind, hour, bbox)
+                            }
+                        };
+                        match result {
                             Ok(field) => {
                                 let _ = out.send(DataMsg::ModelField(std::sync::Arc::new(field)));
                             }
                             Err(e) => {
-                                log::warn!("HRRR field: {e:#}");
-                                let _ = out.send(DataMsg::Error(format!("HRRR field: {e:#}")));
+                                log::warn!("model field: {e:#}");
+                                let _ = out.send(DataMsg::Error(format!("model field: {e:#}")));
                             }
                         }
                     });
@@ -669,6 +675,41 @@ pub fn run(
                         let _ =
                             out.send(DataMsg::SynopticError("Synoptic API token not set".into()));
                     }
+                }
+                DataCmd::LoadMetar { bbox } => {
+                    log::debug!("background: loading METAR {bbox:?}");
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        match radar_data::MetarSource::new(USER_AGENT)
+                            .and_then(|src| src.latest_in_bbox(bbox))
+                        {
+                            Ok(stations) => {
+                                let _ = out.send(DataMsg::MetarStations(stations));
+                            }
+                            Err(e) => {
+                                log::warn!("METAR: {e:#}");
+                                let _ = out.send(DataMsg::MetarError(format!("{e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadMetarHistory(stid) => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        match radar_data::MetarSource::new(USER_AGENT)
+                            .and_then(|src| src.history(&stid, 6))
+                        {
+                            Ok(history) => {
+                                let _ =
+                                    out.send(DataMsg::MetarHistory(std::sync::Arc::new(history)));
+                            }
+                            Err(e) => {
+                                let _ = out.send(DataMsg::MetarHistoryError(format!(
+                                    "METAR history: {e:#}"
+                                )));
+                            }
+                        }
+                    });
                 }
                 DataCmd::SetAmbientKeys { api_key, app_key } => {
                     let (a, b) = (api_key.trim().to_string(), app_key.trim().to_string());
@@ -923,6 +964,134 @@ pub fn run(
                             Err(e) => {
                                 let _ =
                                     out.send(DataMsg::SoundingError(format!("sounding: {e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadObservedSounding(lat, lon) => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        match radar_data::RaobSource::new(USER_AGENT)
+                            .and_then(|src| src.latest_nearest(lat, lon))
+                        {
+                            Ok(s) => {
+                                let _ = out.send(DataMsg::ObservedSounding(s));
+                            }
+                            Err(e) => {
+                                let _ = out
+                                    .send(DataMsg::ObservedSoundingError(format!("RAOB: {e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadRapSounding(lat, lon) => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        match radar_data::RapSource::new().and_then(|src| src.latest(lat, lon)) {
+                            Ok(s) => {
+                                let _ = out.send(DataMsg::RapSounding(s));
+                            }
+                            Err(e) => {
+                                let _ = out.send(DataMsg::RapSoundingError(format!("RAP: {e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadLevel3 { bbox } => {
+                    log::debug!("background: loading N0Q Level III");
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        log::debug!("N0Q thread started");
+                        match radar_data::Level3Source::new().and_then(|src| {
+                            log::debug!("N0Q client ready");
+                            src.latest_n0q(bbox)
+                        }) {
+                            Ok(image) => {
+                                log::debug!("N0Q fetched {}x{}", image.width, image.height);
+                                let _ = out.send(DataMsg::Level3(std::sync::Arc::new(image)));
+                            }
+                            Err(e) => {
+                                log::warn!("N0Q fetch failed: {e:#}");
+                                let _ = out.send(DataMsg::Level3Error(format!("Level III: {e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadVerification { lat, lon, hours } => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let product = match hours {
+                            3 => radar_data::mrms::MrmsProduct::MultiSensorQpe03h,
+                            6 => radar_data::mrms::MrmsProduct::MultiSensorQpe06h,
+                            24 => radar_data::mrms::MrmsProduct::MultiSensorQpe24h,
+                            _ => radar_data::mrms::MrmsProduct::MultiSensorQpe01h,
+                        };
+                        let result = (|| -> anyhow::Result<radar_data::QpeVerification> {
+                            let source = radar_data::mrms::MrmsSource::new(
+                                radar_data::cache::DiskCache::default_root(),
+                            );
+                            let qpe = source.latest(
+                                product,
+                                1,
+                                Some(radar_data::local_overlay_box(lat, lon)),
+                            )?;
+                            let forecasts = radar_data::ForecastSource::new(USER_AGENT)?;
+                            let totals = forecasts.station_totals(lat, lon, 20, 150.0)?;
+                            Ok(radar_data::verify::compare(&qpe, &totals, hours))
+                        })();
+                        match result {
+                            Ok(report) => {
+                                let _ =
+                                    out.send(DataMsg::Verification(std::sync::Arc::new(report)));
+                            }
+                            Err(e) => {
+                                log::warn!("QPE verification: {e:#}");
+                                let _ = out.send(DataMsg::VerificationError(format!("{e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadStormHistory {
+                    volumes,
+                    key,
+                    tilt_deg,
+                    lat,
+                    lon,
+                } => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let refs: Vec<&radar_core::Volume> =
+                            volumes.iter().map(|v| v.as_ref()).collect();
+                        let histories = radar_render::storm_histories(&refs, tilt_deg, lat, lon);
+                        let _ = out.send(DataMsg::StormHistory { key, histories });
+                    });
+                }
+                DataCmd::LoadEnsemble { field, lat, lon } => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        match radar_data::EnsembleSource::new()
+                            .and_then(|src| src.fetch(field, lat, lon))
+                        {
+                            Ok(series) => {
+                                let _ = out.send(DataMsg::Ensemble(std::sync::Arc::new(series)));
+                            }
+                            Err(e) => {
+                                log::warn!("ensemble: {e:#}");
+                                let _ = out.send(DataMsg::EnsembleError(format!("{e:#}")));
+                            }
+                        }
+                    });
+                }
+                DataCmd::LoadMidLevel => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        match radar_data::MidLevelSource::new().and_then(|src| src.latest_run()) {
+                            Ok(run) => {
+                                let _ = out.send(DataMsg::MidLevel(std::sync::Arc::new(run)));
+                            }
+                            Err(e) => {
+                                log::warn!("mid-level wind: {e:#}");
+                                let _ = out.send(DataMsg::MidLevelError(format!("{e:#}")));
                             }
                         }
                     });

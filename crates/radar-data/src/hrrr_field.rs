@@ -13,6 +13,21 @@ use grib::LatLons;
 use crate::futurecast::{CONUS, FuturecastSource};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldModel {
+    Hrrr,
+    Rap,
+}
+
+impl FieldModel {
+    pub fn label(self) -> &'static str {
+        match self {
+            FieldModel::Hrrr => "HRRR",
+            FieldModel::Rap => "RAP",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HrrrFieldKind {
     Qpf,
     Cape,
@@ -38,6 +53,7 @@ impl HrrrFieldKind {
 
 #[derive(Clone, Debug)]
 pub struct HrrrField {
+    pub model: FieldModel,
     pub kind: HrrrFieldKind,
     pub init: DateTime<Utc>,
     pub hour: u16,
@@ -80,7 +96,39 @@ impl HrrrFieldSource {
         self.fetch(kind, plan.init, hour, bbox)
     }
 
+    /// Latest RAP run, then one field for `hour` over the local box.
+    pub fn fetch_latest_rap(
+        &self,
+        kind: HrrrFieldKind,
+        hour: u16,
+        bbox: [f64; 4],
+    ) -> Result<HrrrField> {
+        let now = Utc::now();
+        let mut last_error = String::new();
+        for back in 0..8 {
+            let init = now - Duration::hours(back);
+            match self.fetch_rap(kind, init, hour, bbox) {
+                Ok(field) => return Ok(field),
+                Err(e) => {
+                    last_error = format!("{e:#}");
+                    log::debug!("RAP field {init}: {last_error}");
+                }
+            }
+        }
+        bail!("RAP field {kind:?} unavailable: {last_error}");
+    }
+
     pub fn fetch(
+        &self,
+        kind: HrrrFieldKind,
+        init: DateTime<Utc>,
+        hour: u16,
+        bbox: [f64; 4],
+    ) -> Result<HrrrField> {
+        self.fetch_hrrr(kind, init, hour, bbox)
+    }
+
+    fn fetch_hrrr(
         &self,
         kind: HrrrFieldKind,
         init: DateTime<Utc>,
@@ -137,12 +185,70 @@ impl HrrrFieldSource {
         if !bytes.starts_with(b"GRIB") {
             bail!("NOMADS returned {} non-GRIB bytes", bytes.len());
         }
-        decode_field(&bytes, kind, init, hour, bbox)
+        decode_field(&bytes, FieldModel::Hrrr, kind, init, hour, bbox)
+    }
+
+    fn fetch_rap(
+        &self,
+        kind: HrrrFieldKind,
+        init: DateTime<Utc>,
+        hour: u16,
+        bbox: [f64; 4],
+    ) -> Result<HrrrField> {
+        let [south, west, north, east] = bbox;
+        let mut params = vec![
+            ("dir".to_string(), format!("/rap.{}", init.format("%Y%m%d"))),
+            (
+                "file".to_string(),
+                format!("rap.t{:02}z.awp130pgrbf{hour:02}.grib2", init.hour()),
+            ),
+        ];
+        for (k, v) in match kind {
+            HrrrFieldKind::Qpf => vec![("var_APCP", "on"), ("lev_surface", "on")],
+            HrrrFieldKind::Cape => vec![("var_CAPE", "on"), ("lev_surface", "on")],
+            HrrrFieldKind::Shear => vec![
+                ("var_VUCSH", "on"),
+                ("var_VVCSH", "on"),
+                ("lev_0-6000_m_above_ground", "on"),
+            ],
+        } {
+            params.push((k.to_string(), v.to_string()));
+        }
+        for (k, v) in [
+            ("subregion", ""),
+            ("leftlon", &format!("{west:.3}")),
+            ("rightlon", &format!("{east:.3}")),
+            ("toplat", &format!("{north:.3}")),
+            ("bottomlat", &format!("{south:.3}")),
+        ] {
+            params.push((k.to_string(), v.to_string()));
+        }
+        let query: Vec<String> = params
+            .into_iter()
+            .map(|(k, v)| format!("{}={}", k, urlencode(&v)))
+            .collect();
+        let url = format!(
+            "https://nomads.ncep.noaa.gov/cgi-bin/filter_rap.pl?{}",
+            query.join("&")
+        );
+        let bytes = self
+            .client
+            .get(&url)
+            .send()
+            .and_then(|r| r.error_for_status())
+            .with_context(|| format!("GET RAP field {kind:?} f{hour:02}"))?
+            .bytes()
+            .context("reading RAP field")?;
+        if !bytes.starts_with(b"GRIB") {
+            bail!("NOMADS returned {} non-GRIB bytes", bytes.len());
+        }
+        decode_field(&bytes, FieldModel::Rap, kind, init, hour, bbox)
     }
 }
 
 fn decode_field(
     bytes: &[u8],
+    model: FieldModel,
     kind: HrrrFieldKind,
     init: DateTime<Utc>,
     hour: u16,
@@ -223,6 +329,7 @@ fn decode_field(
         }
     }
     Ok(HrrrField {
+        model,
         kind,
         init,
         hour,

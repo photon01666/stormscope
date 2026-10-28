@@ -34,11 +34,11 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 
 - **Live and archive radar** — NEXRAD Level II, every standard moment, derived products, timeline playback and a 3D volume view.
 - **Storm awareness** — NWS warnings, SPC outlooks, local storm reports, mesoscale discussions, storm tracks with arrival ETAs, MRMS and GOES satellite.
-- **Weather stations** — Synoptic network observations and your own Ambient Weather station, shown as temperature badges with readable popups.
+- **Weather stations** — Synoptic network observations, free METAR airport reports, and your own Ambient Weather station, shown as temperature badges with readable popups.
 - **Forecasting** — 18- or 48-hour HRRR FutureCast with precipitation-type colouring, plus an optional AI meteorologist that can inspect the radar, move the view and talk through the weather.
 - **Voice alerts** — spoken warnings near your GPS fix or a map marker; Android Storm Watch keeps watching when the app is closed.
-- **Analysis tools** — model soundings, radar-derived VAD wind profiles, dealiased velocity, rotation/TVS signatures and hail cores.
-- **Rainfall and hydrology** — MRMS multi-sensor and radar-only QPE accumulations plus FLASH flash-flood guidance.
+- **Analysis tools** — model, RAP and observed-RAOB soundings, radar-derived VAD wind profiles, dealiased velocity, rotation/TVS signatures, hail cores and storm growth/decay trends.
+- **Rainfall and hydrology** — MRMS multi-sensor and radar-only QPE accumulations plus FLASH flash-flood guidance, and a QPE-vs-gauge verification window.
 
 ## Features
 
@@ -51,14 +51,15 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 
 ### Analysis
 
-- **Model sounding** — Open-Meteo pressure-level sounding with Skew-T, hodograph, CAPE/CIN, LCL/LFC/EL, PWAT, shear, SRH and heuristic severe/tornado/winter indicators.
+- **Model, RAP and observed soundings** — Open-Meteo pressure-level profiles, RAP 13 km analysis, and observed RAOBs from the Wyoming radiosonde archive, all with Skew-T, hodograph, CAPE/CIN, LCL/LFC/EL, PWAT, shear, SRH and heuristic severe/tornado/winter indicators.
 - **VAD wind profile** — one radar-derived horizontal wind per elevation cut, fitted from a 20 km velocity ring.
 - **Dealiased velocity (VEL-D)** — an experimental range/azimuth continuity pass for folded velocities.
 - **Rotation / TVS signatures** — single-radar, single-scan inbound/outbound couplet markers. Experimental, not official warning guidance.
 - **Hail cores / swath** — MEHS cores plotted across the loaded loop, with a 25 km / 20 minute connection limit.
-- **Auto storm motion** — seeds the SRM product from the mean motion of the tracked cells.
+- **Storm evolution** — tracks show speed plus reflectivity growth/decay and core-area change; a Storm trends window charts multi-scan peak reflectivity, core area and the last 60 minutes of GLM lightning flash rate (flashes/min, peak rate, 10/30/60-minute totals); auto storm motion seeds the SRM product.
 - **HRRR point forecast** — hourly HRRR profiles and a temperature/humidity/wind time-height section out to 48 hours, with the selected profile's Skew-T, hodograph and parameters.
 - **QC / calibration (map display)** — a dual-pol clutter mask, KDP-based attenuation correction, a manual REF bias and terrain-based beam-blockage masking from AWS elevation tiles. Experimental and display-only; raw REF and the probe stay unchanged.
+- **QPE verification** — compare MRMS QPE with nearby NWS rain gauges for 1, 3, 6 or 24 hours; shows bias, MAE, RMSE and every station pair.
 
 ### Radar sites
 
@@ -88,7 +89,8 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 
 ### Weather stations
 
-- **Synoptic (Mesowest)** network stations: NWS ASOS/AWOS, state mesonets and personal weather stations, fetched for the current map view. Refreshes every 20 minutes; toggle in Map controls.
+- **Synoptic (Mesowest)** network stations: NWS ASOS/AWOS, state mesonets and personal weather stations, fetched for the current map view. Refreshes every 20 minutes; off by default, toggle in Map controls.
+- **METAR** airport reports from aviationweather.gov, merged into the same station layer. Free, no token, refreshed every 10 minutes; off by default. Clicking a METAR station shows its 6-hour temperature/dew-point trend and recent reports.
 - **Ambient Weather**: your own station via API key + application key. Refreshes every 5 minutes and stays on.
 - Thermometer badges tinted by temperature; hover for a readable observation card; click for a fixed-width popup with °F, mph, inHg and inches.
 - Station labels avoid user pins; dedicated Synoptic and Ambient settings popups keep credentials out of the way.
@@ -100,7 +102,11 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 *18-hour HRRR FutureCast with rain, snow, ice and freezing-rain colouring.*
 
 - **FutureCast** from HRRR, 18 or 48 hours, loaded on demand; precipitation-type colouring for rain, snow, ice and freezing rain.
-- **AI meteorologist** is optional. Connect an OpenAI-compatible endpoint (OpenCode Go with `deepseek-v4.1-flash` by default) for per-marker briefs and a persistent chat. It can look at other areas, fetch MRMS/GOES/forecast/totals/SPC data, read the loaded sounding/VAD/rotation/hail/QPE analysis and HRRR point forecast, move the 2D/3D views and mark features.
+- **Model 2D fields** — HRRR or RAP QPF, CAPE and 0–6 km shear for the local radar area.
+- **Ensemble plume** — GEFS member plumes for temperature, wind, precipitation and CAPE, with mean and 10–90% range.
+- **Model comparison** — side-by-side Open-Meteo, RAP, HRRR and optional observed-RAOB parameters at the selected site.
+- **Mid-level wind** — animated HRRR 500 mb wind speed, height contours and wind barbs, stepping through the 18-hour forecast.
+- **AI meteorologist** is optional. Connect an OpenAI-compatible endpoint (OpenCode Go with `deepseek-v4.1-flash` by default), OpenAI, a local Ollama/LM Studio server, or Anthropic Claude (native Messages API; `claude-sonnet-5-5` by default) for per-marker briefs and a persistent chat. It can look at other areas, fetch MRMS/GOES/forecast/totals/SPC data, read the loaded sounding/VAD/rotation/hail/QPE analysis and HRRR point forecast, move the 2D/3D views and mark features.
 - **Android Gemini Live** adds a natural voice conversation with the same live radar context. The microphone pauses while Gemini speaks.
 - The AI can request an 18- or 48-hour FutureCast if it is not loaded, announces the 30–60 s download and includes it in the live voice summary.
 - Off until configured. Only the decoded JSON snapshot is sent for chart/chat requests — never a screenshot. Gemini Live streams microphone audio only while a conversation is active.
@@ -111,7 +117,7 @@ Release builds check GitHub for updates. Keep the Linux AppImage in a writable f
 - NWS warnings (including the ice-blue winter family), alerts browser, local storm reports, mesoscale discussions, NWS forecast and station rain/snow totals.
 - The forecast window carries the full surface observation: temperature, dew point, humidity, wind/gusts, altimeter, sea-level pressure, 1/3/6-hour precipitation, visibility, sky cover, cloud bases, heat index/wind chill, UV index and moon phase.
 - Storm tracks with nowcasts and per-marker arrival ETAs; measure tool; range rings.
-- MRMS national composite (CONUS + native 1 km window), GOES infrared/GeoColor, GOES GLM lightning, and 0 °C isohypses every 2 kft.
+- Official NEXRAD Level III N0Q composite from IEM, MRMS national composite (CONUS + native 1 km window), GOES infrared/GeoColor/Air Mass RGB/water vapor, GOES GLM lightning with a flash-density field, and 0 °C isohypses every 2 kft.
 
 ### Voice alerts
 
@@ -161,9 +167,13 @@ Android 8+ on arm64-v8a is required. The app checks GitHub Releases for updates;
 | [IEM](https://mesonet.agron.iastate.edu/) | Archived warning polygons and NWS text |
 | [SPC](https://www.spc.noaa.gov/) | Outlooks and mesoscale discussions |
 | [NOAA MRMS](https://www.nssl.noaa.gov/projects/mrms/) | National composite, QPE and FLASH flash-flood guidance |
-| [NASA GIBS](https://www.earthdata.nasa.gov/engage/open-data-services-software/earthdata-developer-portal/gibs) | GOES-East/West imagery |
+| [IEM](https://mesonet.agron.iastate.edu/) | Official Level III N0Q composite and GOES water vapor |
+| [NASA GIBS](https://www.earthdata.nasa.gov/engage/open-data-services-software/earthdata-developer-portal/gibs) | GOES-East/West imagery (infrared, GeoColor, Air Mass RGB) |
 | [NOAA GOES GLM](https://www.goes-r.gov/spacesegment/glm.html) | Lightning flashes (last 20 minutes) |
-| [Open-Meteo](https://open-meteo.com/) | UV index |
+| [Aviation Weather Center](https://aviationweather.gov/) | METAR airport observations |
+| [University of Wyoming](https://weather.uwyo.edu/upperair/) | Observed radiosonde profiles |
+| [NOMADS](https://nomads.ncep.noaa.gov/) | RAP analysis profiles/2D fields and HRRR 500 mb wind/height |
+| [Open-Meteo](https://open-meteo.com/) | Model soundings, HRRR profiles, GEFS ensemble plumes, UV index |
 | [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) | Terrain DEM for beam-blockage masking |
 | [Synoptic/Mesowest](https://synopticdata.com/) | Optional network stations (your token) |
 | [Ambient Weather](https://ambientweather.com/) | Optional personal station (your API and application keys) |

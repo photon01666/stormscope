@@ -1,4 +1,4 @@
-//! Model sounding window: Open-Meteo pressure-level profile plus derived
+//! Sounding window: model, RAP or observed RAOB profile plus derived
 //! thermodynamic parameters, a Skew-T and a hodograph.
 
 use crate::app::StormApp;
@@ -14,18 +14,52 @@ pub fn sounding_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
         .sounding_point
         .or_else(|| radar_core::sites::site(&app.state.site_id).map(|s| (s.latitude, s.longitude)));
     if let Some((lat, lon)) = target {
-        let loaded_matches =
-            app.state.sounding.as_ref().is_some_and(|s| {
-                (s.latitude - lat).abs() < 0.001 && (s.longitude - lon).abs() < 0.001
-            });
-        let need = app.state.sounding_requested != Some((lat, lon))
-            && !loaded_matches
-            && app.state.sounding_error.is_none();
-        if need {
-            app.state.sounding_requested = Some((lat, lon));
-            app.state.sounding_fetched_at = None;
-            app.state.sounding_error = None;
-            let _ = app.tx.send(crate::app::DataCmd::LoadSounding(lat, lon));
+        let kind = app.state.sounding_kind;
+        let (loaded_matches, pending, errored) = match kind {
+            crate::state::SoundingKind::Model => (
+                app.state.sounding.as_ref().is_some_and(|s| {
+                    (s.latitude - lat).abs() < 0.001 && (s.longitude - lon).abs() < 0.001
+                }),
+                app.state.sounding_requested == Some((lat, lon)),
+                app.state.sounding_error.is_some(),
+            ),
+            crate::state::SoundingKind::Rap => (
+                app.state.rap_sounding.as_ref().is_some_and(|s| {
+                    (s.latitude - lat).abs() < 0.001 && (s.longitude - lon).abs() < 0.001
+                }),
+                app.state.rap_sounding_requested == Some((lat, lon)),
+                app.state.rap_sounding_error.is_some(),
+            ),
+            crate::state::SoundingKind::Observed => (
+                app.state.observed_sounding.is_some()
+                    && app.state.observed_sounding_requested == Some((lat, lon)),
+                app.state.observed_sounding_requested == Some((lat, lon)),
+                app.state.observed_sounding_error.is_some(),
+            ),
+        };
+        if !loaded_matches && !pending && !errored {
+            match kind {
+                crate::state::SoundingKind::Model => {
+                    app.state.sounding_requested = Some((lat, lon));
+                    app.state.sounding_fetched_at = None;
+                    app.state.sounding_error = None;
+                    let _ = app.tx.send(crate::app::DataCmd::LoadSounding(lat, lon));
+                }
+                crate::state::SoundingKind::Rap => {
+                    app.state.rap_sounding_requested = Some((lat, lon));
+                    app.state.rap_sounding_fetched_at = None;
+                    app.state.rap_sounding_error = None;
+                    let _ = app.tx.send(crate::app::DataCmd::LoadRapSounding(lat, lon));
+                }
+                crate::state::SoundingKind::Observed => {
+                    app.state.observed_sounding_requested = Some((lat, lon));
+                    app.state.observed_sounding_fetched_at = None;
+                    app.state.observed_sounding_error = None;
+                    let _ = app
+                        .tx
+                        .send(crate::app::DataCmd::LoadObservedSounding(lat, lon));
+                }
+            }
         }
     }
 
@@ -43,7 +77,7 @@ pub fn sounding_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     let mut clear_point = false;
     let mut refresh = false;
 
-    let mut window = egui::Window::new("Model sounding")
+    let mut window = egui::Window::new("Sounding")
         .id(egui::Id::new("stormscope.sounding"))
         .default_pos(super::centered_popup_pos(ctx, size))
         .max_width((screen.x - 16.0).max(200.0))
@@ -68,7 +102,7 @@ pub fn sounding_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     window.show(ctx, |ui| {
         #[cfg(target_os = "android")]
         if fill {
-            close_requested |= super::phone_header(ui, "Model sounding");
+            close_requested |= super::phone_header(ui, "Sounding");
         }
         super::apply_text_scale(ui, scale);
 
@@ -104,9 +138,47 @@ pub fn sounding_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
                 );
             }
             if ui.small_button("Refresh").clicked() {
-                app.state.sounding_requested = None;
-                app.state.sounding_fetched_at = None;
                 refresh = true;
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Profile").strong().small());
+            for (kind, label, tip) in [
+                (
+                    crate::state::SoundingKind::Model,
+                    "Model",
+                    "Open-Meteo pressure-level model profile",
+                ),
+                (
+                    crate::state::SoundingKind::Rap,
+                    "RAP",
+                    "RAP 13 km analysis profile from NOMADS",
+                ),
+                (
+                    crate::state::SoundingKind::Observed,
+                    "Observed RAOB",
+                    "Nearest observed radiosonde launch from the Wyoming archive",
+                ),
+            ] {
+                if ui
+                    .selectable_label(app.state.sounding_kind == kind, label)
+                    .on_hover_text(tip)
+                    .clicked()
+                    && app.state.sounding_kind != kind
+                {
+                    app.state.sounding_kind = kind;
+                    match kind {
+                        crate::state::SoundingKind::Model => {
+                            app.state.sounding_error = None;
+                        }
+                        crate::state::SoundingKind::Rap => {
+                            app.state.rap_sounding_error = None;
+                        }
+                        crate::state::SoundingKind::Observed => {
+                            app.state.observed_sounding_error = None;
+                        }
+                    }
+                }
             }
         });
         if app.state.sounding_pick_mode {
@@ -118,14 +190,36 @@ pub fn sounding_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
         }
         ui.separator();
 
-        if app.state.sounding_requested.is_some()
-            && app.state.sounding.is_none()
-            && app.state.sounding_error.is_none()
-        {
-            ui.label(egui::RichText::new("Loading sounding…").weak());
+        let (active, pending, error, suffix) = match app.state.sounding_kind {
+            crate::state::SoundingKind::Model => (
+                app.state.sounding.clone(),
+                app.state.sounding_requested.is_some(),
+                app.state.sounding_error.clone(),
+                "approx. model profile",
+            ),
+            crate::state::SoundingKind::Rap => (
+                app.state.rap_sounding.clone(),
+                app.state.rap_sounding_requested.is_some(),
+                app.state.rap_sounding_error.clone(),
+                "RAP analysis · not observed",
+            ),
+            crate::state::SoundingKind::Observed => (
+                app.state.observed_sounding.clone(),
+                app.state.observed_sounding_requested.is_some(),
+                app.state.observed_sounding_error.clone(),
+                "observed radiosonde",
+            ),
+        };
+        if pending && active.is_none() && error.is_none() {
+            let label = match app.state.sounding_kind {
+                crate::state::SoundingKind::Model => "Loading model sounding…",
+                crate::state::SoundingKind::Rap => "Loading RAP analysis…",
+                crate::state::SoundingKind::Observed => "Finding nearest observed RAOB…",
+            };
+            ui.label(egui::RichText::new(label).weak());
         }
-        if let Some(err) = &app.state.sounding_error {
-            if app.state.sounding.is_some() {
+        if let Some(err) = &error {
+            if active.is_some() {
                 ui.label(
                     egui::RichText::new(format!(
                         "Last refresh failed: {err} — showing the previous profile."
@@ -138,10 +232,10 @@ pub fn sounding_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
             }
         }
 
-        if let Some(s) = app.state.sounding.clone() {
+        if let Some(s) = active {
             ui.label(
                 egui::RichText::new(format!(
-                    "{} · {} levels · approx. model profile",
+                    "{} · {} levels · {suffix}",
                     s.source,
                     s.levels.len()
                 ))
@@ -197,13 +291,41 @@ pub fn sounding_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
         app.state.sounding = None;
         app.state.sounding_requested = None;
         app.state.sounding_error = None;
+        app.state.rap_sounding = None;
+        app.state.rap_sounding_requested = None;
+        app.state.rap_sounding_error = None;
+        app.state.observed_sounding = None;
+        app.state.observed_sounding_requested = None;
+        app.state.observed_sounding_station = None;
+        app.state.observed_sounding_error = None;
     }
     if refresh {
-        if let Some((lat, lon)) = app.state.sounding_point {
-            app.state.sounding = None;
-            app.state.sounding_requested = None;
-            app.state.sounding_error = None;
-            let _ = app.tx.send(crate::app::DataCmd::LoadSounding(lat, lon));
+        let target = app.state.sounding_point.or_else(|| {
+            radar_core::sites::site(&app.state.site_id).map(|s| (s.latitude, s.longitude))
+        });
+        if let Some((lat, lon)) = target {
+            match app.state.sounding_kind {
+                crate::state::SoundingKind::Model => {
+                    app.state.sounding = None;
+                    app.state.sounding_requested = Some((lat, lon));
+                    app.state.sounding_error = None;
+                    let _ = app.tx.send(crate::app::DataCmd::LoadSounding(lat, lon));
+                }
+                crate::state::SoundingKind::Rap => {
+                    app.state.rap_sounding = None;
+                    app.state.rap_sounding_requested = Some((lat, lon));
+                    app.state.rap_sounding_error = None;
+                    let _ = app.tx.send(crate::app::DataCmd::LoadRapSounding(lat, lon));
+                }
+                crate::state::SoundingKind::Observed => {
+                    app.state.observed_sounding = None;
+                    app.state.observed_sounding_requested = Some((lat, lon));
+                    app.state.observed_sounding_error = None;
+                    let _ = app
+                        .tx
+                        .send(crate::app::DataCmd::LoadObservedSounding(lat, lon));
+                }
+            }
         }
     }
     app.state.sounding_open = open;

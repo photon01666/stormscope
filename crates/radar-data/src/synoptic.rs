@@ -16,11 +16,21 @@ pub struct SynopticCoords {
     pub lon: f64,
 }
 
+/// Which feed a station row came from. The map layer treats both the same,
+/// but refreshes keep the two sources from deleting each other.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StationSource {
+    #[default]
+    Synoptic,
+    Metar,
+}
+
 #[derive(Debug, Clone)]
 pub struct SynopticStation {
     pub stid: String,
     pub name: String,
     pub network: String,
+    pub source: StationSource,
     pub coords: Option<SynopticCoords>,
     pub elevation_m: Option<f64>,
     /// The latest observation, as returned under `OBSERVATIONS` (each variable
@@ -189,6 +199,7 @@ fn parse_station(d: &Value, global_units: &Value) -> SynopticStation {
         stid,
         name,
         network,
+        source: StationSource::Synoptic,
         coords,
         elevation_m,
         obs,

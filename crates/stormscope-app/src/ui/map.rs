@@ -114,6 +114,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.sounding_requested = None;
             app.state.sounding_error = None;
             app.state.sounding_fetched_at = None;
+            app.state.rap_sounding = None;
+            app.state.rap_sounding_requested = None;
+            app.state.rap_sounding_error = None;
+            app.state.observed_sounding = None;
+            app.state.observed_sounding_requested = None;
+            app.state.observed_sounding_station = None;
+            app.state.observed_sounding_error = None;
             if app.state.sounding_reopen_after_pick {
                 app.state.sounding_reopen_after_pick = false;
                 app.state.sounding_open = true;
@@ -156,6 +163,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 let mut synoptic_best = SYNOPTIC_HIT_PX;
                 if app.state.show_synoptic {
                     for st in &app.state.synoptic_stations {
+                        if st.source == radar_data::synoptic::StationSource::Metar
+                            && !app.state.show_metar
+                        {
+                            continue;
+                        }
                         let Some(c) = &st.coords else { continue };
                         let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
                         let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
@@ -341,6 +353,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         if hovered_ambient.is_none() && app.state.show_synoptic {
             let mut best = 14.0f64;
             for st in &app.state.synoptic_stations {
+                if st.source == radar_data::synoptic::StationSource::Metar && !app.state.show_metar
+                {
+                    continue;
+                }
                 let Some(c) = &st.coords else { continue };
                 let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
                 let d = ((vx - hx).powi(2) + (vy - hy).powi(2)).sqrt();
@@ -641,6 +657,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // Under the single-site radar so the local gate detail stays on top; the
     // mosaic is the surroundings' composite and the context layer.
     draw_mrms(&painter, origin, &view, app);
+    draw_level3(&painter, origin, &view, app);
+    draw_midlevel(&painter, origin, &view, app);
     draw_qpe(&painter, origin, &view, app);
     draw_model_field(&painter, origin, &view, app);
 
@@ -1569,6 +1587,231 @@ pub(super) fn format_miles(miles: f64) -> String {
     }
 }
 
+/// HRRR 500 mb wind speed wash, height contours and wind barbs.
+fn draw_midlevel(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &mut StormApp) {
+    if !app.state.show_midlevel || app.state.show_futurecast {
+        return;
+    }
+    let Some(run) = app.state.midlevel.clone() else {
+        return;
+    };
+    if run.frames.is_empty() {
+        return;
+    }
+    let idx = app.state.midlevel_frame.min(run.frames.len() - 1);
+    let frame = &run.frames[idx];
+    let texture = midlevel_texture(app, painter.ctx(), frame);
+    let (x0, y0) = view.lonlat_to_view_px(frame.west, frame.north);
+    let (x1, y1) = view.lonlat_to_view_px(frame.east, frame.south);
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+        egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+    );
+    let alpha = (app.state.midlevel_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    painter.image(
+        texture.id(),
+        rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::from_white_alpha(alpha),
+    );
+
+    // While the map is being dragged or zoomed, paint only the speed wash.
+    // Contour extraction and thousands of contour/barbs draw calls are what
+    // made the overlay feel heavy; both return as soon as the map settles.
+    let moving = app.radar_view_change_at.elapsed() < std::time::Duration::from_millis(180);
+    if !moving {
+        // Height contours are expensive to extract from a 640×354 grid. Cache
+        // the grid-space segments per frame: animation frames reuse them, and
+        // the cache is invalidated by the frame pointer.
+        let frame_key = frame as *const radar_data::MidLevelFrame as usize;
+        if app.state.midlevel_contours.as_ref().map(|(k, _)| *k) != Some(frame_key) {
+            let mut levels = Vec::new();
+            for dam in (480..=600).step_by(6) {
+                let segs = radar_render::contour::contour_segments(
+                    frame.width,
+                    frame.height,
+                    &frame.height_m,
+                    dam as f32 * 10.0,
+                );
+                levels.push((dam as i16, segs));
+            }
+            app.state.midlevel_contours = Some((frame_key, levels));
+        }
+        let mut label_cells = 0usize;
+        if let Some((_, contours)) = app.state.midlevel_contours.as_ref() {
+            for (dam, segs) in contours {
+                for [a, b] in segs {
+                    let (alon, alat) = radar_data::midlevel::grid_lonlat(frame, a.0, a.1);
+                    let (blon, blat) = radar_data::midlevel::grid_lonlat(frame, b.0, b.1);
+                    let (ax, ay) = view.lonlat_to_view_px(alon, alat);
+                    let (bx, by) = view.lonlat_to_view_px(blon, blat);
+                    painter.line_segment(
+                        [
+                            egui::pos2(origin.x + ax as f32, origin.y + ay as f32),
+                            egui::pos2(origin.x + bx as f32, origin.y + by as f32),
+                        ],
+                        egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_unmultiplied(245, 248, 255, 190),
+                        ),
+                    );
+                    label_cells += 1;
+                    if label_cells % 97 == 0 {
+                        let mx = (ax + bx) as f32 * 0.5;
+                        let my = (ay + by) as f32 * 0.5;
+                        painter.text(
+                            egui::pos2(origin.x + mx, origin.y + my),
+                            egui::Align2::CENTER_CENTER,
+                            format!("{dam}"),
+                            egui::FontId::monospace(9.0),
+                            egui::Color32::from_rgba_unmultiplied(245, 248, 255, 220),
+                        );
+                    }
+                }
+            }
+        }
+
+        let step = 34usize;
+        for gy in (step..frame.height.saturating_sub(step)).step_by(step) {
+            for gx in (step..frame.width.saturating_sub(step)).step_by(step) {
+                let i = gy * frame.width + gx;
+                let (Some(u), Some(v), Some(kt)) = (
+                    frame.u_ms.get(i).copied().filter(|v| v.is_finite()),
+                    frame.v_ms.get(i).copied().filter(|v| v.is_finite()),
+                    frame.speed_kt.get(i).copied().filter(|v| v.is_finite()),
+                ) else {
+                    continue;
+                };
+                if kt < 10.0 {
+                    continue;
+                }
+                let (lon, lat) = radar_data::midlevel::grid_lonlat(frame, gx as f32, gy as f32);
+                let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+                draw_wind_barb(
+                    painter,
+                    egui::pos2(origin.x + vx as f32, origin.y + vy as f32),
+                    u,
+                    v,
+                    kt,
+                );
+            }
+        }
+    }
+    prune_textures(
+        painter.ctx(),
+        &mut app.midlevel_tex,
+        "stormscope-midlevel",
+        [&run.frames[idx] as *const _ as usize]
+            .into_iter()
+            .collect(),
+    );
+}
+
+fn midlevel_texture(
+    app: &mut StormApp,
+    ctx: &egui::Context,
+    frame: &radar_data::MidLevelFrame,
+) -> egui::TextureHandle {
+    let key = frame as *const radar_data::MidLevelFrame as usize;
+    if let Some((_, texture)) = app.midlevel_tex.iter().find(|(k, _)| *k == key) {
+        return texture.clone();
+    }
+    let mut rgba = Vec::with_capacity(frame.speed_kt.len() * 4);
+    for kt in &frame.speed_kt {
+        rgba.extend_from_slice(&radar_data::midlevel::wind_rgba(*kt));
+    }
+    let image = egui::ColorImage::from_rgba_unmultiplied([frame.width, frame.height], &rgba);
+    let texture = ctx.load_texture(
+        format!("stormscope-midlevel-{key}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    );
+    app.midlevel_tex.push((key, texture.clone()));
+    texture
+}
+
+fn draw_wind_barb(painter: &egui::Painter, at: egui::Pos2, u: f32, v: f32, kt: f32) {
+    let speed = u.hypot(v).max(0.1);
+    // Meteorological convention: the shaft points toward the direction the
+    // wind is going, with the feathers on the upwind end.
+    let ux = u / speed;
+    let uy = -v / speed;
+    let len = 13.0;
+    let tail = egui::pos2(at.x - ux * len, at.y - uy * len);
+    let head = egui::pos2(at.x + ux * len, at.y + uy * len);
+    let color = egui::Color32::from_rgba_unmultiplied(220, 245, 255, 210);
+    painter.line_segment([tail, head], egui::Stroke::new(1.0, color));
+    let mut remaining = (kt / 5.0).round() as i32;
+    let mut pos = 0.0f32;
+    while remaining > 0 {
+        let feathers = if remaining >= 10 { 10 } else { remaining };
+        remaining -= feathers;
+        let base = egui::pos2(tail.x + ux * pos, tail.y + uy * pos);
+        let feather_len = if feathers >= 10 { 7.0 } else { 4.0 };
+        let n = if feathers >= 10 { 1 } else { feathers };
+        for k in 0..n {
+            let off = k as f32 * 2.5;
+            let p = egui::pos2(base.x + ux * off, base.y + uy * off);
+            let tip = egui::pos2(p.x - uy * feather_len, p.y + ux * feather_len);
+            painter.line_segment([p, tip], egui::Stroke::new(1.0, color));
+        }
+        pos += 3.0;
+    }
+    painter.circle_filled(at, 1.5, color);
+}
+
+/// Official NEXRAD Level III N0Q composite from IEM: already coloured and in
+/// Web Mercator, so it is a georeferenced rect under Stormscope's own radar.
+fn draw_level3(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &mut StormApp) {
+    if !app.state.show_level3 {
+        return;
+    }
+    let Some((image, _)) = app.state.level3.clone() else {
+        return;
+    };
+    let texture = level3_texture(app, painter.ctx(), &image);
+    let (x0, y0) = view.lonlat_to_view_px(image.west, image.north);
+    let (x1, y1) = view.lonlat_to_view_px(image.east, image.south);
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+        egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+    );
+    let alpha = (app.state.level3_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    painter.image(
+        texture.id(),
+        rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::from_white_alpha(alpha),
+    );
+    prune_textures(
+        painter.ctx(),
+        &mut app.level3_tex,
+        "stormscope-level3",
+        [std::sync::Arc::as_ptr(&image) as usize]
+            .into_iter()
+            .collect(),
+    );
+}
+
+fn level3_texture(
+    app: &mut StormApp,
+    ctx: &egui::Context,
+    image: &std::sync::Arc<radar_data::level3::Level3Image>,
+) -> egui::TextureHandle {
+    let key = std::sync::Arc::as_ptr(image) as usize;
+    if let Some((_, texture)) = app.level3_tex.iter().find(|(k, _)| *k == key) {
+        return texture.clone();
+    }
+    let pixels = egui::ColorImage::from_rgba_unmultiplied([image.width, image.height], &image.rgba);
+    let texture = ctx.load_texture(
+        format!("stormscope-level3-{key}"),
+        pixels,
+        egui::TextureOptions::LINEAR,
+    );
+    app.level3_tex.push((key, texture.clone()));
+    texture
+}
+
 /// The GOES satellite overlay: the GIBS WMS image is already in Web Mercator
 /// and already coloured, so it is a plain georeferenced rect (the map's
 /// projection is Mercator too). Two windows are drawn — the CONUS-wide image
@@ -1622,18 +1865,33 @@ fn goes_texture(
     // tops at 160-255). Keep the clouds instead — alpha ramps from the warm
     // background (transparent at ≤140) to the coldest tops (opaque at ≥210),
     // so the surface dissolves and the cloud field sits over the map.
-    // GeoColor is a proper colour composite and is used as-is.
-    let pixels_rgba: Vec<u8> = if image.layer == radar_data::goes::GoesLayer::Infrared {
-        let mut out = Vec::with_capacity(image.rgba.len());
-        for px in image.rgba.chunks_exact(4) {
-            let luma = (u32::from(px[0]) * 3 + u32::from(px[1]) * 4 + u32::from(px[2])) / 8;
-            let ramp = luma.saturating_sub(140) * 255 / 70;
-            let a = ramp.min(255).min(u32::from(px[3])) as u8;
-            out.extend_from_slice(&[px[0], px[1], px[2], a]);
+    // GeoColor and Air Mass are proper colour composites and are used as-is.
+    let pixels_rgba: Vec<u8> = match image.layer {
+        radar_data::goes::GoesLayer::Infrared => {
+            let mut out = Vec::with_capacity(image.rgba.len());
+            for px in image.rgba.chunks_exact(4) {
+                let luma = (u32::from(px[0]) * 3 + u32::from(px[1]) * 4 + u32::from(px[2])) / 8;
+                let ramp = luma.saturating_sub(140) * 255 / 70;
+                let a = ramp.min(255).min(u32::from(px[3])) as u8;
+                out.extend_from_slice(&[px[0], px[1], px[2], a]);
+            }
+            out
         }
-        out
-    } else {
-        image.rgba.clone()
+        radar_data::goes::GoesLayer::WaterVapor => {
+            // IEM's water-vapour PNG is RGB with a black no-data background.
+            // Keep the grey/white cloud field, drop the black.
+            let mut out = Vec::with_capacity(image.rgba.len());
+            for px in image.rgba.chunks_exact(4) {
+                let a = if px[0] < 8 && px[1] < 8 && px[2] < 8 {
+                    0
+                } else {
+                    px[3]
+                };
+                out.extend_from_slice(&[px[0], px[1], px[2], a]);
+            }
+            out
+        }
+        _ => image.rgba.clone(),
     };
     let pixels =
         egui::ColorImage::from_rgba_unmultiplied([image.width, image.height], &pixels_rgba);
@@ -2911,6 +3169,9 @@ fn draw_synoptic_stations(
     let (w, h) = (view.width() as f64, view.height() as f64);
     let pad = 24.0f64;
     for st in &app.state.synoptic_stations {
+        if st.source == radar_data::synoptic::StationSource::Metar && !app.state.show_metar {
+            continue;
+        }
         let Some(c) = &st.coords else { continue };
         let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
         if vx < -pad || vy < -pad || vx > w + pad || vy > h + pad {
@@ -3646,10 +3907,19 @@ fn draw_tracks(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app:
         draw_dashed(painter, pos, fut, dim, 7.0, 5.0);
         painter.circle_stroke(fut, 3.5, egui::Stroke::new(1.5, dim));
 
-        // Centroid dot + speed label (mph — US convention).
+        // Centroid dot + speed/trend label (mph — US convention).
         painter.circle_filled(pos, 3.0, white);
         let mph = (t.speed_kmh * 0.621371).round() as i64;
-        let text = format!("{mph} mph");
+        let trend = t.trend_label();
+        let area_delta = t.delta_cells() * 16;
+        let text = format!("{mph} mph · {trend} · {area_delta:+} km²");
+        let trend_color = if t.delta_dbz() >= 4.0 {
+            egui::Color32::from_rgb(120, 255, 160)
+        } else if t.delta_dbz() <= -4.0 {
+            egui::Color32::from_rgb(255, 150, 120)
+        } else {
+            egui::Color32::from_white_alpha(190)
+        };
         let at = egui::pos2(pos.x + 6.0, pos.y + 6.0);
         let font = egui::FontId::proportional(11.0);
         painter.text(
@@ -3659,7 +3929,7 @@ fn draw_tracks(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app:
             font.clone(),
             egui::Color32::BLACK.gamma_multiply(0.85),
         );
-        painter.text(at, egui::Align2::LEFT_TOP, &text, font, white);
+        painter.text(at, egui::Align2::LEFT_TOP, &text, font, trend_color);
     }
 }
 
@@ -4629,12 +4899,63 @@ fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
     }
 }
 
+/// GLM flash density over the last 20 minutes. Flashes are binned into
+/// ~0.1° cells; the cell colour/alpha ramps from a single flash to a dense
+/// cluster. This is the same data as the bolt glyphs, viewed as a field.
+fn draw_lightning_density(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+) {
+    use std::collections::HashMap;
+    const BIN_DEG: f64 = 0.10;
+    let now = chrono::Utc::now();
+    let mut bins: HashMap<(i64, i64), u32> = HashMap::new();
+    for strike in &app.state.lightning {
+        if (now - strike.time).num_seconds() > 1200 {
+            continue;
+        }
+        let key = (
+            (strike.lat / BIN_DEG).floor() as i64,
+            (strike.lon / BIN_DEG).floor() as i64,
+        );
+        *bins.entry(key).or_insert(0) += 1;
+    }
+    let max = bins.values().copied().max().unwrap_or(1).max(1);
+    let clip = painter.clip_rect();
+    for ((iy, ix), count) in bins {
+        let south = iy as f64 * BIN_DEG;
+        let west = ix as f64 * BIN_DEG;
+        let (x0, y0) = view.lonlat_to_view_px(west, south + BIN_DEG);
+        let (x1, y1) = view.lonlat_to_view_px(west + BIN_DEG, south);
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+            egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+        );
+        if !clip.intersects(rect) {
+            continue;
+        }
+        let t = (count as f32 / max as f32).clamp(0.0, 1.0).sqrt();
+        let color = egui::Color32::from_rgba_unmultiplied(
+            (255.0 - 40.0 * t) as u8,
+            (225.0 - 120.0 * t) as u8,
+            (90.0 - 70.0 * t) as u8,
+            (45.0 + 150.0 * t) as u8,
+        );
+        painter.rect_filled(rect, 0.0, color);
+    }
+}
+
 /// GOES GLM flashes: a small lightning-bolt glyph for every strike. Fresh
 /// strikes pulse (white/yellow with a glow), older ones settle to amber and
 /// fade over 20 minutes.
 fn draw_lightning(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
     if app.state.lightning.is_empty() {
         return;
+    }
+    if app.state.lightning_density {
+        draw_lightning_density(painter, origin, view, app);
     }
     let now = chrono::Utc::now();
     let time = painter.ctx().input(|i| i.time) as f32;
@@ -5458,6 +5779,9 @@ mod tests {
             speed_kmh: ve.hypot(vn) * 60.0,
             bearing_deg: 0.0,
             max_dbz: 50.0,
+            prev_max_dbz: 48.0,
+            cells: 18,
+            prev_cells: 16,
         };
         // Fresh cell 5 km from the previous one: 50/50 blend.
         let prev = vec![mk(-97.0, 35.0, 1.0, 0.0)];

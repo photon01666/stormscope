@@ -23,6 +23,10 @@ pub enum GoesLayer {
     Infrared,
     /// Natural-colour composite (night side is IR-derived).
     GeoColor,
+    /// Air Mass RGB: water-vapour/jet structure and stratospheric air.
+    AirMass,
+    /// Channel-8-style upper-level water vapour from IEM's GOES composite.
+    WaterVapor,
 }
 
 impl GoesLayer {
@@ -30,6 +34,8 @@ impl GoesLayer {
         match self {
             GoesLayer::Infrared => "Infrared",
             GoesLayer::GeoColor => "GeoColor",
+            GoesLayer::AirMass => "Air Mass RGB",
+            GoesLayer::WaterVapor => "Water vapor",
         }
     }
 
@@ -38,8 +44,17 @@ impl GoesLayer {
         let product = match self {
             GoesLayer::Infrared => "ABI_Band13_Clean_Infrared",
             GoesLayer::GeoColor => "ABI_GeoColor",
+            GoesLayer::AirMass => "ABI_Air_Mass",
+            GoesLayer::WaterVapor => "GOES_Water_Vapor",
         };
         format!("{satellite}_{product}")
+    }
+
+    pub fn source_label(self) -> &'static str {
+        match self {
+            GoesLayer::WaterVapor => "IEM GOES water vapor",
+            _ => "NASA GIBS",
+        }
     }
 }
 
@@ -80,6 +95,20 @@ pub fn wms_url(layer: GoesLayer, west_satellite: bool, width: u32, bbox: [f64; 4
     let y0 = mercator_y(south);
     let y1 = mercator_y(north);
     let height = ((f64::from(width) * (y1 - y0) / (x1 - x0)).round() as u32).max(2);
+    if layer == GoesLayer::WaterVapor {
+        let sector = if west_satellite { "west_wv" } else { "east_wv" };
+        let wms_layer = if west_satellite {
+            "goes_west_wv"
+        } else {
+            "goes_east_wv"
+        };
+        return format!(
+            "https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/{sector}.cgi\
+             ?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS={wms_layer}\
+             &STYLES=&CRS=EPSG:3857&BBOX={x0:.0},{y0:.0},{x1:.0},{y1:.0}\
+             &WIDTH={width}&HEIGHT={height}&FORMAT=image/png"
+        );
+    }
     format!(
         "https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?SERVICE=WMS&VERSION=1.3.0\
          &REQUEST=GetMap&LAYERS={}&STYLES=&CRS=EPSG:3857&BBOX={x0:.0},{y0:.0},{x1:.0},{y1:.0}\
@@ -180,6 +209,11 @@ mod tests {
         // GeoColor and the west satellite are just different layer names.
         let url = wms_url(GoesLayer::GeoColor, true, 512, bbox);
         assert!(url.contains("GOES-West_ABI_GeoColor"), "{url}");
+        let url = wms_url(GoesLayer::AirMass, false, 512, bbox);
+        assert!(url.contains("GOES-East_ABI_Air_Mass"), "{url}");
+        let url = wms_url(GoesLayer::WaterVapor, false, 512, bbox);
+        assert!(url.contains("mesonet.agron.iastate.edu"), "{url}");
+        assert!(url.contains("LAYERS=goes_east_wv"), "{url}");
     }
 
     /// Real fetch (network, ignored by default): both layers decode to the

@@ -94,6 +94,45 @@ pub enum DataMsg {
     SynopticStations(Vec<radar_data::synoptic::SynopticStation>),
     /// Synoptic fetch failed.
     SynopticError(String),
+    /// Free METAR airport observations for the selected radar window.
+    MetarStations(Vec<radar_data::synoptic::SynopticStation>),
+    /// METAR fetch failed.
+    MetarError(String),
+    /// Recent METAR reports for one airport.
+    MetarHistory(std::sync::Arc<radar_data::MetarHistory>),
+    /// METAR history fetch failed.
+    MetarHistoryError(String),
+    /// Observed RAOB at the requested point.
+    ObservedSounding(radar_core::sounding::Sounding),
+    /// RAOB fetch failed.
+    ObservedSoundingError(String),
+    /// RAP analysis profile at the requested point.
+    RapSounding(radar_core::sounding::Sounding),
+    /// RAP fetch failed.
+    RapSoundingError(String),
+    /// Official Level III N0Q composite image.
+    Level3(std::sync::Arc<radar_data::level3::Level3Image>),
+    /// Level III fetch failed.
+    Level3Error(String),
+    /// QPE-vs-gauge verification report.
+    Verification(std::sync::Arc<radar_data::QpeVerification>),
+    /// Verification fetch failed.
+    VerificationError(String),
+    /// Multi-scan storm trajectories for the trend window.
+    StormHistory {
+        key: u64,
+        histories: Vec<radar_render::StormHistory>,
+    },
+    /// Storm-history computation failed.
+    StormHistoryError(String),
+    /// GEFS ensemble plume.
+    Ensemble(std::sync::Arc<radar_data::EnsembleSeries>),
+    /// Ensemble fetch failed.
+    EnsembleError(String),
+    /// HRRR 500 mb wind/height run.
+    MidLevel(std::sync::Arc<radar_data::MidLevelRun>),
+    /// Mid-level wind fetch failed.
+    MidLevelError(String),
     /// Ambient Weather personal stations on the account.
     AmbientStations(Vec<radar_data::ambient::AmbientStation>),
     /// Ambient Weather fetch failed.
@@ -254,8 +293,9 @@ pub enum DataCmd {
     LoadMrms,
     /// Fetch the newest QPE accumulation for one product.
     LoadQpe(radar_data::mrms::MrmsProduct),
-    /// Fetch one HRRR 2D field for a forecast hour.
+    /// Fetch one HRRR or RAP 2D field for a forecast hour.
     LoadModelField {
+        model: radar_data::FieldModel,
         kind: radar_data::HrrrFieldKind,
         hour: u16,
     },
@@ -267,6 +307,12 @@ pub enum DataCmd {
         width: u32,
         height: u32,
     },
+    /// Fetch METAR stations for a bbox [w,s,e,n].
+    LoadMetar {
+        bbox: [f64; 4],
+    },
+    /// Fetch the recent report history for one METAR station.
+    LoadMetarHistory(String),
     /// Update the Ambient Weather credentials held by the data thread.
     SetAmbientKeys {
         api_key: String,
@@ -296,6 +342,36 @@ pub enum DataCmd {
     LoadTotals(f64, f64),
     /// Fetch a model sounding for a point.
     LoadSounding(f64, f64),
+    /// Fetch an observed RAOB nearest a point.
+    LoadObservedSounding(f64, f64),
+    /// Fetch the RAP analysis profile at a point.
+    LoadRapSounding(f64, f64),
+    /// Fetch the official N0Q Level III composite for a bbox.
+    LoadLevel3 {
+        bbox: [f64; 4],
+    },
+    /// Compare MRMS QPE with nearby station gauges for a duration.
+    LoadVerification {
+        lat: f64,
+        lon: f64,
+        hours: u16,
+    },
+    /// Build multi-scan storm histories for the trend window.
+    LoadStormHistory {
+        volumes: Vec<Arc<radar_core::Volume>>,
+        key: u64,
+        tilt_deg: f32,
+        lat: f64,
+        lon: f64,
+    },
+    /// Fetch a GEFS ensemble plume for a point.
+    LoadEnsemble {
+        field: radar_data::EnsembleField,
+        lat: f64,
+        lon: f64,
+    },
+    /// Fetch the HRRR 500 mb wind/height run.
+    LoadMidLevel,
     /// Fetch terrain around a radar site for beam-blockage masking.
     LoadTerrain(f64, f64),
     /// Fetch HRRR point profiles for a coordinate.
@@ -412,6 +488,10 @@ pub struct StormApp {
     pub model_field_tex: Vec<(usize, egui::TextureHandle)>,
     /// Cached GOES textures, one per window.
     pub goes_tex: Vec<(usize, egui::TextureHandle)>,
+    /// Cached official Level III N0Q texture.
+    pub level3_tex: Vec<(usize, egui::TextureHandle)>,
+    /// Cached 500 mb speed textures.
+    pub midlevel_tex: Vec<(usize, egui::TextureHandle)>,
     /// Cached FutureCast textures, keyed by frame Arc identity.
     pub futurecast_tex: Vec<(usize, egui::TextureHandle)>,
     /// Geometry key of the cross-section curtain currently uploaded (the
@@ -628,6 +708,8 @@ impl StormApp {
             qpe_tex: Vec::new(),
             model_field_tex: Vec::new(),
             goes_tex: Vec::new(),
+            level3_tex: Vec::new(),
+            midlevel_tex: Vec::new(),
             futurecast_tex: Vec::new(),
             view3d_section_key: None,
             prev_tracks: Vec::new(),
@@ -871,6 +953,36 @@ impl StormApp {
         self.state.synoptic_last_view = Some(center);
     }
 
+    /// Fetch METARs around the selected radar now.
+    pub(crate) fn fetch_metar_now(&mut self) {
+        let Some(site) = radar_core::sites::site(&self.state.site_id) else {
+            return;
+        };
+        let bbox = radar_data::local_overlay_box(site.latitude, site.longitude);
+        let _ = self.tx.send(DataCmd::LoadMetar { bbox });
+        self.state.metar_pending = true;
+        self.state.metar_last_attempt = Some(std::time::Instant::now());
+    }
+
+    /// Fetch the official N0Q Level III composite for the selected radar.
+    pub(crate) fn fetch_level3_now(&mut self) {
+        if !self.state.show_level3 {
+            return;
+        }
+        let Some(site) = radar_core::sites::site(&self.state.site_id) else {
+            return;
+        };
+        if self.state.level3_pending {
+            return;
+        }
+        let bbox = radar_data::local_overlay_box(site.latitude, site.longitude);
+        let _ = self.tx.send(DataCmd::LoadLevel3 { bbox });
+        self.state.level3_pending = true;
+        self.state.level3_requested_at = Some(std::time::Instant::now());
+        self.state.level3_site = self.state.site_id.clone();
+        self.state.level3_error = None;
+    }
+
     /// Send the app's alert lists through the shared voice notifier. The
     /// data thread calls the same notifier, so desktop speech does not depend
     /// on UI frames (e.g. a hidden Wayland workspace); the shared seen set
@@ -1097,7 +1209,21 @@ impl StormApp {
                     self.pump_ai_data();
                 }
                 DataMsg::SynopticStations(v) => {
+                    // Keep the independent METAR layer when the token-backed
+                    // Synoptic refresh replaces the rest of the stations.
+                    let metar: Vec<_> = self
+                        .state
+                        .synoptic_stations
+                        .iter()
+                        .filter(|s| s.source == radar_data::synoptic::StationSource::Metar)
+                        .cloned()
+                        .collect();
+                    let existing: std::collections::HashSet<String> =
+                        v.iter().map(|s| s.stid.clone()).collect();
                     self.state.synoptic_stations = v;
+                    self.state
+                        .synoptic_stations
+                        .extend(metar.into_iter().filter(|s| !existing.contains(&s.stid)));
                     self.state.synoptic_last_fetch = Some(std::time::Instant::now());
                     self.state.synoptic_pending = false;
                     self.state.synoptic_error = None;
@@ -1106,6 +1232,132 @@ impl StormApp {
                 DataMsg::SynopticError(e) => {
                     self.state.synoptic_pending = false;
                     self.state.synoptic_error = Some(e);
+                }
+                DataMsg::MetarStations(v) => {
+                    let n = v.len();
+                    self.state
+                        .synoptic_stations
+                        .retain(|s| s.source != radar_data::synoptic::StationSource::Metar);
+                    let existing: std::collections::HashSet<String> = self
+                        .state
+                        .synoptic_stations
+                        .iter()
+                        .map(|s| s.stid.clone())
+                        .collect();
+                    self.state
+                        .synoptic_stations
+                        .extend(v.into_iter().filter(|s| !existing.contains(&s.stid)));
+                    self.state.metar_last_fetch = Some(std::time::Instant::now());
+                    self.state.metar_pending = false;
+                    self.state.metar_error = None;
+                    log::debug!("METAR stations merged: {n}");
+                }
+                DataMsg::MetarError(e) => {
+                    self.state.metar_pending = false;
+                    self.state.metar_error = Some(e);
+                }
+                DataMsg::MetarHistory(history) => {
+                    self.state.metar_history = Some(history);
+                    self.state.metar_history_pending = false;
+                    self.state.metar_history_error = None;
+                }
+                DataMsg::MetarHistoryError(e) => {
+                    self.state.metar_history_pending = false;
+                    self.state.metar_history_error = Some(e);
+                }
+                DataMsg::ObservedSounding(s) => {
+                    self.state.observed_sounding_station = Some(s.source.clone());
+                    self.state.observed_sounding = Some(s);
+                    self.state.observed_sounding_fetched_at = Some(std::time::Instant::now());
+                    self.state.observed_sounding_error = None;
+                }
+                DataMsg::ObservedSoundingError(e) => {
+                    self.state.observed_sounding_error = Some(e);
+                    self.state.observed_sounding_requested = None;
+                }
+                DataMsg::RapSounding(s) => {
+                    self.state.rap_sounding = Some(s);
+                    self.state.rap_sounding_fetched_at = Some(std::time::Instant::now());
+                    self.state.rap_sounding_error = None;
+                }
+                DataMsg::RapSoundingError(e) => {
+                    self.state.rap_sounding_error = Some(e);
+                    self.state.rap_sounding_requested = None;
+                }
+                DataMsg::Level3(image) => {
+                    log::info!(
+                        "N0Q Level III: {}x{} at {}",
+                        image.width,
+                        image.height,
+                        image.time.format("%H:%MZ")
+                    );
+                    self.state.level3 = Some((image, std::time::Instant::now()));
+                    self.state.level3_pending = false;
+                    self.state.level3_requested_at = None;
+                }
+                DataMsg::Level3Error(e) => {
+                    log::warn!("N0Q Level III: {e}");
+                    self.state.level3_pending = false;
+                    self.state.level3_error = Some(e);
+                }
+                DataMsg::Verification(report) => {
+                    log::info!(
+                        "QPE verification: {} pairs, bias {:.2} in",
+                        report.n,
+                        report.bias_in
+                    );
+                    self.state.verification = Some(report);
+                    self.state.verification_pending = false;
+                    self.state.verification_error = None;
+                    self.state.verification_fetched_at = Some(std::time::Instant::now());
+                }
+                DataMsg::VerificationError(e) => {
+                    self.state.verification_pending = false;
+                    self.state.verification_error = Some(e);
+                }
+                DataMsg::StormHistory { key, histories } => {
+                    if self.state.storm_trends_requested == Some(key) {
+                        self.state.storm_trends_pending = false;
+                        self.state.storm_trends = Some(histories);
+                        self.state.storm_trends_key = Some(key);
+                        self.state.storm_trends_error = None;
+                        self.state.storm_trends_selected = 0;
+                    }
+                }
+                DataMsg::StormHistoryError(e) => {
+                    self.state.storm_trends_pending = false;
+                    self.state.storm_trends_error = Some(e);
+                }
+                DataMsg::Ensemble(series) => {
+                    log::info!(
+                        "ensemble {}: {} members x {} times",
+                        series.field.label(),
+                        series.members.len(),
+                        series.times.len()
+                    );
+                    self.state.ensemble = Some(series);
+                    self.state.ensemble_pending = false;
+                    self.state.ensemble_error = None;
+                    self.state.ensemble_fetched_at = Some(std::time::Instant::now());
+                }
+                DataMsg::EnsembleError(e) => {
+                    self.state.ensemble_pending = false;
+                    self.state.ensemble_error = Some(e);
+                }
+                DataMsg::MidLevel(run) => {
+                    log::info!(
+                        "mid-level wind: {} frames init {}",
+                        run.frames.len(),
+                        run.init.format("%H:%MZ")
+                    );
+                    self.state.midlevel = Some(run);
+                    self.state.midlevel_pending = false;
+                    self.state.midlevel_error = None;
+                    self.state.midlevel_frame = 0;
+                }
+                DataMsg::MidLevelError(e) => {
+                    self.state.midlevel_pending = false;
+                    self.state.midlevel_error = Some(e);
                 }
                 DataMsg::AmbientStations(v) => {
                     log::debug!("ambient stations: {}", v.len());
@@ -1300,7 +1552,8 @@ impl StormApp {
                 }
                 DataMsg::ModelField(field) => {
                     log::info!(
-                        "HRRR field {:?} f{:02} valid {}: {}x{}",
+                        "{} field {:?} f{:02} valid {}: {}x{}",
+                        field.model.label(),
                         field.kind,
                         field.hour,
                         field.valid.format("%H:%MZ"),
@@ -1456,7 +1709,7 @@ impl StormApp {
                         self.state.ai_pending_data_at = None;
                         self.state.ai_error = None;
                         let hint = if error.to_ascii_lowercase().contains("unavailable") {
-                            " — OpenCode Go may be having a temporary outage; press Retry."
+                            " — the AI provider may be having a temporary outage; press Retry."
                         } else {
                             ""
                         };
@@ -1516,7 +1769,49 @@ impl StormApp {
                     self.state.lightning_pending = false;
                     if self.state.lightning_last_key.as_deref() != Some(key.as_str()) {
                         self.state.lightning_last_key = Some(key);
-                        self.state.lightning.extend(strikes);
+                        let now = chrono::Utc::now();
+                        let new_strikes = strikes;
+                        // Bin new strikes by minute for the last 60 minutes.
+                        use chrono::Timelike;
+                        use std::collections::BTreeMap;
+                        let mut by_min: BTreeMap<chrono::DateTime<chrono::Utc>, usize> =
+                            BTreeMap::new();
+                        for s in &new_strikes {
+                            let minute =
+                                match s.time.with_second(0).and_then(|t| t.with_nanosecond(0)) {
+                                    Some(t) => t,
+                                    None => continue,
+                                };
+                            if now - minute >= chrono::Duration::minutes(60) {
+                                continue;
+                            }
+                            *by_min.entry(minute).or_insert(0) += 1;
+                        }
+                        // Merge into existing bins. Only add bins we haven't seen for this update.
+                        for (m, c) in by_min {
+                            let mut found = false;
+                            for (bm, _bc) in self.state.lightning_bins.iter() {
+                                if *bm == m {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if !found {
+                                self.state.lightning_bins.push_back((m, c));
+                            }
+                        }
+                        // Trim bins to last 60 minutes, then keep them ordered
+                        // oldest-first (GLM files can arrive slightly late).
+                        let bin_cutoff = now - chrono::Duration::minutes(60);
+                        self.state
+                            .lightning_bins
+                            .make_contiguous()
+                            .sort_by_key(|(m, _)| *m);
+                        self.state.lightning_bins.retain(|(m, _)| *m >= bin_cutoff);
+                        while self.state.lightning_bins.len() > 60 {
+                            self.state.lightning_bins.pop_front();
+                        }
+                        self.state.lightning.extend(new_strikes);
                         let cutoff = chrono::Utc::now() - chrono::Duration::minutes(20);
                         self.state.lightning.retain(|s| s.time >= cutoff);
                         if self.state.lightning.len() > 12_000 {
@@ -1524,8 +1819,9 @@ impl StormApp {
                             self.state.lightning.drain(..cut);
                         }
                         log::info!(
-                            "lightning ({satellite}): {} flashes in memory",
-                            self.state.lightning.len()
+                            "lightning ({satellite}): {} flashes in memory, {} bins",
+                            self.state.lightning.len(),
+                            self.state.lightning_bins.len()
                         );
                     }
                     self.state.lightning_satellite = Some(satellite);
@@ -2101,11 +2397,21 @@ impl StormApp {
         } else {
             out.push_str("No NWS forecast is loaded for the user's point.\n");
         }
-        if let Some(s) = &self.state.sounding {
+        let active_sounding = match self.state.sounding_kind {
+            crate::state::SoundingKind::Model => self.state.sounding.as_ref(),
+            crate::state::SoundingKind::Rap => self.state.rap_sounding.as_ref(),
+            crate::state::SoundingKind::Observed => self.state.observed_sounding.as_ref(),
+        };
+        if let Some(s) = active_sounding {
             let to_f = |c: f64| c * 9.0 / 5.0 + 32.0;
             let to_ft = |m: f64| m * 3.280_84;
+            let kind_label = match self.state.sounding_kind {
+                crate::state::SoundingKind::Model => "Model sounding (Open-Meteo, not observed)",
+                crate::state::SoundingKind::Rap => "RAP analysis profile (not observed)",
+                crate::state::SoundingKind::Observed => "Observed RAOB",
+            };
             out.push_str(&format!(
-                "Model sounding (Open-Meteo, not observed): surface {:.0}°F / dew {:.0}°F, \
+                "{kind_label}: surface {:.0}°F / dew {:.0}°F, \
                  CAPE {:.0} J/kg, CIN {:.0} J/kg, PWAT {:.1} mm, LCL {:.0} ft, \
                  0C {:.0} ft, shear 0-6 km {:.0} mph, SRH 0-3 km {:.0} m2/s2.\n",
                 to_f(s.surface_temp_c),
@@ -2827,6 +3133,7 @@ impl StormApp {
         if let Some(point) = &request.sounding {
             self.state.sounding = None;
             self.state.sounding_error = None;
+            self.state.sounding_kind = crate::state::SoundingKind::Model;
             self.state.sounding_point = Some((point.lat, point.lon));
             self.state.sounding_point_gps = false;
             self.state.sounding_requested = Some((point.lat, point.lon));
@@ -3232,7 +3539,19 @@ impl StormApp {
         if !self.state.ai_config().is_configured() {
             self.state.ai_settings_open = true;
             self.state.ai_pending = false;
-            self.ai_note("Add your OpenCode Go API key in Settings → AI meteorologist.".into());
+            let provider = if self
+                .state
+                .ai_base_url
+                .to_ascii_lowercase()
+                .contains("anthropic.com")
+            {
+                "Claude"
+            } else {
+                "OpenCode Go"
+            };
+            self.ai_note(format!(
+                "Add your {provider} API key in Settings → AI meteorologist."
+            ));
             return;
         }
 
@@ -3430,6 +3749,7 @@ impl StormApp {
             .map(|s| radar_data::local_overlay_box(s.latitude, s.longitude));
         let fresh = self.state.model_field.as_ref().is_some_and(|(f, at)| {
             at.elapsed() < std::time::Duration::from_secs(600)
+                && f.model == self.state.model_field_model
                 && f.kind == self.state.model_field_kind
                 && f.hour == self.state.model_field_hour
                 && want.is_none_or(|w| {
@@ -3451,6 +3771,7 @@ impl StormApp {
         }
         self.state.model_field_requested_at = Some(std::time::Instant::now());
         let _ = self.tx.send(DataCmd::LoadModelField {
+            model: self.state.model_field_model,
             kind: self.state.model_field_kind,
             hour: self.state.model_field_hour,
         });
@@ -3797,7 +4118,10 @@ impl StormApp {
         // station data changes slowly (ASOS hourly, mesonets 5-15 min) and
         // the free tier is ~5,000 requests/month, so polling faster than
         // this buys nothing. Pan/zoom does not force a refetch.
-        if !self.state.synoptic_pending && !self.state.synoptic_token.trim().is_empty() {
+        if self.state.show_synoptic
+            && !self.state.synoptic_pending
+            && !self.state.synoptic_token.trim().is_empty()
+        {
             let due = self
                 .state
                 .synoptic_last_fetch
@@ -3808,6 +4132,34 @@ impl StormApp {
                 .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60));
             if due && throttled {
                 self.fetch_synoptic_now();
+            }
+        }
+        // METAR: free, no token. Airports report hourly (special reports as
+        // needed); 10 minutes keeps the layer current without hammering it.
+        if self.state.show_metar && !self.state.metar_pending {
+            let due = self
+                .state
+                .metar_last_fetch
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(10 * 60));
+            let throttled = self
+                .state
+                .metar_last_attempt
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60));
+            if due && throttled {
+                self.fetch_metar_now();
+            }
+        }
+        // Official Level III N0Q: refresh every 5 minutes, or immediately
+        // after a radar-site change.
+        if self.state.show_level3 && !self.state.level3_pending {
+            let due = self
+                .state
+                .level3
+                .as_ref()
+                .is_none_or(|(_, at)| at.elapsed() >= std::time::Duration::from_secs(5 * 60))
+                || self.state.level3_site != self.state.site_id;
+            if due {
+                self.fetch_level3_now();
             }
         }
         // Ambient: auto-fetch on startup and every 5 minutes.

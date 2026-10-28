@@ -20,6 +20,10 @@ pub const OPENCODE_GO_BASE: &str = "https://opencode.ai/inference/go/v1";
 pub const OPENCODE_GO_MODEL: &str = "deepseek-v4.1-flash";
 /// What OpenCode itself reads the Go key from.
 pub const OPENCODE_GO_KEY_ENV: &str = "OPENCODE_API_KEY";
+/// Anthropic Messages API endpoint.
+pub const ANTHROPIC_BASE: &str = "https://api.anthropic.com/v1";
+/// A solid default Claude model.
+pub const ANTHROPIC_MODEL: &str = "claude-sonnet-5-5";
 
 /// One endpoint + credentials + model.
 #[derive(Debug, Clone)]
@@ -44,10 +48,24 @@ impl Default for AiConfig {
 }
 
 impl AiConfig {
+    pub fn is_anthropic(&self) -> bool {
+        let base = self.base_url.trim().to_ascii_lowercase();
+        base.contains("anthropic.com")
+    }
+
     /// The URL to POST to. Accepts a base with or without `/v1`, or a full
-    /// `.../chat/completions` URL already.
+    /// endpoint URL already.
     pub fn endpoint(&self) -> String {
         let base = self.base_url.trim().trim_end_matches('/');
+        if self.is_anthropic() {
+            if base.ends_with("/messages") {
+                return base.to_string();
+            }
+            if base.ends_with("/v1") {
+                return format!("{base}/messages");
+            }
+            return format!("{base}/v1/messages");
+        }
         if base.ends_with("/chat/completions") {
             base.to_string()
         } else if base.ends_with("/v1") {
@@ -101,18 +119,10 @@ pub fn complete_chat(
         .user_agent(concat!("stormscope/", env!("CARGO_PKG_VERSION")))
         .build()
         .context("building the AI HTTP client")?;
-    let mut body = serde_json::json!({
-        "model": config.model.trim(),
-        "messages": messages_json(system, history, user),
-        "temperature": 0.35,
-        "max_tokens": config.max_tokens.clamp(64, 4096),
-    });
+    let mut body = build_body(config, system, history, user);
     let payload_bytes = body.to_string().len();
     let mut last: Option<Failure> = None;
     for attempt in 0..4u32 {
-        // Keep the original session for the first try, but give retries their
-        // own session id: some gateways answer 409 Conflict while the previous
-        // attempt with the same session is still in flight.
         let attempt_session = if attempt == 0 {
             session.to_string()
         } else {
@@ -172,6 +182,31 @@ pub fn complete_chat(
     )
 }
 
+fn build_body(
+    config: &AiConfig,
+    system: &str,
+    history: &[ChatTurn],
+    user: &str,
+) -> serde_json::Value {
+    let max_tokens = config.max_tokens.clamp(64, 4096);
+    if config.is_anthropic() {
+        serde_json::json!({
+            "model": config.model.trim(),
+            "system": system,
+            "messages": anthropic_messages_json(history, user),
+            "temperature": 0.35,
+            "max_tokens": max_tokens,
+        })
+    } else {
+        serde_json::json!({
+            "model": config.model.trim(),
+            "messages": messages_json(system, history, user),
+            "temperature": 0.35,
+            "max_tokens": max_tokens,
+        })
+    }
+}
+
 /// system + real prior turns + the current user message.
 fn messages_json(system: &str, history: &[ChatTurn], user: &str) -> serde_json::Value {
     let mut messages = vec![serde_json::json!({ "role": "system", "content": system })];
@@ -190,6 +225,44 @@ fn messages_json(system: &str, history: &[ChatTurn], user: &str) -> serde_json::
     serde_json::Value::Array(messages)
 }
 
+/// Anthropic's Messages API takes the system prompt as a top-level field and
+/// requires strictly alternating user/assistant turns.
+fn anthropic_messages_json(history: &[ChatTurn], user: &str) -> serde_json::Value {
+    let mut messages: Vec<(String, String)> = Vec::new();
+    for turn in history {
+        if turn.content.trim().is_empty() {
+            continue;
+        }
+        let role = if turn.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
+        if let Some((last_role, last_content)) = messages.last_mut()
+            && last_role == role
+        {
+            last_content.push_str("\n\n");
+            last_content.push_str(turn.content.trim());
+            continue;
+        }
+        messages.push((role.to_string(), turn.content.trim().to_string()));
+    }
+    if let Some((last_role, last_content)) = messages.last_mut()
+        && last_role == "user"
+    {
+        last_content.push_str("\n\n");
+        last_content.push_str(user.trim());
+    } else {
+        messages.push(("user".to_string(), user.trim().to_string()));
+    }
+    serde_json::Value::Array(
+        messages
+            .into_iter()
+            .map(|(role, content)| serde_json::json!({ "role": role, "content": content }))
+            .collect(),
+    )
+}
+
 struct Failure {
     message: String,
     retryable: bool,
@@ -203,12 +276,17 @@ fn send_once(
     body: &serde_json::Value,
     session: &str,
 ) -> Result<String, Failure> {
-    let mut request = client
-        .post(config.endpoint())
-        .header("x-opencode-session", session)
-        .json(body);
-    if !config.api_key.trim().is_empty() {
-        request = request.bearer_auth(config.api_key.trim());
+    let mut request = client.post(config.endpoint()).json(body);
+    if config.is_anthropic() {
+        request = request.header("anthropic-version", "2023-06-01");
+        if !config.api_key.trim().is_empty() {
+            request = request.header("x-api-key", config.api_key.trim());
+        }
+    } else {
+        request = request.header("x-opencode-session", session);
+        if !config.api_key.trim().is_empty() {
+            request = request.bearer_auth(config.api_key.trim());
+        }
     }
     let response = match request.send() {
         Ok(response) => response,
@@ -255,6 +333,36 @@ fn send_once(
 fn reply_text(body: &str) -> Result<String, (String, bool)> {
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| (format!("the AI reply was not JSON: {e}"), false))?;
+    // Anthropic Messages API: content is an array of blocks.
+    if let Some(blocks) = value.get("content").and_then(|c| c.as_array()) {
+        let content = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string();
+        if !content.is_empty() {
+            return Ok(content);
+        }
+        let finish = value
+            .get("stop_reason")
+            .and_then(|f| f.as_str())
+            .unwrap_or("unknown");
+        log::warn!(
+            "AI empty Anthropic reply: stop_reason={finish}, body_bytes={}",
+            body.len()
+        );
+        return Err((
+            if finish == "max_tokens" {
+                "the model ran out of output tokens before answering".to_string()
+            } else {
+                "the model returned an empty reply".to_string()
+            },
+            true,
+        ));
+    }
     let choice = value.get("choices").and_then(|c| c.get(0));
     let message = choice.and_then(|c| c.get("message"));
     let content = message
@@ -336,6 +444,49 @@ mod tests {
         assert_eq!(c.endpoint(), "http://localhost:11434/v1/chat/completions");
         c.base_url = "https://example.test/v1/chat/completions".into();
         assert_eq!(c.endpoint(), "https://example.test/v1/chat/completions");
+        c.base_url = "https://api.anthropic.com".into();
+        assert_eq!(c.endpoint(), "https://api.anthropic.com/v1/messages");
+        c.base_url = "https://api.anthropic.com/v1".into();
+        assert_eq!(c.endpoint(), "https://api.anthropic.com/v1/messages");
+        c.base_url = "https://api.anthropic.com/v1/messages".into();
+        assert_eq!(c.endpoint(), "https://api.anthropic.com/v1/messages");
+    }
+
+    #[test]
+    fn anthropic_body_uses_top_level_system_and_alternating_turns() {
+        let config = AiConfig {
+            base_url: "https://api.anthropic.com/v1".into(),
+            model: "claude-sonnet-4-5-20250929".into(),
+            api_key: "sk-ant-test".into(),
+            max_tokens: 2000,
+        };
+        let history = vec![
+            ChatTurn {
+                role: "user".into(),
+                content: "what about Wichita?".into(),
+            },
+            ChatTurn {
+                role: "assistant".into(),
+                content: "A line is west.".into(),
+            },
+        ];
+        let body = build_body(&config, "system text", &history, "latest");
+        assert_eq!(body["system"], "system text");
+        assert!(body.get("messages").and_then(|m| m.as_array()).is_some());
+        assert!(body["messages"].as_array().unwrap().len() == 3);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(body["messages"][2]["content"], "latest");
+    }
+
+    #[test]
+    fn anthropic_replies_are_joined_from_text_blocks() {
+        let body = r#"{"content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"pong"}],"stop_reason":"end_turn"}"#;
+        assert_eq!(reply_text(body).unwrap(), "pong");
+        let body = r#"{"content":[],"stop_reason":"max_tokens"}"#;
+        let (message, retryable) = reply_text(body).unwrap_err();
+        assert!(retryable);
+        assert!(message.contains("output tokens"), "{message}");
     }
 
     #[test]
@@ -444,6 +595,57 @@ mod tests {
                 .contains("x-opencode-session: session-42"),
             "{request}"
         );
+    }
+
+    /// Anthropic's native path: x-api-key + anthropic-version headers, a
+    /// top-level system prompt, and text blocks in the reply.
+    #[test]
+    fn talks_to_an_anthropic_messages_endpoint() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 8192];
+            let n = socket.read(&mut buf).expect("read");
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).expect("write");
+            request
+        });
+        let config = AiConfig {
+            base_url: format!("http://anthropic.com@{addr}/v1"),
+            model: "claude-test".into(),
+            api_key: "sk-ant-test".into(),
+            max_tokens: 32,
+        };
+        assert!(config.is_anthropic());
+        let reply = complete(&config, "system text", "user text", "session-42").expect("reply");
+        let request = server.join().expect("server thread");
+        assert_eq!(reply, "pong");
+        assert!(
+            request.contains("POST /v1/messages"),
+            "unexpected path: {request}"
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("x-api-key: sk-ant-test"),
+            "{request}"
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("anthropic-version: 2023-06-01"),
+            "{request}"
+        );
+        assert!(request.contains(r#""system":"system text""#), "{request}");
     }
 
     /// A 503 from the gateway is retried once and the retry's answer wins.

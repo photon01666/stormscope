@@ -7,14 +7,19 @@ use radar_core::Moment;
 mod ai;
 pub(crate) mod alerts;
 mod ambient;
+mod ensemble;
 pub(crate) mod forecast;
 mod hrrr;
 mod map;
+mod midlevel;
+mod model_compare;
 mod reports;
 mod sounding;
 mod synoptic;
 pub(crate) mod totals;
+mod trends;
 mod vad;
+mod verify;
 mod volume3d;
 
 /// Fixed sidebar width (screen px) used by both the slide offset and the
@@ -314,8 +319,13 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     forecast::forecast_window(ui.ctx(), app, pane_area);
     sounding::sounding_window(ui.ctx(), app, pane_area);
     hrrr::hrrr_window(ui.ctx(), app, pane_area);
+    ensemble::ensemble_window(ui.ctx(), app, pane_area);
+    model_compare::model_compare_window(ui.ctx(), app, pane_area);
+    midlevel::midlevel_window(ui.ctx(), app, pane_area);
     vad::vad_window(ui.ctx(), app, pane_area);
     totals::totals_window(ui.ctx(), app, pane_area);
+    verify::verification_window(ui.ctx(), app, pane_area);
+    trends::storm_trends_window(ui.ctx(), app, pane_area);
     synoptic::synoptic_window(ui.ctx(), app, pane_area);
     ambient::ambient_window(ui.ctx(), app, pane_area);
     synoptic::synoptic_settings_window(ui.ctx(), app, pane_area);
@@ -1257,6 +1267,20 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                     ui.add(egui::Slider::new(&mut app.state.mrms_opacity, 0.05..=1.0).text("MRMS"));
                 sliders.push((10, r.rect));
             }
+            if app.state.show_level3 {
+                let r = ui.add(
+                    egui::Slider::new(&mut app.state.level3_opacity, 0.05..=1.0)
+                        .text("N0Q Level III"),
+                );
+                sliders.push((16, r.rect));
+            }
+            if app.state.show_midlevel {
+                let r = ui.add(
+                    egui::Slider::new(&mut app.state.midlevel_opacity, 0.05..=1.0)
+                        .text("500 mb wind"),
+                );
+                sliders.push((17, r.rect));
+            }
             if app.state.show_qpe {
                 let r =
                     ui.add(egui::Slider::new(&mut app.state.qpe_opacity, 0.05..=1.0).text("QPE"));
@@ -1266,7 +1290,7 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             if app.state.show_model_field {
                 let r = ui.add(
                     egui::Slider::new(&mut app.state.model_field_opacity, 0.05..=1.0)
-                        .text("HRRR field"),
+                        .text("Model field"),
                 );
                 sliders.push((15, r.rect));
                 model_field_legend(ui, app.state.model_field_kind);
@@ -1283,6 +1307,8 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                             for layer in [
                                 radar_data::goes::GoesLayer::Infrared,
                                 radar_data::goes::GoesLayer::GeoColor,
+                                radar_data::goes::GoesLayer::AirMass,
+                                radar_data::goes::GoesLayer::WaterVapor,
                             ] {
                                 ui.selectable_value(
                                     &mut app.state.goes_layer,
@@ -1342,6 +1368,11 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                     },
                 );
             if app.state.show_lightning {
+                ui.checkbox(&mut app.state.lightning_density, "Flash density")
+                    .on_hover_text(
+                        "Aggregate the last 20 minutes of GLM flashes into a density field \
+                         instead of drawing every individual strike.",
+                    );
                 let near = radar_core::sites::site(&app.state.site_id).map_or(0, |site| {
                     app.state
                         .lightning
@@ -1383,17 +1414,58 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                     app.fetch_synoptic_now();
                 }
             }
+            let mut metar = app.state.show_metar;
+            if ui
+                .checkbox(&mut metar, "METAR airport observations")
+                .on_hover_text(
+                    "Free aviationweather.gov METARs inside the radar window. \
+                     Merged into the same station layer as Synoptic.",
+                )
+                .changed()
+            {
+                app.state.show_metar = metar;
+                if metar {
+                    app.fetch_metar_now();
+                }
+            }
+            if app.state.show_metar {
+                let status = if app.state.metar_pending {
+                    "fetching METARs…".to_string()
+                } else if let Some(err) = &app.state.metar_error {
+                    format!("METAR: {err}")
+                } else {
+                    let n = app
+                        .state
+                        .synoptic_stations
+                        .iter()
+                        .filter(|s| {
+                            s.source == radar_data::synoptic::StationSource::Metar
+                        })
+                        .count();
+                    format!("{n} METAR stations · 10 min refresh")
+                };
+                ui.label(egui::RichText::new(status).small().weak());
+            }
             ui.add_space(4.0);
             ui.separator();
             ui.label(egui::RichText::new("Analysis").strong());
             if ui
-                .button("Sounding (model)")
+                .button("Sounding")
                 .on_hover_text(
-                    "Open-Meteo model sounding for the selected radar site; pick a map point inside the window",
+                    "Model, RAP or observed RAOB sounding for the selected radar site; pick a map point inside the window",
                 )
                 .clicked()
             {
                 app.state.sounding_open = !app.state.sounding_open;
+            }
+            if ui
+                .button("Storm trends")
+                .on_hover_text(
+                    "Multi-scan peak-reflectivity and core-area history for tracked cells",
+                )
+                .clicked()
+            {
+                app.state.storm_trends_open = !app.state.storm_trends_open;
             }
             if ui
                 .button("VAD wind profile")
@@ -1408,6 +1480,33 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 .clicked()
             {
                 app.state.hrrr_open = !app.state.hrrr_open;
+            }
+            if ui
+                .button("Ensemble plume")
+                .on_hover_text(
+                    "GEFS member plumes with mean and 10–90% range for the selected site",
+                )
+                .clicked()
+            {
+                app.state.ensemble_open = !app.state.ensemble_open;
+            }
+            if ui
+                .button("Mid-level wind")
+                .on_hover_text(
+                    "Animated HRRR 500 mb wind speed, height contours and wind barbs",
+                )
+                .clicked()
+            {
+                app.state.midlevel_open = !app.state.midlevel_open;
+            }
+            if ui
+                .button("Model comparison")
+                .on_hover_text(
+                    "Side-by-side Open-Meteo model, RAP analysis, HRRR forecast and optional observed RAOB",
+                )
+                .clicked()
+            {
+                app.state.model_compare_open = !app.state.model_compare_open;
             }
             ui.checkbox(&mut app.state.show_rotation, "Rotation / TVS signatures")
                 .on_hover_text(
@@ -1503,6 +1602,14 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                 13 => {
                     app.state.futurecast_opacity =
                         (app.state.futurecast_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                }
+                16 => {
+                    app.state.level3_opacity =
+                        (app.state.level3_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                }
+                17 => {
+                    app.state.midlevel_opacity =
+                        (app.state.midlevel_opacity + 0.05 * steps).clamp(0.05, 1.0);
                 }
                 14 => {
                     app.state.qpe_opacity = (app.state.qpe_opacity + 0.05 * steps).clamp(0.05, 1.0);
@@ -2475,6 +2582,29 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
                      downloads on enable."
                 .to_string(),
         });
+    let level3_before = app.state.show_level3;
+    ui.checkbox(&mut app.state.show_level3, "N0Q Level III composite")
+        .on_hover_text(match &app.state.level3 {
+            Some((_image, at)) => format!(
+                "IEM N0Q base-reflectivity composite (official Level III feed) · \
+                 fetched {} min ago",
+                at.elapsed().as_secs() / 60
+            ),
+            None if app.state.level3_pending => "Downloading N0Q Level III…".to_string(),
+            None => "Official NEXRAD Level III N0Q composite from the Iowa Environmental \
+                     Mesonet, under the radar layer. Downloads on enable."
+                .to_string(),
+        });
+    if app.state.show_level3 && !level3_before {
+        app.state.level3 = None;
+        app.state.level3_site.clear();
+        app.fetch_level3_now();
+    }
+    if app.state.show_level3
+        && let Some(err) = &app.state.level3_error
+    {
+        ui.label(egui::RichText::new(format!("N0Q: {err}")).weak().small());
+    }
     ui.checkbox(&mut app.state.show_qpe, "QPE / FFG rainfall")
         .on_hover_text(
             "MRMS quantitative precipitation estimate or FLASH flash-flood guidance \
@@ -2510,12 +2640,25 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
         qpe_legend(ui, app.state.qpe_product);
     }
 
-    ui.checkbox(&mut app.state.show_model_field, "HRRR model field")
+    ui.checkbox(&mut app.state.show_model_field, "Model 2D field")
         .on_hover_text(
-            "Local HRRR 2D fields: QPF, CAPE or 0–6 km shear. One field at a time; \
-             forecast hour selectable. Not a model workstation.",
+            "Local HRRR or RAP 2D fields: QPF, CAPE or 0–6 km shear. One field at a \
+             time; forecast hour selectable. Not a model workstation.",
         );
     if app.state.show_model_field {
+        let mut model = app.state.model_field_model;
+        egui::ComboBox::from_id_salt("model-field-model")
+            .selected_text(model.label())
+            .show_ui(ui, |ui| {
+                for m in [radar_data::FieldModel::Hrrr, radar_data::FieldModel::Rap] {
+                    ui.selectable_value(&mut model, m, m.label());
+                }
+            });
+        if model != app.state.model_field_model {
+            app.state.model_field_model = model;
+            app.state.model_field = None;
+            app.state.model_field_requested_at = None;
+        }
         let mut kind = app.state.model_field_kind;
         egui::ComboBox::from_id_salt("model-field-kind")
             .selected_text(kind.label())
@@ -2594,7 +2737,7 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
             Some((img, at)) => {
                 let first = img.first();
                 format!(
-                    "{} from {} — NASA GIBS, fetched {} min ago (CONUS + a sharp \
+                    "{} from {} — {}, fetched {} min ago (CONUS + a sharp \
                      radar window; refreshes every 10 minutes)",
                     first.map_or("Satellite", |x| x.layer.label()),
                     first.map_or("GOES", |x| if x.west_satellite {
@@ -2602,6 +2745,7 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
                     } else {
                         "GOES-East"
                     }),
+                    first.map_or("satellite", |x| x.layer.source_label()),
                     at.elapsed().as_secs() / 60
                 )
             }
@@ -2648,8 +2792,15 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
         app.state.totals_open = !app.state.totals_open;
     }
     if ui
-        .button("Sounding (model)")
-        .on_hover_text("Open-Meteo model sounding and thermodynamic parameters for the selected site or a picked point")
+        .button("QPE vs gauges")
+        .on_hover_text("Compare MRMS QPE with nearby NWS rain gauges for 1, 3, 6 or 24 hours")
+        .clicked()
+    {
+        app.state.verification_open = !app.state.verification_open;
+    }
+    if ui
+        .button("Sounding")
+        .on_hover_text("Model, RAP or observed RAOB sounding and thermodynamic parameters for the selected site or a picked point")
         .clicked()
     {
         app.state.sounding_open = !app.state.sounding_open;
@@ -3127,10 +3278,19 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.sidebar_pinned = false;
             app.state.sidebar_dismissed = true;
         }
+        let anthropic = app
+            .state
+            .ai_base_url
+            .to_ascii_lowercase()
+            .contains("anthropic.com");
         ui.label(
-            egui::RichText::new("OpenCode Go · deepseek-v4.1-flash by default")
-                .weak()
-                .small(),
+            egui::RichText::new(if anthropic {
+                "Claude · claude-sonnet-5-5 by default"
+            } else {
+                "OpenCode Go · deepseek-v4.1-flash by default"
+            })
+            .weak()
+            .small(),
         );
 
         {

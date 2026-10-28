@@ -720,12 +720,13 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
         root.insert(
             "model_field".into(),
             json!({
+                "model": field.model.label(),
                 "kind": field.kind.label(),
                 "unit": unit,
                 "valid_utc": field.valid.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 "age_min": input.model_field_age_min,
                 "samples": samples,
-                "note": "HRRR model field, not an observation.",
+                "note": "Model field, not an observation.",
             }),
         );
     }
@@ -2214,6 +2215,9 @@ mod tests {
             speed_kmh: 90.0,
             bearing_deg: 36.9,
             max_dbz: 48.0,
+            prev_max_dbz: 44.0,
+            cells: 22,
+            prev_cells: 17,
         };
         let brief = build(&BriefInputs {
             site,

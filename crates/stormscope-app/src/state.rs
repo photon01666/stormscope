@@ -35,6 +35,18 @@ pub const MIN_RING_FRAMES: usize = 8;
 #[cfg(target_os = "android")]
 pub const MIN_RING_FRAMES: usize = 3;
 
+/// Where a sounding came from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SoundingKind {
+    /// Open-Meteo pressure-level model profile (current default).
+    #[default]
+    Model,
+    /// RAP 13 km analysis profile.
+    Rap,
+    /// Observed radiosonde (RAOB).
+    Observed,
+}
+
 /// Approximate resident size of one decoded volume: gate data is the bulk
 /// (i16 per gate per moment), plus azimuth tables and struct overhead.
 fn volume_bytes(v: &radar_core::Volume) -> usize {
@@ -585,6 +597,17 @@ pub struct AppState {
     pub synoptic_error: Option<String>,
     pub synoptic_pending: bool,
     pub show_synoptic: bool,
+    /// Free METAR airport observations, merged into the same station layer.
+    pub show_metar: bool,
+    pub metar_last_fetch: Option<std::time::Instant>,
+    pub metar_last_attempt: Option<std::time::Instant>,
+    pub metar_error: Option<String>,
+    pub metar_pending: bool,
+    /// Recent reports for the METAR station whose popup is open.
+    pub metar_history: Option<std::sync::Arc<radar_data::MetarHistory>>,
+    pub metar_history_requested: Option<String>,
+    pub metar_history_pending: bool,
+    pub metar_history_error: Option<String>,
     // Ambient Weather — the user's own personal weather station, which
     // Synoptic's free feed does not include.
     pub ambient_api_key: String,
@@ -630,6 +653,15 @@ pub struct AppState {
     pub totals_hover: Option<String>,
     pub totals_hover_at: f64,
 
+    // QPE-vs-gauge verification window.
+    pub verification_open: bool,
+    pub verification_hours: u16,
+    pub verification: Option<std::sync::Arc<radar_data::QpeVerification>>,
+    pub verification_pending: bool,
+    pub verification_requested: Option<(f64, f64, u16)>,
+    pub verification_fetched_at: Option<std::time::Instant>,
+    pub verification_error: Option<String>,
+
     // Sounding window.
     pub sounding_open: bool,
     pub sounding_pick_mode: bool,
@@ -641,6 +673,18 @@ pub struct AppState {
     pub sounding_fetched_at: Option<std::time::Instant>,
     pub sounding: Option<radar_core::sounding::Sounding>,
     pub sounding_error: Option<String>,
+    /// Which profile the sounding window shows: Open-Meteo, RAP or an
+    /// observed RAOB.
+    pub sounding_kind: SoundingKind,
+    pub rap_sounding: Option<radar_core::sounding::Sounding>,
+    pub rap_sounding_requested: Option<(f64, f64)>,
+    pub rap_sounding_fetched_at: Option<std::time::Instant>,
+    pub rap_sounding_error: Option<String>,
+    pub observed_sounding: Option<radar_core::sounding::Sounding>,
+    pub observed_sounding_station: Option<String>,
+    pub observed_sounding_requested: Option<(f64, f64)>,
+    pub observed_sounding_fetched_at: Option<std::time::Instant>,
+    pub observed_sounding_error: Option<String>,
 
     // Phase 2 analysis: VAD, rotation signatures, hail cores.
     pub vad_open: bool,
@@ -658,6 +702,9 @@ pub struct AppState {
 
     // Phase 5: HRRR point forecast / time-height.
     pub hrrr_open: bool,
+    pub model_compare_open: bool,
+    pub model_compare_hrrr_hour: usize,
+    pub model_compare_include_observed: bool,
     pub hrrr: Option<radar_data::SoundingSeries>,
     pub hrrr_requested: Option<(f64, f64)>,
     pub hrrr_fetched_at: Option<std::time::Instant>,
@@ -665,6 +712,29 @@ pub struct AppState {
     pub hrrr_hour: usize,
     /// 0 = temperature, 1 = RH, 2 = wind speed.
     pub hrrr_field: u8,
+
+    // GEFS ensemble plume.
+    pub ensemble_open: bool,
+    pub ensemble_field: radar_data::EnsembleField,
+    pub ensemble: Option<std::sync::Arc<radar_data::EnsembleSeries>>,
+    pub ensemble_pending: bool,
+    pub ensemble_requested: Option<(f64, f64, radar_data::EnsembleField)>,
+    pub ensemble_fetched_at: Option<std::time::Instant>,
+    pub ensemble_error: Option<String>,
+
+    // HRRR 500 mb mid-level wind overlay.
+    pub midlevel_open: bool,
+    pub show_midlevel: bool,
+    pub midlevel: Option<std::sync::Arc<radar_data::MidLevelRun>>,
+    pub midlevel_pending: bool,
+    pub midlevel_requested_at: Option<std::time::Instant>,
+    pub midlevel_error: Option<String>,
+    pub midlevel_opacity: f32,
+    pub midlevel_frame: usize,
+    pub midlevel_playing: bool,
+    pub midlevel_last_step: f64,
+    /// Cached grid-space contour segments for the displayed frame.
+    pub midlevel_contours: Option<(usize, Vec<(i16, Vec<[(f32, f32); 2]>)>)>,
 
     // 3D volume pane — split view beside the 2D map.
     /// Whether the 3D pane is shown beside the map. `STORMSCOPE_3D_OPEN=1`
@@ -747,6 +817,7 @@ pub struct AppState {
     pub qpe_requested_at: Option<std::time::Instant>,
     /// HRRR 2D model field overlay.
     pub show_model_field: bool,
+    pub model_field_model: radar_data::FieldModel,
     pub model_field_kind: radar_data::HrrrFieldKind,
     pub model_field_hour: u16,
     pub model_field_opacity: f32,
@@ -754,11 +825,16 @@ pub struct AppState {
     pub model_field_requested_at: Option<std::time::Instant>,
     /// Draw GOES GLM lightning flashes (official NOAA), last 20 minutes.
     pub show_lightning: bool,
+    /// Aggregate GLM flashes into a density field instead of individual
+    /// strikes.
+    pub lightning_density: bool,
     pub lightning: Vec<radar_data::glm::GlmStrike>,
     pub lightning_pending: bool,
     pub lightning_requested_at: Option<std::time::Instant>,
     pub lightning_last_key: Option<String>,
     pub lightning_satellite: Option<String>,
+    /// Per-minute flash counts for the last 60 minutes (minute start UTC).
+    pub lightning_bins: std::collections::VecDeque<(chrono::DateTime<chrono::Utc>, usize)>,
     /// Draw the GOES satellite overlay (NASA GIBS) under the radar.
     pub show_goes: bool,
     /// Wash strength of the satellite layer.
@@ -774,6 +850,17 @@ pub struct AppState {
     /// The (layer, satellite) request in flight, and when it was sent.
     pub goes_pending: Option<(radar_data::goes::GoesLayer, bool)>,
     pub goes_requested_at: Option<std::time::Instant>,
+    /// Official Level III N0Q composite (Iowa Environmental Mesonet WMS).
+    pub show_level3: bool,
+    pub level3_opacity: f32,
+    pub level3: Option<(
+        std::sync::Arc<radar_data::level3::Level3Image>,
+        std::time::Instant,
+    )>,
+    pub level3_pending: bool,
+    pub level3_requested_at: Option<std::time::Instant>,
+    pub level3_site: String,
+    pub level3_error: Option<String>,
     /// Draw the HRRR FutureCast layer: simulated composite reflectivity for
     /// the next hours. This is a model forecast, not observed radar.
     pub show_futurecast: bool,
@@ -817,6 +904,14 @@ pub struct AppState {
     pub srm_shown_key: Option<u64>,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
+    /// Storm-history window and the cached multi-scan trajectories.
+    pub storm_trends_open: bool,
+    pub storm_trends: Option<Vec<radar_render::StormHistory>>,
+    pub storm_trends_pending: bool,
+    pub storm_trends_requested: Option<u64>,
+    pub storm_trends_key: Option<u64>,
+    pub storm_trends_error: Option<String>,
+    pub storm_trends_selected: usize,
 
     // SPC convective outlook overlay. The map draws every product loaded for
     // the selected day (categorical + tornado/wind/hail probabilities);
@@ -1067,7 +1162,12 @@ impl Default for AppState {
             .filter(|v| !v.trim().is_empty())
             .or(ai.model.clone())
             .unwrap_or_else(|| radar_data::ai::OPENCODE_GO_MODEL.to_string());
-        let ai_api_key = std::env::var(radar_data::ai::OPENCODE_GO_KEY_ENV)
+        let provider_key_env = if ai_base_url.to_ascii_lowercase().contains("anthropic.com") {
+            "ANTHROPIC_API_KEY"
+        } else {
+            radar_data::ai::OPENCODE_GO_KEY_ENV
+        };
+        let ai_api_key = std::env::var(provider_key_env)
             .ok()
             .filter(|v| !v.trim().is_empty())
             .or_else(|| std::env::var("STORMSCOPE_AI_KEY").ok())
@@ -1215,7 +1315,16 @@ impl Default for AppState {
             synoptic_last_view: None,
             synoptic_error: None,
             synoptic_pending: false,
-            show_synoptic: true,
+            show_synoptic: false,
+            show_metar: false,
+            metar_last_fetch: None,
+            metar_last_attempt: None,
+            metar_error: None,
+            metar_pending: false,
+            metar_history: None,
+            metar_history_requested: None,
+            metar_history_pending: false,
+            metar_history_error: None,
             ambient_api_key: std::env::var("STORMSCOPE_AMBIENT_API_KEY")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
@@ -1256,6 +1365,13 @@ impl Default for AppState {
             show_totals: true,
             totals_hover: None,
             totals_hover_at: 0.0,
+            verification_open: false,
+            verification_hours: 1,
+            verification: None,
+            verification_pending: false,
+            verification_requested: None,
+            verification_fetched_at: None,
+            verification_error: None,
             sounding_open: false,
             sounding_pick_mode: false,
             sounding_reopen_after_pick: false,
@@ -1266,6 +1382,16 @@ impl Default for AppState {
             sounding_fetched_at: None,
             sounding: None,
             sounding_error: None,
+            sounding_kind: SoundingKind::Model,
+            rap_sounding: None,
+            rap_sounding_requested: None,
+            rap_sounding_fetched_at: None,
+            rap_sounding_error: None,
+            observed_sounding: None,
+            observed_sounding_station: None,
+            observed_sounding_requested: None,
+            observed_sounding_fetched_at: None,
+            observed_sounding_error: None,
             vad_open: false,
             show_rotation: true,
             show_hail_cores: true,
@@ -1278,12 +1404,33 @@ impl Default for AppState {
             qc_terrain_error: None,
             qc_terrain_site: String::new(),
             hrrr_open: std::env::var_os("STORMSCOPE_HRRR_OPEN").is_some(),
+            model_compare_open: std::env::var_os("STORMSCOPE_MODEL_COMPARE_OPEN").is_some(),
+            model_compare_hrrr_hour: 0,
+            model_compare_include_observed: false,
             hrrr: None,
             hrrr_requested: None,
             hrrr_fetched_at: None,
             hrrr_error: None,
             hrrr_hour: 0,
             hrrr_field: 2,
+            ensemble_open: false,
+            ensemble_field: radar_data::EnsembleField::Temperature,
+            ensemble: None,
+            ensemble_pending: false,
+            ensemble_requested: None,
+            ensemble_fetched_at: None,
+            ensemble_error: None,
+            midlevel_open: std::env::var_os("STORMSCOPE_MIDLEVEL_OPEN").is_some(),
+            show_midlevel: layers.contains("midlevel"),
+            midlevel: None,
+            midlevel_pending: false,
+            midlevel_requested_at: None,
+            midlevel_error: None,
+            midlevel_opacity: 0.55,
+            midlevel_frame: 0,
+            midlevel_playing: true,
+            midlevel_last_step: 0.0,
+            midlevel_contours: None,
             view3d_open: std::env::var_os("STORMSCOPE_3D_OPEN").is_some(),
             pane_max: if std::env::var_os("STORMSCOPE_3D_OPEN").is_some_and(|v| v == "max") {
                 PaneMax::View3d
@@ -1329,6 +1476,7 @@ impl Default for AppState {
             qpe: None,
             qpe_requested_at: None,
             show_model_field: layers.contains("field"),
+            model_field_model: radar_data::FieldModel::Hrrr,
             model_field_kind: radar_data::HrrrFieldKind::Cape,
             model_field_hour: 1,
             model_field_opacity: 0.55,
@@ -1337,17 +1485,26 @@ impl Default for AppState {
             // Lightning is on by default; STORMSCOPE_LAYERS still acts as an
             // explicit layer whitelist when set.
             show_lightning: layers.is_empty() || layers.contains("lightning"),
+            lightning_density: true,
             lightning: Vec::new(),
             lightning_pending: false,
             lightning_requested_at: None,
             lightning_last_key: None,
             lightning_satellite: None,
+            lightning_bins: std::collections::VecDeque::new(),
             show_goes: layers.contains("goes"),
             goes_opacity: 0.55,
             goes_layer: radar_data::goes::GoesLayer::Infrared,
             goes: None,
             goes_pending: None,
             goes_requested_at: None,
+            show_level3: layers.contains("level3"),
+            level3_opacity: 0.55,
+            level3: None,
+            level3_pending: false,
+            level3_requested_at: None,
+            level3_site: String::new(),
+            level3_error: None,
             show_futurecast: layers.contains("futurecast"),
             futurecast_opacity: 0.8,
             futurecast: None,
@@ -1368,6 +1525,13 @@ impl Default for AppState {
             srm_pending: None,
             srm_shown_key: None,
             show_tracks: true,
+            storm_trends_open: std::env::var_os("STORMSCOPE_STORM_TRENDS_OPEN").is_some(),
+            storm_trends: None,
+            storm_trends_pending: false,
+            storm_trends_requested: None,
+            storm_trends_key: None,
+            storm_trends_error: None,
+            storm_trends_selected: 0,
             outlook: None,
             outlooks: Vec::new(),
             // On by default with the outline-only look (fill 0.0): the risk

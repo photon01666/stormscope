@@ -67,10 +67,30 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     let pinching = false;
 
     if response.dragged() && !measuring && !crosshair_mode && !pinching {
-        let drag = response.drag_delta();
-        if drag != egui::Vec2::ZERO {
-            pan_view(&mut app.state.view, view, drag.x as f64, drag.y as f64);
+        // Capture the view/pointer where the drag began, once, so the pan is
+        // computed from the original frame instead of accumulating one frame's
+        // Mercator round trip after another. That accumulation is what made
+        // the point under the pointer drift during a drag.
+        if response.drag_started()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            app.map_drag_start = Some((app.state.view, pointer));
         }
+        if let Some((start_view, start_pointer)) = app.map_drag_start {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let dx = f64::from(pointer.x - start_pointer.x);
+                let dy = f64::from(pointer.y - start_pointer.y);
+                pan_view(&mut app.state.view, start_view, dx, dy);
+            }
+        } else {
+            let drag = response.drag_delta();
+            if drag != egui::Vec2::ZERO {
+                pan_view(&mut app.state.view, view, drag.x as f64, drag.y as f64);
+            }
+        }
+    }
+    if response.drag_stopped() {
+        app.map_drag_start = None;
     }
     if measuring {
         measure_interaction(rect, &response, view, app);

@@ -613,6 +613,8 @@ pub struct StormApp {
     pub live_pending_tool: Option<()>,
     /// The pending DATA fetch came from a Gemini Live tool, not the text AI.
     pub ai_data_from_live: bool,
+    /// In-progress map pan origin, for drift-free dragging.
+    pub map_drag_start: Option<(radar_render::MapView, egui::Pos2)>,
     /// Automatic per-scan Live AI Tracking state, rolling memory and feed.
     pub live_ai: crate::live_ai::LiveAi,
 }
@@ -786,6 +788,7 @@ impl StormApp {
             #[cfg(not(target_os = "android"))]
             live_pending_tool: None,
             ai_data_from_live: false,
+            map_drag_start: None,
             live_ai: crate::live_ai::LiveAi::default(),
         };
         // The data thread boots on the hard-coded default; if the user saved

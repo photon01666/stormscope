@@ -72,7 +72,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         // Mercator round trip after another. That accumulation is what made
         // the point under the pointer drift during a drag.
         if response.drag_started()
-            && let Some(pointer) = response.interact_pointer_pos()
+            && let Some(pointer) = ui
+                .input(|input| input.pointer.press_origin())
+                .or_else(|| response.interact_pointer_pos())
         {
             app.map_drag_start = Some((app.state.view, pointer));
         }
@@ -740,7 +742,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         || app.state.loop_state == crate::state::LoopState::Playing
                             && app.view3d_interact_at.elapsed()
                                 < std::time::Duration::from_millis(150);
-                    let raster_scale: f32 = if motion { 0.5 } else { 1.0 };
+                    let raster_scale: f32 = if motion && !response.dragged() {
+                        0.5
+                    } else {
+                        1.0
+                    };
 
                     use std::hash::{Hash, Hasher};
                     let mut h = std::collections::hash_map::DefaultHasher::new();

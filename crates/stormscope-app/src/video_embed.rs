@@ -123,8 +123,7 @@ impl VideoEmbed {
         }
         if self.webview.is_none() {
             let close_requested = self.close_requested.clone();
-            let webview = WebViewBuilder::new()
-                .with_url_and_headers(embed_url(&player.id), embed_headers())
+            let mut builder = WebViewBuilder::new()
                 .with_autoplay(true)
                 .with_user_agent(user_agent())
                 .with_initialization_script(player_close_script())
@@ -132,7 +131,29 @@ impl VideoEmbed {
                     if request.body().trim() == "close" {
                         close_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                })
+                });
+            // WebView2 drops a navigation-level Referer on redirects, which
+            // leaves YouTube showing error 153. Serve a tiny relay page from
+            // a custom HTTPS origin instead; the iframe then sends a stable
+            // `https://stormscope.localhost` referrer.
+            #[cfg(windows)]
+            {
+                use wry::WebViewBuilderExtWindows;
+                builder = builder
+                    .with_https_scheme(true)
+                    .with_custom_protocol("stormscope".into(), |_id, _request| {
+                        wry::http::Response::builder()
+                            .header("Content-Type", "text/html; charset=utf-8")
+                            .body(std::borrow::Cow::Borrowed(RELAY_HTML.as_bytes()))
+                            .expect("relay response")
+                    })
+                    .with_url(relay_url(&player.id));
+            }
+            #[cfg(not(windows))]
+            {
+                builder = builder.with_url_and_headers(embed_url(&player.id), embed_headers());
+            }
+            let webview = builder
                 .with_bounds(bounds)
                 .build_as_child(&self.parent)
                 .map_err(|error| format!("{error}"))?;
@@ -153,6 +174,11 @@ impl VideoEmbed {
 
         if self.video_id.as_deref() != Some(player.id.as_str()) {
             if let Some(webview) = &self.webview {
+                #[cfg(windows)]
+                webview
+                    .load_url(&relay_url(&player.id))
+                    .map_err(|error| format!("{error}"))?;
+                #[cfg(not(windows))]
                 webview
                     .load_url_with_headers(&embed_url(&player.id), embed_headers())
                     .map_err(|error| format!("{error}"))?;
@@ -176,6 +202,45 @@ fn embed_url(video_id: &str) -> String {
         "https://www.youtube.com/embed/{video_id}?autoplay=1&playsinline=1&rel=0&modestbranding=1"
     )
 }
+
+fn relay_url(video_id: &str) -> String {
+    format!("https://stormscope.localhost/player.html?v={video_id}")
+}
+
+/// Served from the custom HTTPS origin on Windows. The iframe is the embed
+/// player, so YouTube receives the relay page's origin as the Referer.
+const RELAY_HTML: &str = r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Stormscope video</title>
+<style>
+html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
+iframe { width:100%; height:100%; border:0; display:block; background:#000; }
+</style>
+</head>
+<body>
+<iframe id="player"
+  allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+  allowfullscreen
+  referrerpolicy="strict-origin-when-cross-origin"></iframe>
+<script>
+  const id = new URL(location.href).searchParams.get('v') || '';
+  if (id) {
+    const params = new URLSearchParams({
+      autoplay: '1', playsinline: '1', rel: '0', modestbranding: '1',
+      origin: location.origin
+    });
+    document.getElementById('player').src =
+      'https://www.youtube.com/embed/' + encodeURIComponent(id) + '?' + params;
+  } else {
+    document.body.textContent = 'Missing video id';
+  }
+</script>
+</body>
+</html>"#;
 
 /// YouTube's embedded player now requires an identifying HTTP Referer. A
 /// WebView loading the embed URL directly would otherwise show error 153

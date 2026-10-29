@@ -229,6 +229,15 @@ pub struct LoadProgress {
     pub at: std::time::Instant,
 }
 
+/// Which page the map Controls window is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapControlsTab {
+    /// Radar layers, analysis tools, QC and alert display.
+    Display,
+    /// SPC convective outlook layers, legend and fill.
+    Outlook,
+}
+
 /// Which set the alerts browser is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertsTab {
@@ -447,6 +456,7 @@ pub struct AppState {
     /// The per-pane control windows (opened from each pane's bottom-right
     /// "Controls" chip). The sidebar keeps everything else.
     pub map_controls_open: bool,
+    pub map_controls_tab: MapControlsTab,
     pub view3d_controls_open: bool,
     pub loop_state: LoopState,
     pub fps: f32,
@@ -1270,6 +1280,7 @@ impl Default for AppState {
             archive_hover_at: 0.0,
             archive_focus: None,
             map_controls_open: std::env::var_os("STORMSCOPE_MAP_CONTROLS").is_some(),
+            map_controls_tab: MapControlsTab::Display,
             view3d_controls_open: false,
             archive_minute: {
                 use chrono::Timelike;

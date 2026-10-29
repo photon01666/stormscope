@@ -1234,11 +1234,20 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     }
     let scale = app.sidebar_scale.max(1.0);
     let desktop = !cfg!(target_os = "android");
+    // The controls window is a vertical stack. At 4K the normal sidebar
+    // scale makes that stack taller than the screen, so use a slightly
+    // tighter type scale here: still comfortably above native size, but every
+    // section fits without a scrollbar.
+    let ui_scale = if desktop {
+        (scale * 0.82).max(1.0)
+    } else {
+        scale
+    };
     let size = if desktop {
         let screen_h = ctx.content_rect().height();
         egui::vec2(
-            620.0 * scale,
-            (screen_h - 80.0).min(780.0 * scale).max(420.0),
+            440.0 * scale,
+            (screen_h - 24.0).min(900.0 * scale).max(420.0),
         )
     } else {
         egui::vec2(300.0 * scale, 420.0 * scale)
@@ -1263,27 +1272,38 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
         {
             close_requested |= phone_header(ui, "Map controls");
         }
-        apply_text_scale(ui, scale);
+        apply_text_scale(ui, ui_scale);
+        ui.spacing_mut().item_spacing.y = 4.0 * ui_scale;
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut app.state.map_controls_tab,
+                crate::state::MapControlsTab::Display,
+                "Display",
+            );
+            ui.selectable_value(
+                &mut app.state.map_controls_tab,
+                crate::state::MapControlsTab::Outlook,
+                "SPC outlook",
+            );
+        });
+        ui.separator();
         let scroll = egui::ScrollArea::vertical()
             .id_salt("stormscope.map_controls.scroll")
             .max_height((size.y - 44.0 * scale).max(120.0))
             .auto_shrink([false, true]);
         scroll.show(ui, |ui| {
             let mut sliders: Vec<(u8, egui::Rect)> = Vec::new();
-            if desktop {
-                ui.columns(2, |columns| {
-                    map_controls_display(&mut columns[0], app, &mut sliders);
-                    map_controls_stations(&mut columns[0], app);
-                    map_controls_qc(&mut columns[0], app, &mut sliders);
-                    map_controls_analysis(&mut columns[1], app);
-                    map_controls_alerts(&mut columns[1], app, &mut sliders);
-                });
-            } else {
-                map_controls_display(ui, app, &mut sliders);
-                map_controls_stations(ui, app);
-                map_controls_analysis(ui, app);
-                map_controls_qc(ui, app, &mut sliders);
-                map_controls_alerts(ui, app, &mut sliders);
+            match app.state.map_controls_tab {
+                crate::state::MapControlsTab::Display => {
+                    map_controls_display(ui, app, &mut sliders);
+                    map_controls_stations(ui, app);
+                    map_controls_analysis(ui, app);
+                    map_controls_qc(ui, app, &mut sliders);
+                    map_controls_alerts(ui, app, &mut sliders);
+                }
+                crate::state::MapControlsTab::Outlook => {
+                    map_controls_outlook(ui, app);
+                }
             }
             control_window_wheel(ui, &sliders, |target, steps| match target {
                 0 => {
@@ -1733,6 +1753,252 @@ fn map_controls_alerts(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<
     );
     let fill = warning_fill_slider(ui, app);
     sliders.push((12, fill));
+}
+
+/// SPC convective outlook controls and legend.
+///
+/// Lives on its own page of the map Controls window: the outlook has four
+/// product types and a long legend, and keeping it out of the main display
+/// stack is what lets the display controls fit without scrolling.
+fn map_controls_outlook(ui: &mut egui::Ui, app: &mut StormApp) {
+    use radar_core::outlooks::OutlookType as T;
+
+    ui.label(egui::RichText::new("SPC convective outlook").strong());
+    let toggled = ui
+        .checkbox(&mut app.state.show_outlook, "Show SPC outlook")
+        .changed();
+    if toggled && app.state.show_outlook {
+        // The coordinator fetches every available product for the day; the
+        // selected type only controls which legend is in front.
+        let _ = app.tx.send(crate::app::DataCmd::LoadOutlook(
+            app.state.outlook_day,
+            app.state.outlook_type,
+        ));
+    }
+    if !app.state.show_outlook {
+        ui.label(
+            egui::RichText::new("Turn this on to draw SPC risk areas over the radar.")
+                .weak()
+                .small(),
+        );
+        return;
+    }
+
+    ui.horizontal_wrapped(|ui| {
+        for d in 1u8..=3 {
+            if ui
+                .selectable_label(app.state.outlook_day == d, format!("Day {d}"))
+                .clicked()
+                && app.state.outlook_day != d
+            {
+                app.state.outlook_day = d;
+                app.state.outlooks.clear();
+                app.state.outlook = None;
+                if d == 3 && app.state.outlook_type.is_probability() {
+                    app.state.outlook_type = T::Categorical;
+                }
+                let _ = app
+                    .tx
+                    .send(crate::app::DataCmd::LoadOutlook(d, app.state.outlook_type));
+            }
+        }
+    });
+
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .selectable_label(app.state.outlook_all_types, "ALL")
+            .on_hover_text("Show every available outlook product and its legend")
+            .clicked()
+        {
+            app.state.outlook_all_types = true;
+            app.state.outlook_type = T::Categorical;
+            let _ = app.tx.send(crate::app::DataCmd::LoadOutlook(
+                app.state.outlook_day,
+                T::Categorical,
+            ));
+        }
+        for t in [T::Categorical, T::Tornado, T::Wind, T::Hail] {
+            let enabled = t == T::Categorical || app.state.outlook_day < 3;
+            let selected = !app.state.outlook_all_types && app.state.outlook_type == t;
+            let resp = ui.selectable_label(selected, t.label());
+            let resp = if enabled {
+                resp
+            } else {
+                resp.on_hover_text("SPC publishes no probability outlooks for day 3")
+            };
+            if enabled && resp.clicked() {
+                app.state.outlook_all_types = false;
+                app.state.outlook_type = t;
+                let _ = app
+                    .tx
+                    .send(crate::app::DataCmd::LoadOutlook(app.state.outlook_day, t));
+            }
+        }
+    });
+
+    ui.label(
+        egui::RichText::new(if app.state.outlook_all_types {
+            "ALL: every available product is listed and drawn together."
+        } else {
+            "Only the selected product is listed and drawn."
+        })
+        .weak()
+        .small(),
+    );
+
+    let day = app.state.outlook_day;
+    let primary = app
+        .state
+        .outlooks
+        .iter()
+        .find(|o| o.day == day && o.ty == T::Categorical)
+        .or_else(|| {
+            app.state
+                .outlooks
+                .iter()
+                .find(|o| o.day == day && o.ty == app.state.outlook_type)
+        });
+    if let Some(o) = primary {
+        let issued = o
+            .issue
+            .map(|t| crate::timefmt::fmt_central(&t))
+            .unwrap_or_else(|| "?".into());
+        ui.label(
+            egui::RichText::new(format!("{} — issued {issued}", o.forecaster))
+                .weak()
+                .small(),
+        );
+        if let Some(expire) = o.expire {
+            ui.label(
+                egui::RichText::new(format!(
+                    "valid until {}",
+                    crate::timefmt::fmt_central(&expire)
+                ))
+                .weak()
+                .small(),
+            );
+        }
+    }
+
+    if app.state.outlook_all_types {
+        for ty in [T::Categorical, T::Tornado, T::Wind, T::Hail] {
+            if ty.is_probability() && !radar_core::outlooks::probabilities_available(day) {
+                continue;
+            }
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(egui::RichText::new(ty.label()).strong());
+            match app
+                .state
+                .outlooks
+                .iter()
+                .find(|o| o.day == day && o.ty == ty)
+            {
+                Some(o) => outlook_legend(ui, o),
+                None => {
+                    ui.label(
+                        egui::RichText::new(format!("loading {}…", ty.label().to_lowercase()))
+                            .weak()
+                            .small(),
+                    );
+                }
+            }
+        }
+    } else {
+        match app
+            .state
+            .outlooks
+            .iter()
+            .find(|o| o.day == day && o.ty == app.state.outlook_type)
+        {
+            Some(o) => outlook_legend(ui, o),
+            None => {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "loading {} outlook day {day}…",
+                        app.state.outlook_type.label()
+                    ))
+                    .weak()
+                    .small(),
+                );
+            }
+        }
+    }
+
+    ui.add_space(6.0);
+    ui.label("Outlook fill");
+    ui.add(egui::Slider::new(&mut app.state.outlook_opacity, 0.0..=1.0));
+    ui.label(
+        egui::RichText::new(
+            "categorical fills sit under the radar; all product outlines are drawn on top",
+        )
+        .weak()
+        .small(),
+    );
+}
+
+/// One product's legend: risk levels for categorical, probabilities for
+/// tornado/wind/hail.
+fn outlook_legend(ui: &mut egui::Ui, o: &radar_core::outlooks::Outlook) {
+    if o.ty == radar_core::outlooks::OutlookType::Categorical {
+        let mut features: Vec<&radar_core::outlooks::OutlookFeature> = o.features.iter().collect();
+        features.sort_by_key(|f| std::cmp::Reverse(f.risk_level().unwrap_or(0)));
+        if features.is_empty() {
+            ui.label(
+                egui::RichText::new("no risk areas in this outlook")
+                    .weak()
+                    .small(),
+            );
+        }
+        for f in features {
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    rect,
+                    2.0,
+                    egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
+                );
+                ui.label(egui::RichText::new(f.headline()).strong());
+            });
+            ui.label(egui::RichText::new(f.description()).weak().small());
+        }
+    } else {
+        if o.features.is_empty() {
+            ui.label(
+                egui::RichText::new(format!("no {} areas in this outlook", o.ty.noun()))
+                    .weak()
+                    .small(),
+            );
+        }
+        for f in &o.features {
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    rect,
+                    2.0,
+                    egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
+                );
+                let text = if f.name.is_empty() {
+                    f.probability_text()
+                } else {
+                    f.name.clone()
+                };
+                ui.label(egui::RichText::new(text).strong());
+            });
+        }
+        if !o.features.is_empty() {
+            ui.label(
+                egui::RichText::new(format!(
+                    "chance of {} within 25 miles of a point",
+                    o.ty.noun()
+                ))
+                .weak()
+                .small(),
+            );
+        }
+    }
 }
 
 fn qpe_legend(ui: &mut egui::Ui, product: radar_data::mrms::MrmsProduct) {
@@ -2917,206 +3183,6 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
     }
     // The 3D display controls (echo / opacity / height / tilt / altitude /
     // detail) live in the pane's own "Controls" window now.
-    // --- SPC convective outlook overlay ------------------------------------
-    ui.add_space(6.0);
-    let toggled = ui
-        .checkbox(&mut app.state.show_outlook, "Show SPC outlook")
-        .changed();
-    if toggled && app.state.show_outlook {
-        // Fetch the selected day fresh when the layer is switched on.
-        let _ = app.tx.send(crate::app::DataCmd::LoadOutlook(
-            app.state.outlook_day,
-            app.state.outlook_type,
-        ));
-    }
-    if app.state.show_outlook {
-        ui.horizontal(|ui| {
-            for d in 1u8..=3 {
-                if ui
-                    .selectable_label(app.state.outlook_day == d, format!("Day {d}"))
-                    .clicked()
-                {
-                    app.state.outlook_day = d;
-                    // Drop the previous day's products immediately; the map
-                    // must not keep drawing day 1 under a day 2 selection.
-                    app.state.outlooks.clear();
-                    app.state.outlook = None;
-                    // Day 3 has no probability products: fall back so the
-                    // selector and the fetch always agree.
-                    if d == 3 && app.state.outlook_type.is_probability() {
-                        app.state.outlook_type = radar_core::outlooks::OutlookType::Categorical;
-                    }
-                    let _ = app
-                        .tx
-                        .send(crate::app::DataCmd::LoadOutlook(d, app.state.outlook_type));
-                }
-            }
-        });
-        // Product type, as SPC offers it: ALL (the default) draws the
-        // categorical plus tornado/wind/hail probabilities together. Picking
-        // one product instead shows only it; the choice also selects the
-        // legend, hover emphasis and discussion target. Days 1–2 have the
-        // probability products; day 3 is categorical only.
-        ui.horizontal_wrapped(|ui| {
-            use radar_core::outlooks::OutlookType as T;
-            let all = app.state.outlook_all_types;
-            if ui
-                .selectable_label(all, "ALL")
-                .on_hover_text("Show categorical, tornado, wind and hail together")
-                .clicked()
-            {
-                app.state.outlook_all_types = true;
-                // Keep the primary (categorical) legend under ALL.
-                app.state.outlook_type = T::Categorical;
-                let _ = app.tx.send(crate::app::DataCmd::LoadOutlook(
-                    app.state.outlook_day,
-                    T::Categorical,
-                ));
-            }
-            for t in [T::Categorical, T::Tornado, T::Wind, T::Hail] {
-                let enabled = t == T::Categorical || app.state.outlook_day < 3;
-                let selected = !app.state.outlook_all_types && app.state.outlook_type == t;
-                // egui 0.36 has no disabled selectable widget (only the Ui
-                // method remains), so unavailable options explain themselves
-                // on hover instead of looking broken.
-                let resp = ui.selectable_label(selected, t.label());
-                let resp = if enabled {
-                    resp
-                } else {
-                    resp.on_hover_text("SPC publishes no probability outlooks for day 3")
-                };
-                if enabled && resp.clicked() {
-                    app.state.outlook_all_types = false;
-                    app.state.outlook_type = t;
-                    let _ = app
-                        .tx
-                        .send(crate::app::DataCmd::LoadOutlook(app.state.outlook_day, t));
-                }
-            }
-        });
-        ui.label(
-            egui::RichText::new(if app.state.outlook_all_types {
-                "ALL: categorical risk fills plus Tornado, Wind and Hail outlines \
-                 are drawn together."
-                    .to_string()
-            } else {
-                format!(
-                    "Showing only the {} outlook; choose ALL to draw every product \
-                     together.",
-                    app.state.outlook_type.label()
-                )
-            })
-            .weak()
-            .small(),
-        );
-        match &app.state.outlook {
-            Some(o) if o.day == app.state.outlook_day && o.ty == app.state.outlook_type => {
-                let issued = o
-                    .issue
-                    .map(|t| crate::timefmt::fmt_central(&t))
-                    .unwrap_or_else(|| "?".into());
-                ui.label(
-                    egui::RichText::new(format!("{} — issued {issued}", o.forecaster))
-                        .weak()
-                        .small(),
-                );
-                if let Some(expire) = o.expire {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "valid until {}",
-                            crate::timefmt::fmt_central(&expire)
-                        ))
-                        .weak()
-                        .small(),
-                    );
-                }
-                ui.add_space(2.0);
-                if o.ty == radar_core::outlooks::OutlookType::Categorical {
-                    // Legend: one row per risk category present, most severe
-                    // first, with the NWS wording for what that level means.
-                    let mut features: Vec<&radar_core::outlooks::OutlookFeature> =
-                        o.features.iter().collect();
-                    features.sort_by_key(|f| std::cmp::Reverse(f.risk_level().unwrap_or(0)));
-                    for f in features {
-                        ui.horizontal(|ui| {
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                            ui.painter().rect_filled(
-                                rect,
-                                2.0,
-                                egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
-                            );
-                            ui.label(egui::RichText::new(f.headline()).strong());
-                        });
-                        ui.label(egui::RichText::new(f.description()).weak().small());
-                    }
-                } else {
-                    // Probability legend: SPC's own LABEL2 per area ("2%
-                    // Tornado Risk") in SPC's own colors, plus once the
-                    // definition SPC uses for these outlooks.
-                    if o.features.is_empty() {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "no {} areas in the day {} outlook",
-                                o.ty.label().to_lowercase(),
-                                o.day
-                            ))
-                            .weak()
-                            .small(),
-                        );
-                    }
-                    for f in &o.features {
-                        ui.horizontal(|ui| {
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                            ui.painter().rect_filled(
-                                rect,
-                                2.0,
-                                egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]),
-                            );
-                            let text = if f.name.is_empty() {
-                                f.probability_text()
-                            } else {
-                                f.name.clone()
-                            };
-                            ui.label(egui::RichText::new(text).strong());
-                        });
-                    }
-                    if !o.features.is_empty() {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "chance of {} within 25 miles of a point",
-                                o.ty.noun()
-                            ))
-                            .weak()
-                            .small(),
-                        );
-                    }
-                }
-            }
-            _ => {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "loading {} outlook day {}…",
-                        app.state.outlook_type.label(),
-                        app.state.outlook_day
-                    ))
-                    .weak()
-                    .small(),
-                );
-            }
-        }
-        ui.label("Outlook fill");
-        ui.add(egui::Slider::new(&mut app.state.outlook_opacity, 0.0..=1.0));
-        ui.label(
-            egui::RichText::new(
-                "categorical fills sit under the radar; all product outlines on top",
-            )
-            .weak()
-            .small(),
-        );
-    }
-
     // --- Measure tool (RadarScope-style distance line + blue bubble) -----
     ui.add_space(8.0);
     ui.label("Measure");

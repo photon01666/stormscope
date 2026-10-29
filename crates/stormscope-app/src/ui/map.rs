@@ -3260,11 +3260,11 @@ pub(super) fn draw_tag_label(
 /// SPC convective-outlook overlay, all products for the selected day at once:
 /// categorical plus the tornado/wind/hail probability bands.
 ///
-/// `fills == true` paints translucent categorical fills (called *under* the
-/// radar so echoes stay crisp); `fills == false` paints every product's
+/// `fills == true` paints translucent fills for every product (called *under*
+/// the radar so echoes stay crisp); `fills == false` paints every product's
 /// boundary outlines (called *over* the radar so they stay legible across
-/// rain). Probability fills are skipped: stacking four filled products turns
-/// the map into mud, while their outlines still show each hazard band.
+/// rain). The fill slider controls all products, including the tornado, wind
+/// and hail probability areas — not just the categorical risk bands.
 /// Colors come straight from SPC's GeoJSON, so the overlay matches their maps.
 fn draw_outlooks(
     painter: &egui::Painter,
@@ -3300,9 +3300,6 @@ fn draw_outlooks(
             continue;
         }
         let categorical = o.ty == radar_core::outlooks::OutlookType::Categorical;
-        if fills && !categorical {
-            continue;
-        }
         let selected = o.ty == app.state.outlook_type;
         for f in o.sorted_features() {
             let stroke = egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]);

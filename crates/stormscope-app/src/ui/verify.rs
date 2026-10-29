@@ -27,7 +27,7 @@ pub fn verification_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
     let fill = cfg!(target_os = "android");
     let scale = super::big_text_scale(app);
     let screen = ctx.content_rect().size();
-    let size = super::popup_size(ctx, scale, 760.0, 500.0);
+    let size = super::popup_size(ctx, scale, 520.0, 650.0);
     let max_h = super::popup_max_height(ctx, scale);
     let mut open = app.state.verification_open;
     let mut refresh = false;
@@ -35,7 +35,8 @@ pub fn verification_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
         .id(egui::Id::new("stormscope.verification"))
         .default_pos(super::centered_popup_pos(ctx, size))
         .max_width((screen.x - 16.0).max(200.0))
-        .min_width((520.0 * scale).min((screen.x - 24.0).max(200.0)));
+        .min_width((360.0 * scale).min((screen.x - 24.0).max(200.0)))
+        .max_width((560.0 * scale).min((screen.x - 16.0).max(200.0)));
     #[cfg(target_os = "android")]
     if fill {
         window = window.title_bar(false);
@@ -150,7 +151,7 @@ pub fn verification_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
                     .weak(),
                 );
             } else {
-                let table_h = (report.pairs.len() as f32 * 26.0 * scale)
+                let table_h = (report.pairs.len() as f32 * 54.0 * scale)
                     .min((max_h - 250.0 * scale).max(120.0))
                     .max(120.0);
                 egui::ScrollArea::vertical()
@@ -158,32 +159,30 @@ pub fn verification_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
                     .max_height(table_h)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        egui::Grid::new("stormscope.verification.pairs")
-                            .num_columns(4)
-                            .striped(true)
-                            .spacing([16.0, 4.0])
-                            .show(ui, |ui| {
-                                ui.label(egui::RichText::new("Station").strong());
-                                ui.label(egui::RichText::new("Gauge").strong());
-                                ui.label(egui::RichText::new("QPE").strong());
-                                ui.label(egui::RichText::new("QPE − gauge").strong());
-                                ui.end_row();
-                                for pair in &report.pairs {
-                                    ui.label(format!("{} {}", pair.station_id, pair.station_name));
-                                    ui.label(format!("{:.2} in", pair.gauge_in));
-                                    ui.label(format!("{:.2} in", pair.qpe_in));
-                                    let d = pair.error_in();
-                                    let color = if d.abs() < 0.10 {
-                                        egui::Color32::from_rgb(130, 230, 150)
-                                    } else if d.abs() < 0.50 {
-                                        egui::Color32::from_rgb(255, 210, 110)
-                                    } else {
-                                        egui::Color32::from_rgb(255, 120, 110)
-                                    };
-                                    ui.colored_label(color, format!("{d:+.2} in"));
-                                    ui.end_row();
-                                }
+                        for pair in &report.pairs {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} {}",
+                                    pair.station_id, pair.station_name
+                                ))
+                                .strong(),
+                            );
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(format!("Gauge {:.2} in", pair.gauge_in));
+                                ui.label(format!("QPE {:.2} in", pair.qpe_in));
+                                let d = pair.error_in();
+                                let color = if d.abs() < 0.10 {
+                                    egui::Color32::from_rgb(130, 230, 150)
+                                } else if d.abs() < 0.50 {
+                                    egui::Color32::from_rgb(255, 210, 110)
+                                } else {
+                                    egui::Color32::from_rgb(255, 120, 110)
+                                };
+                                ui.colored_label(color, format!("{d:+.2} in"));
                             });
+                            ui.add_space(3.0);
+                            ui.separator();
+                        }
                     });
             }
             ui.label(

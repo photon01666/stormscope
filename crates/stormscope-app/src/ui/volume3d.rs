@@ -561,6 +561,9 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             .map(|w| (w, false))
             .chain(archive_warnings.iter().copied().map(|w| (w, true)))
         {
+            if !app.state.show_watches && super::alerts::is_watch(w) {
+                continue;
+            }
             if !seen.insert(w.id.as_str()) {
                 continue;
             }
@@ -620,9 +623,14 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             }
             // The 3D pane's own wash strength (0 = outlines only), read
             // through the same helper the map uses so a percentage means the
-            // same thing in both views. Walls wash a little lighter than the
-            // ground fill: there are a lot more of them per warning.
-            let wash = super::map::warning_fill_alpha(intensity, app.state.view3d_alerts_fill);
+            // same thing in both views. Watches keep the map layer's 80%
+            // transparency. Walls wash a little lighter than the ground fill:
+            // there are a lot more of them per warning.
+            let wash = if poly.event.contains("Watch") {
+                super::map::watch_fill_alpha(intensity)
+            } else {
+                super::map::warning_fill_alpha(intensity, app.state.view3d_alerts_fill)
+            };
             // Historical polygons are calm: thinner, dimmer, a lighter wash —
             // the live warnings own the loud styling, as on the 2D map.
             let calm = if poly.historical { 0.55 } else { 1.0 };

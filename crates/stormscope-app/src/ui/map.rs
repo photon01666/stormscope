@@ -273,7 +273,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                 let at = egui::pos2(cx as f32, cy as f32);
                                 let stack = if super::alerts::showing_live_radar(&app.state) {
                                     super::alerts::warning_stack_at(
-                                        &app.state.alerts,
+                                        app.state.alerts.iter().filter(|w| {
+                                            super::alerts::visible_on_map(&app.state, w)
+                                        }),
                                         lon,
                                         lat,
                                         |lo, la| view.lonlat_to_view_px(lo, la),
@@ -489,7 +491,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     } else {
         response.hover_pos()
     };
-    let mut map_stack: Vec<String> = if app.state.show_alerts
+    let mut map_stack: Vec<String> = if (app.state.show_alerts || app.state.show_watches)
         && super::alerts::showing_live_radar(&app.state)
         && !response.dragged()
     {
@@ -498,7 +500,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 let (cx, cy) = viewport_pos(rect, p);
                 let (lon, lat) = view.view_px_to_lonlat(cx, cy);
                 super::alerts::warning_stack_at(
-                    &app.state.alerts,
+                    app.state
+                        .alerts
+                        .iter()
+                        .filter(|w| super::alerts::visible_on_map(&app.state, w)),
                     lon,
                     lat,
                     |lo, la| view.lonlat_to_view_px(lo, la),
@@ -3524,7 +3529,7 @@ fn draw_archive_warnings(
 }
 
 fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
-    if !app.state.show_alerts {
+    if !app.state.show_alerts && !app.state.show_watches {
         return;
     }
     // Today's warnings over a past scan would be a sync lie: in archive mode
@@ -3537,8 +3542,12 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
     let mut animating = false;
 
     for w in &app.state.alerts {
+        if !super::alerts::visible_on_map(&app.state, w) {
+            continue;
+        }
         let Some(rings) = &w.polygon else { continue };
         let color = super::alerts::warning_color(w);
+        let watch = super::alerts::is_watch(w);
 
         // Glow strength: 1.0 while the row is hovered in the alerts browser,
         // 0.8 for the warning the map pointer is on (a touch gentler —
@@ -3594,8 +3603,13 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
             ));
             // Filled at rest; the wash clears while the pointer is on it so
             // the radar is visible where the user is looking, leaving only
-            // the outline. The slider scales the resting fill.
-            let fill = warning_fill_alpha(intensity, app.state.alerts_fill);
+            // the outline. The slider scales the resting fill for warnings;
+            // watches use their own fixed 80% transparency (20% fill).
+            let fill = if watch {
+                watch_fill_alpha(intensity)
+            } else {
+                warning_fill_alpha(intensity, app.state.alerts_fill)
+            };
             if fill > 0.0 {
                 painter.add(egui::Shape::convex_polygon(
                     pts,
@@ -4594,6 +4608,13 @@ pub(super) fn warning_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
     0.95 * (1.0 - intensity.clamp(0.0, 1.0)) * user_fill.clamp(0.0, 1.0)
 }
 
+/// Watch boxes start at 80% transparency (a 20% fill) when the layer is
+/// switched on. The outline stays at full strength so the watch boundary is
+/// still easy to follow over radar and satellite.
+pub(super) fn watch_fill_alpha(intensity: f32) -> f32 {
+    0.20 * (1.0 - intensity.clamp(0.0, 1.0))
+}
+
 /// How close (viewport px) the pointer must be to a warning polygon's outline
 /// for the hover and the click to treat it as aimed at that polygon: the same
 /// 8 px reach the SPC outlines use (`OUTLOOK_BORDER_PX`), so "what lights up is
@@ -5543,6 +5564,13 @@ mod tests {
         // Out-of-range values clamp instead of misbehaving.
         assert!((warning_fill_alpha(0.0, 3.0) - 0.95).abs() < 1e-6);
         assert_eq!(warning_fill_alpha(1.0, -1.0), 0.0);
+    }
+
+    #[test]
+    fn watch_fill_starts_at_eighty_percent_transparency() {
+        assert!((watch_fill_alpha(0.0) - 0.20).abs() < 1e-6);
+        assert_eq!(watch_fill_alpha(1.0), 0.0, "clears under the pointer");
+        assert_eq!(watch_fill_alpha(-1.0), 0.20, "clamped");
     }
 
     /// Clicking a stack of overlapping warnings: the first click takes the

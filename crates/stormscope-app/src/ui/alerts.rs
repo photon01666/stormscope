@@ -147,6 +147,24 @@ fn alert_group_header(ui: &mut egui::Ui, event: &str, count: usize, scale: f32) 
     });
 }
 
+/// NWS watch products (`Tornado Watch`, `Severe Thunderstorm Watch`,
+/// `Flood Watch`, …). Watches are broad-area, longer-fused boxes; they are a
+/// separate map layer from warnings and have their own display switch.
+pub(super) fn is_watch(w: &Warning) -> bool {
+    w.event.contains("Watch")
+}
+
+/// Whether this alert belongs on the map right now. Warnings (and every
+/// non-watch product) follow the existing alerts switch; watches follow their
+/// own switch, which starts off.
+pub(super) fn visible_on_map(state: &crate::state::AppState, w: &Warning) -> bool {
+    if is_watch(w) {
+        state.show_watches
+    } else {
+        state.show_alerts
+    }
+}
+
 /// Map/popup color for an alert by event type (matches the polygon colors).
 pub(super) fn warning_color(w: &Warning) -> egui::Color32 {
     if w.is_tornado() {
@@ -552,6 +570,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         .copied()
         .filter(|w| w.polygon.is_some())
         .collect();
+    let all_watch_poly: Vec<&Warning> = all_poly.iter().copied().filter(|w| is_watch(w)).collect();
     let all_zones: Vec<&Warning> = all.iter().filter(|w| w.polygon.is_none()).collect();
 
     // Archive tab (historical warnings). Rendered from split borrows, so the
@@ -649,6 +668,16 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     tab,
                     AlertsTab::Station,
                     format!("{site_id} {site_city} ({})", station_poly.len()),
+                );
+                ui.selectable_value(
+                    tab,
+                    AlertsTab::Watches,
+                    format!("Watches ({})", all_watch_poly.len()),
+                )
+                .on_hover_text(
+                    "Active NWS watch boxes nationwide. Watches are a separate \
+                     layer on the map and start hidden; click one here to turn \
+                     the watch layer on and center it.",
                 );
                 ui.selectable_value(
                     tab,
@@ -756,6 +785,7 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
             let source: Vec<&Warning> = match *tab {
                 AlertsTab::All => all_poly.clone(),
                 AlertsTab::Station => station_poly.clone(),
+                AlertsTab::Watches => all_watch_poly.clone(),
                 AlertsTab::Zones => all_zones.clone(),
                 // Handled above (the archive tab renders its own body).
                 AlertsTab::Archive | AlertsTab::ArchiveStation => Vec::new(),
@@ -769,6 +799,8 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 ui.label(
                     egui::RichText::new(if station_poly.is_empty() && *tab == AlertsTab::Station {
                         "No polygon alerts near this site."
+                    } else if all_watch_poly.is_empty() && *tab == AlertsTab::Watches {
+                        "No active watches right now."
                     } else if all_zones.is_empty() && *tab == AlertsTab::Zones {
                         "No zone-only alerts right now."
                     } else {
@@ -864,6 +896,18 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     }
     app.state.alerts_hover = hover;
     if let Some(id) = clicked {
+        // Clicking a watch is an explicit request to see it: the layer starts
+        // hidden, but a watch row should not center on an invisible polygon.
+        let is_watch_click = app
+            .state
+            .alerts
+            .iter()
+            .chain(app.state.all_alerts.iter())
+            .find(|w| w.id == id)
+            .is_some_and(is_watch);
+        if is_watch_click {
+            app.state.show_watches = true;
+        }
         // Focus + timestamp: the map flashes this polygon briefly and keeps a
         // steady highlight afterwards, so the clicked row is identifiable.
         app.state.alerts_focus = Some(id);
@@ -2022,6 +2066,21 @@ mod tests {
         // With no significant alert nearby: nothing to flash.
         assert!(significant_near(&alerts[..1], site.0, site.1, STATION_ALERT_RADIUS_KM).is_none());
         assert!(significant_near(&alerts[3..], site.0, site.1, 100.0).is_none());
+    }
+
+    /// Watches are their own layer, not warnings.
+    #[test]
+    fn watches_are_classified_separately() {
+        assert!(is_watch(&warn("tw", "Tornado Watch", 35.0, -97.0, true)));
+        assert!(is_watch(&warn(
+            "fw",
+            "Flash Flood Watch",
+            35.0,
+            -97.0,
+            true
+        )));
+        assert!(!is_watch(&warn("tw", "Tornado Warning", 35.0, -97.0, true)));
+        assert!(!is_watch(&warn("adv", "Wind Advisory", 35.0, -97.0, true)));
     }
 
     /// Watches flash in the family color but dimmed, so they read as less

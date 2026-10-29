@@ -117,7 +117,11 @@ pub(super) fn draw_mcds(
         }
         let hovered = app.state.mcd_hover == Some(m.number);
         let color = mcd_color();
-        let fill = color.gamma_multiply(if hovered { 0.24 } else { 0.12 });
+        // Mesoscale discussions are broad, long-lived areas. At rest they are
+        // 90% transparent (10% fill) so the radar stays dominant; hovering
+        // raises the wash just enough to confirm which area is under the
+        // pointer.
+        let fill = color.gamma_multiply(if hovered { 0.18 } else { 0.10 });
         if let Some(mesh) = super::map::triangulate(std::slice::from_ref(&pts), fill) {
             painter.add(egui::Shape::mesh(mesh));
         }

@@ -1608,6 +1608,23 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                     .small(),
             );
             ui.add_space(4.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Alerts").strong());
+            ui.checkbox(&mut app.state.show_watches, "Show watches")
+                .on_hover_text(
+                    "NWS watch boxes (tornado, severe thunderstorm, flood, winter…). \
+                     This layer is off by default and draws at 80% transparency so the \
+                     radar and basemap stay readable underneath. Clicking a watch in \
+                     the Alerts window turns it on automatically.",
+                );
+            if app.state.show_watches {
+                ui.label(
+                    egui::RichText::new("watch boxes · 80% transparent")
+                        .weak()
+                        .small(),
+                );
+            }
+            ui.add_space(4.0);
             let fill = warning_fill_slider(ui, app);
             sliders.push((12, fill));
             control_window_wheel(ui, &sliders, |target, steps| match target {

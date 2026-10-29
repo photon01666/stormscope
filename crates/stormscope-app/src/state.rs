@@ -236,6 +236,9 @@ pub enum AlertsTab {
     All,
     /// Only alerts whose polygon lies near the selected radar site.
     Station,
+    /// Active NWS watches nationwide. Kept separate from the warning lists so
+    /// the watch layer can be toggled independently on the map.
+    Watches,
     /// Active alerts with no polygon (zone/county based). Text and timing
     /// only — nothing to draw or center the map on — so they live on their
     /// own tab instead of crowding the polygon alerts.
@@ -504,6 +507,10 @@ pub struct AppState {
     pub storm_watch_enabled: bool,
     pub storm_watch_polled_at: f64,
     pub show_alerts: bool,
+    /// NWS watch polygons are a separate map layer: watches are broad,
+    /// long-fused boxes and many people run with them hidden. Off by default;
+    /// when enabled they are drawn at 80% transparency (20% fill).
+    pub show_watches: bool,
     /// Alerts browser visibility and which tab is showing.
     pub alerts_popup_open: bool,
     pub alerts_tab: AlertsTab,
@@ -1295,6 +1302,7 @@ impl Default for AppState {
             alerts_fast: Vec::new(),
             all_alerts: Vec::new(),
             show_alerts: true,
+            show_watches: false,
             alerts_popup_open: false,
             alerts_tab: AlertsTab::Station,
             alerts_filter: String::new(),

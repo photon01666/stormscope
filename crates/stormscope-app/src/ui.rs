@@ -1245,10 +1245,7 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     };
     let size = if desktop {
         let screen_h = ctx.content_rect().height();
-        egui::vec2(
-            440.0 * scale,
-            (screen_h - 24.0).min(900.0 * scale).max(420.0),
-        )
+        egui::vec2(280.0 * scale, (screen_h - 24.0).max(420.0))
     } else {
         egui::vec2(300.0 * scale, 420.0 * scale)
     };
@@ -1264,6 +1261,11 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             .title_bar(false)
             .min_size(egui::vec2(size.x, 40.0 * scale))
             .max_size(size);
+    } else {
+        // egui remembers a window's last size. The compact controls window
+        // was previously opened shorter; pin it to the full available height
+        // so narrowing it never reintroduces a scrollbar.
+        window = window.fixed_size(size);
     }
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close_requested = false;
@@ -1273,7 +1275,7 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             close_requested |= phone_header(ui, "Map controls");
         }
         apply_text_scale(ui, ui_scale);
-        ui.spacing_mut().item_spacing.y = 4.0 * ui_scale;
+        ui.spacing_mut().item_spacing.y = 3.0 * ui_scale;
         ui.horizontal(|ui| {
             ui.selectable_value(
                 &mut app.state.map_controls_tab,
@@ -1569,81 +1571,95 @@ fn map_controls_analysis(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.add_space(4.0);
     ui.separator();
     ui.label(egui::RichText::new("Analysis").strong());
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .button("Sounding")
-            .on_hover_text(
-                "Model, RAP or observed RAOB sounding for the selected radar site; \
-                 pick a map point inside the window",
-            )
-            .clicked()
-        {
-            app.state.sounding_open = !app.state.sounding_open;
-        }
-        if ui
-            .button("Storm trends")
-            .on_hover_text("Multi-scan peak-reflectivity and core-area history for tracked cells")
-            .clicked()
-        {
-            app.state.storm_trends_open = !app.state.storm_trends_open;
-        }
-        if ui
-            .button("VAD wind profile")
-            .on_hover_text("Radar-derived vertical wind profile for the current volume")
-            .clicked()
-        {
-            app.state.vad_open = !app.state.vad_open;
-        }
-        if ui
-            .button("HRRR forecast")
-            .on_hover_text("Hourly HRRR point forecast profiles and time-height")
-            .clicked()
-        {
-            app.state.hrrr_open = !app.state.hrrr_open;
-        }
-        if ui
-            .button("Ensemble plume")
-            .on_hover_text("GEFS member plumes with mean and 10–90% range for the selected site")
-            .clicked()
-        {
-            app.state.ensemble_open = !app.state.ensemble_open;
-        }
-        if ui
-            .button("Mid-level wind")
-            .on_hover_text("Animated HRRR 500 mb wind speed, height contours and wind barbs")
-            .clicked()
-        {
-            app.state.midlevel_open = !app.state.midlevel_open;
-        }
-        if ui
-            .button("Model comparison")
-            .on_hover_text(
-                "Side-by-side Open-Meteo model, RAP analysis, HRRR forecast and \
-                 optional observed RAOB",
-            )
-            .clicked()
-        {
-            app.state.model_compare_open = !app.state.model_compare_open;
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .button("💧 Rain & snow totals")
-            .on_hover_text(
-                "What nearby NWS stations measured: rolling rain/snow buckets \
-                 and an event total summed from their hourly observations",
-            )
-            .clicked()
-        {
-            app.state.totals_open = !app.state.totals_open;
-        }
-        if ui
-            .button("QPE vs gauges")
-            .on_hover_text("Compare MRMS QPE with nearby NWS rain gauges for 1, 3, 6 or 24 hours")
-            .clicked()
-        {
-            app.state.verification_open = !app.state.verification_open;
-        }
+    // Pack the analysis buttons: tighter gaps and padding let the whole
+    // controls window stay narrow without adding another button row.
+    let tight_gap = ui.spacing().item_spacing.x * 0.35;
+    let tight_pad_x = ui.spacing().button_padding.x * 0.55;
+    let tight_pad_y = ui.spacing().button_padding.y * 0.7;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = tight_gap;
+        ui.spacing_mut().button_padding.x = tight_pad_x;
+        ui.spacing_mut().button_padding.y = tight_pad_y;
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button("Sounding")
+                .on_hover_text(
+                    "Model, RAP or observed RAOB sounding for the selected radar site; \
+                     pick a map point inside the window",
+                )
+                .clicked()
+            {
+                app.state.sounding_open = !app.state.sounding_open;
+            }
+            if ui
+                .button("Storm trends")
+                .on_hover_text(
+                    "Multi-scan peak-reflectivity and core-area history for tracked cells",
+                )
+                .clicked()
+            {
+                app.state.storm_trends_open = !app.state.storm_trends_open;
+            }
+            if ui
+                .button("VAD wind profile")
+                .on_hover_text("Radar-derived vertical wind profile for the current volume")
+                .clicked()
+            {
+                app.state.vad_open = !app.state.vad_open;
+            }
+            if ui
+                .button("HRRR forecast")
+                .on_hover_text("Hourly HRRR point forecast profiles and time-height")
+                .clicked()
+            {
+                app.state.hrrr_open = !app.state.hrrr_open;
+            }
+            if ui
+                .button("Ensemble plume")
+                .on_hover_text(
+                    "GEFS member plumes with mean and 10–90% range for the selected site",
+                )
+                .clicked()
+            {
+                app.state.ensemble_open = !app.state.ensemble_open;
+            }
+            if ui
+                .button("Mid-level wind")
+                .on_hover_text("Animated HRRR 500 mb wind speed, height contours and wind barbs")
+                .clicked()
+            {
+                app.state.midlevel_open = !app.state.midlevel_open;
+            }
+            if ui
+                .button("Model comparison")
+                .on_hover_text(
+                    "Side-by-side Open-Meteo model, RAP analysis, HRRR forecast and \
+                     optional observed RAOB",
+                )
+                .clicked()
+            {
+                app.state.model_compare_open = !app.state.model_compare_open;
+            }
+            if ui
+                .button("💧 Rain & snow totals")
+                .on_hover_text(
+                    "What nearby NWS stations measured: rolling rain/snow buckets \
+                     and an event total summed from their hourly observations",
+                )
+                .clicked()
+            {
+                app.state.totals_open = !app.state.totals_open;
+            }
+            if ui
+                .button("QPE vs gauges")
+                .on_hover_text(
+                    "Compare MRMS QPE with nearby NWS rain gauges for 1, 3, 6 or 24 hours",
+                )
+                .clicked()
+            {
+                app.state.verification_open = !app.state.verification_open;
+            }
+        });
     });
     ui.checkbox(&mut app.state.show_rotation, "Rotation / TVS signatures")
         .on_hover_text(
@@ -1681,7 +1697,7 @@ fn map_controls_qc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8,
     );
     let blockage_before = app.state.qc_blockage;
     if ui
-        .checkbox(&mut app.state.qc_blockage, "Beam blockage (terrain DEM)")
+        .checkbox(&mut app.state.qc_blockage, "Beam blockage (DEM)")
         .on_hover_text(
             "Mask gates whose beam centre is below the terrain from a ~475 m AWS \
              elevation grid. Downloads the DEM the first time it is enabled.",
@@ -3140,26 +3156,6 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
             "Diamonds at the NWS stations in this site's area, tagged with their \
              strongest rain/snow number; hover for the table, click for the totals window",
         );
-    let alert_count = if app.state.all_alerts.is_empty() {
-        app.state.alerts.len()
-    } else {
-        app.state.all_alerts.len()
-    };
-    if ui
-        .button(format!("⚠ Alerts ({alert_count})"))
-        .on_hover_text("Browse active alerts: all US, or just this station")
-        .clicked()
-    {
-        app.state.alerts_popup_open = !app.state.alerts_popup_open;
-    }
-    if ui
-        .button("QPE vs gauges")
-        .on_hover_text("Compare MRMS QPE with nearby NWS rain gauges for 1, 3, 6 or 24 hours")
-        .clicked()
-    {
-        app.state.verification_open = !app.state.verification_open;
-    }
-
     // 3D volume pane: the split/max controls live on the panes themselves
     // (top-right corner chips); this is the on/off + the display settings.
     ui.add_space(6.0);

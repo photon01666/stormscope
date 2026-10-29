@@ -271,10 +271,22 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     });
 
     // Bottom timeline scrubber.
-    // (No Android bottom spacer: the system gesture bar sits outside the app
-    // window, and a spacer only added an empty band under the scrub strip.)
     egui::Panel::bottom("timeline").show(ui, |ui| {
         crate::timeline::timeline(ui, app);
+        // Android 15 draws edge-to-edge, so the gesture bar can overlay the
+        // bottom of the window even though the top inset is reported. Reserve
+        // the bottom safe area inside the timeline panel: on the first frame
+        // there is no scrub strip yet, and without this the short Play row was
+        // clipped behind the gesture bar until radar frames arrived and made
+        // the panel taller.
+        #[cfg(target_os = "android")]
+        {
+            let inset = ui
+                .ctx()
+                .input(|i| i.safe_area_insets().0.bottom)
+                .max(24.0);
+            ui.add_space(inset);
+        }
     });
 
     // Middle rect (between top/bottom bars) before CentralPanel consumes it —

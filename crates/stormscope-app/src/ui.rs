@@ -1224,18 +1224,24 @@ fn product_help_window(ctx: &egui::Context, app: &mut StormApp) {
 }
 
 /// The 2D map's display controls (its bottom-right "Controls" chip).
+///
+/// Desktop uses two columns so every option stays visible in one window; the
+/// phone keeps a single scrollable column because its width cannot carry two
+/// readable controls side by side.
 fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     if !app.state.map_controls_open {
         return;
     }
     let scale = app.sidebar_scale.max(1.0);
-    // Compact on the phone. The content scrolls only if a small screen or a
-    // larger system font makes it overflow; at the default size the window
-    // ends just below the warning-fill row instead of leaving an empty band.
-    let size = if cfg!(target_os = "android") {
-        egui::vec2(300.0 * scale, 420.0 * scale)
+    let desktop = !cfg!(target_os = "android");
+    let size = if desktop {
+        let screen_h = ctx.content_rect().height();
+        egui::vec2(
+            620.0 * scale,
+            (screen_h - 80.0).min(780.0 * scale).max(420.0),
+        )
     } else {
-        egui::vec2(320.0 * scale, 640.0 * scale)
+        egui::vec2(300.0 * scale, 420.0 * scale)
     };
     let mut open = true;
     let mut window = egui::Window::new("Map controls")
@@ -1258,375 +1264,27 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
             close_requested |= phone_header(ui, "Map controls");
         }
         apply_text_scale(ui, scale);
-        // Shrink to the content up to the size cap on every platform: the
-        // desktop used auto_shrink([false, false]), which pinned the box to
-        // its default height and left an empty band under the last row.
         let scroll = egui::ScrollArea::vertical()
             .id_salt("stormscope.map_controls.scroll")
             .max_height((size.y - 44.0 * scale).max(120.0))
             .auto_shrink([false, true]);
         scroll.show(ui, |ui| {
             let mut sliders: Vec<(u8, egui::Rect)> = Vec::new();
-            let ref_moment = matches!(
-                app.state.moment,
-                Moment::Reflectivity | Moment::CompositeReflectivity
-            );
-            if ref_moment {
-                let r = ui.add(
-                    egui::Slider::new(&mut app.state.min_dbz, 0.0..=75.0)
-                        .step_by(5.0)
-                        .text("Min dBZ"),
-                );
-                sliders.push((0, r.rect));
-                ui.label(
-                    egui::RichText::new("filters weak returns on REF products · scroll to adjust")
-                        .weak()
-                        .small(),
-                );
+            if desktop {
+                ui.columns(2, |columns| {
+                    map_controls_display(&mut columns[0], app, &mut sliders);
+                    map_controls_stations(&mut columns[0], app);
+                    map_controls_qc(&mut columns[0], app, &mut sliders);
+                    map_controls_analysis(&mut columns[1], app);
+                    map_controls_alerts(&mut columns[1], app, &mut sliders);
+                });
             } else {
-                ui.label(
-                    egui::RichText::new("Min dBZ applies to REF products only")
-                        .weak()
-                        .small(),
-                );
+                map_controls_display(ui, app, &mut sliders);
+                map_controls_stations(ui, app);
+                map_controls_analysis(ui, app);
+                map_controls_qc(ui, app, &mut sliders);
+                map_controls_alerts(ui, app, &mut sliders);
             }
-            let r = ui.add(egui::Slider::new(&mut app.state.opacity, 0.0..=1.0).text("Opacity"));
-            sliders.push((1, r.rect));
-            if app.state.show_mrms {
-                let r =
-                    ui.add(egui::Slider::new(&mut app.state.mrms_opacity, 0.05..=1.0).text("MRMS"));
-                sliders.push((10, r.rect));
-            }
-            if app.state.show_level3 {
-                let r = ui.add(
-                    egui::Slider::new(&mut app.state.level3_opacity, 0.05..=1.0)
-                        .text("N0Q Level III"),
-                );
-                sliders.push((16, r.rect));
-            }
-            if app.state.show_midlevel {
-                let r = ui.add(
-                    egui::Slider::new(&mut app.state.midlevel_opacity, 0.05..=1.0)
-                        .text("500 mb wind"),
-                );
-                sliders.push((17, r.rect));
-            }
-            if app.state.show_qpe {
-                let r =
-                    ui.add(egui::Slider::new(&mut app.state.qpe_opacity, 0.05..=1.0).text("QPE"));
-                sliders.push((14, r.rect));
-                qpe_legend(ui, app.state.qpe_product);
-            }
-            if app.state.show_model_field {
-                let r = ui.add(
-                    egui::Slider::new(&mut app.state.model_field_opacity, 0.05..=1.0)
-                        .text("Model field"),
-                );
-                sliders.push((15, r.rect));
-                model_field_legend(ui, app.state.model_field_kind);
-            }
-            if app.state.show_goes {
-                let r =
-                    ui.add(egui::Slider::new(&mut app.state.goes_opacity, 0.05..=1.0).text("GOES"));
-                sliders.push((11, r.rect));
-                ui.horizontal(|ui| {
-                    ui.label("Satellite");
-                    egui::ComboBox::from_id_salt("goes-layer")
-                        .selected_text(app.state.goes_layer.label())
-                        .show_ui(ui, |ui| {
-                            for layer in [
-                                radar_data::goes::GoesLayer::Infrared,
-                                radar_data::goes::GoesLayer::GeoColor,
-                                radar_data::goes::GoesLayer::AirMass,
-                                radar_data::goes::GoesLayer::WaterVapor,
-                            ] {
-                                ui.selectable_value(
-                                    &mut app.state.goes_layer,
-                                    layer,
-                                    layer.label(),
-                                );
-                            }
-                        });
-                });
-            }
-            if app.state.show_futurecast {
-                let r = ui.add(
-                    egui::Slider::new(&mut app.state.futurecast_opacity, 0.05..=1.0)
-                        .text("FutureCast"),
-                );
-                sliders.push((13, r.rect));
-                ui.checkbox(
-                    &mut app.state.futurecast_precip_type,
-                    "Color by precip type",
-                )
-                .on_hover_text(
-                    "Use HRRR's categorical type field: snow blue, ice pellets purple, freezing rain pink; rain keeps the reflectivity ramp.",
-                );
-                if app.state.futurecast_precip_type {
-                    futurecast_type_legend(ui);
-                }
-            }
-            #[cfg(not(target_os = "android"))]
-            ui.checkbox(&mut app.state.map_probe, "Data probe")
-                .on_hover_text(
-                    "Hover the map for the value under the cursor: product value, \
-                     beam height, distance and bearing from the radar",
-                );
-            #[cfg(target_os = "android")]
-            ui.label(
-                egui::RichText::new(
-                    "dBZ crosshair: tap dBZ on the radar timeline, then drag the map.",
-                )
-                .weak()
-                .small(),
-            );
-            ui.checkbox(&mut app.state.show_melting_layer, "0 °C level")
-                .on_hover_text(
-                    "Isohypses of the melting-layer product (the radar's 0 °C level, \
-                     from the CC bright band) every 2 kft — rain below, snow above",
-                );
-            ui.checkbox(&mut app.state.show_lightning, "Lightning (GLM)")
-                .on_hover_text(
-                    match (&app.state.lightning_satellite, app.state.lightning.len()) {
-                        (Some(satellite), flashes) if flashes > 0 => format!(
-                            "{satellite} · {flashes} flashes in the last 20 minutes. NOAA GOES GLM, \
-                             one 20-second file per minute (~0.4 GB/day while on)."
-                        ),
-                        _ => "NOAA GOES-East/West GLM flashes, last 20 minutes. One 20-second \
-                              file per minute (~0.4 GB/day). Official public-domain data; off by default."
-                            .to_string(),
-                    },
-                );
-            if app.state.show_lightning {
-                ui.checkbox(&mut app.state.lightning_density, "Flash density")
-                    .on_hover_text(
-                        "Aggregate the last 20 minutes of GLM flashes into a density field \
-                         instead of drawing every individual strike.",
-                    );
-                let near = radar_core::sites::site(&app.state.site_id).map_or(0, |site| {
-                    app.state
-                        .lightning
-                        .iter()
-                        .filter(|strike| {
-                            radar_render::surface_distance_m(
-                                site.longitude,
-                                site.latitude,
-                                strike.lon,
-                                strike.lat,
-                            ) < 300_000.0
-                        })
-                        .count()
-                });
-                let status = if app.state.lightning_pending {
-                    "fetching the next GLM file…".to_string()
-                } else {
-                    format!(
-                        "{} · {} total · {} within 186 mi",
-                        app.state.lightning_satellite.as_deref().unwrap_or("GOES"),
-                        app.state.lightning.len(),
-                        near
-                    )
-                };
-                ui.label(egui::RichText::new(status).small().weak());
-            }
-            ui.add_space(4.0);
-            ui.separator();
-            ui.label(egui::RichText::new("Stations").strong());
-            let mut synoptic = app.state.show_synoptic;
-            if ui
-                .checkbox(&mut synoptic, "Show stations on the map")
-                .on_hover_text("Synoptic network: NWS/mesonet/PWS stations (thermometer badges)")
-                .changed()
-            {
-                app.state.show_synoptic = synoptic;
-                app.state.persist_synoptic();
-                if synoptic {
-                    app.fetch_synoptic_now();
-                }
-            }
-            let mut metar = app.state.show_metar;
-            if ui
-                .checkbox(&mut metar, "METAR airport observations")
-                .on_hover_text(
-                    "Free aviationweather.gov METARs inside the radar window. \
-                     Merged into the same station layer as Synoptic.",
-                )
-                .changed()
-            {
-                app.state.show_metar = metar;
-                if metar {
-                    app.fetch_metar_now();
-                }
-            }
-            if app.state.show_metar {
-                let status = if app.state.metar_pending {
-                    "fetching METARs…".to_string()
-                } else if let Some(err) = &app.state.metar_error {
-                    format!("METAR: {err}")
-                } else {
-                    let n = app
-                        .state
-                        .synoptic_stations
-                        .iter()
-                        .filter(|s| {
-                            s.source == radar_data::synoptic::StationSource::Metar
-                        })
-                        .count();
-                    format!("{n} METAR stations · 10 min refresh")
-                };
-                ui.label(egui::RichText::new(status).small().weak());
-            }
-            ui.add_space(4.0);
-            ui.separator();
-            ui.label(egui::RichText::new("Analysis").strong());
-            if ui
-                .button("Sounding")
-                .on_hover_text(
-                    "Model, RAP or observed RAOB sounding for the selected radar site; pick a map point inside the window",
-                )
-                .clicked()
-            {
-                app.state.sounding_open = !app.state.sounding_open;
-            }
-            if ui
-                .button("Storm trends")
-                .on_hover_text(
-                    "Multi-scan peak-reflectivity and core-area history for tracked cells",
-                )
-                .clicked()
-            {
-                app.state.storm_trends_open = !app.state.storm_trends_open;
-            }
-            if ui
-                .button("VAD wind profile")
-                .on_hover_text("Radar-derived vertical wind profile for the current volume")
-                .clicked()
-            {
-                app.state.vad_open = !app.state.vad_open;
-            }
-            if ui
-                .button("HRRR forecast")
-                .on_hover_text("Hourly HRRR point forecast profiles and time-height")
-                .clicked()
-            {
-                app.state.hrrr_open = !app.state.hrrr_open;
-            }
-            if ui
-                .button("Ensemble plume")
-                .on_hover_text(
-                    "GEFS member plumes with mean and 10–90% range for the selected site",
-                )
-                .clicked()
-            {
-                app.state.ensemble_open = !app.state.ensemble_open;
-            }
-            if ui
-                .button("Mid-level wind")
-                .on_hover_text(
-                    "Animated HRRR 500 mb wind speed, height contours and wind barbs",
-                )
-                .clicked()
-            {
-                app.state.midlevel_open = !app.state.midlevel_open;
-            }
-            if ui
-                .button("Model comparison")
-                .on_hover_text(
-                    "Side-by-side Open-Meteo model, RAP analysis, HRRR forecast and optional observed RAOB",
-                )
-                .clicked()
-            {
-                app.state.model_compare_open = !app.state.model_compare_open;
-            }
-            ui.checkbox(&mut app.state.show_rotation, "Rotation / TVS signatures")
-                .on_hover_text(
-                    "Mark low-level inbound/outbound velocity couplets. Experimental; \
-                     each mark is a single-radar, single-scan detection.",
-                );
-            ui.checkbox(&mut app.state.show_hail_cores, "Hail cores / swath (MEHS)")
-                .on_hover_text(
-                    "Mark hail cores from the maximum estimated hail size product and \
-                     accumulate their positions across the loaded loop.",
-                );
-            ui.add_space(4.0);
-            ui.separator();
-            ui.label(egui::RichText::new("QC / calibration (REF)").strong())
-                .on_hover_text(
-                    "Display-level corrections for the map's reflectivity raster. \
-                     Raw REF and the probe remain unchanged.",
-                );
-            ui.checkbox(&mut app.state.qc_clutter, "Clutter filter (CC)")
-                .on_hover_text(
-                    "Mask low-CC gates in weak echo. Targets ground clutter and biological \
-                     returns; strong hail/debris is left alone.",
-                );
-            ui.checkbox(&mut app.state.qc_attenuation, "Attenuation correction (KDP)")
-                .on_hover_text(
-                    "Apply a small KDP-based path correction to reflectivity behind heavy \
-                     precipitation. Experimental.",
-                );
-            let blockage_before = app.state.qc_blockage;
-            if ui
-                .checkbox(&mut app.state.qc_blockage, "Beam blockage (terrain DEM)")
-                .on_hover_text(
-                    "Mask gates whose beam centre is below the terrain from a ~475 m AWS \
-                     elevation grid. Downloads the DEM the first time it is enabled.",
-                )
-                .changed()
-                && app.state.qc_blockage
-                && !blockage_before
-            {
-                app.state.qc_terrain_error = None;
-                app.state.qc_terrain_site.clear();
-            }
-            if app.state.qc_blockage {
-                if app.state.qc_terrain_pending {
-                    ui.label(egui::RichText::new("Loading terrain DEM…").weak().small());
-                } else if let Some(err) = &app.state.qc_terrain_error {
-                    ui.label(egui::RichText::new(format!("DEM failed: {err}")).weak().small());
-                    if ui.small_button("Retry DEM").clicked() {
-                        app.state.qc_terrain_error = None;
-                        app.state.qc_terrain_site.clear();
-                    }
-                } else if app.state.qc_terrain.is_some() {
-                    ui.label(egui::RichText::new("DEM loaded · ~475 m grid").weak().small());
-                }
-            }
-            ui.add(
-                egui::Slider::new(&mut app.state.qc_bias_db, -5.0..=5.0)
-                    .step_by(0.5)
-                    .text("REF bias")
-                    .suffix(" dB"),
-            )
-            .on_hover_text(
-                "Manual calibration bias. Positive boosts reflectivity, negative lowers it. \
-                 Use only when you know the site has a systematic bias.",
-            );
-            ui.label(
-                egui::RichText::new("Experimental · map display only")
-                    .weak()
-                    .small(),
-            );
-            ui.add_space(4.0);
-            ui.separator();
-            ui.label(egui::RichText::new("Alerts").strong());
-            ui.checkbox(&mut app.state.show_watches, "Show watches")
-                .on_hover_text(
-                    "NWS watch boxes (tornado, severe thunderstorm, flood, winter…). \
-                     This layer is off by default and draws at 80% transparency so the \
-                     radar and basemap stay readable underneath. Clicking a watch in \
-                     the Alerts window turns it on automatically.",
-                );
-            if app.state.show_watches {
-                ui.label(
-                    egui::RichText::new("watch boxes · 80% transparent")
-                        .weak()
-                        .small(),
-                );
-            }
-            ui.add_space(4.0);
-            let fill = warning_fill_slider(ui, app);
-            sliders.push((12, fill));
             control_window_wheel(ui, &sliders, |target, steps| match target {
                 0 => {
                     app.state.min_dbz = (app.state.min_dbz + 5.0 * steps).clamp(0.0, 75.0);
@@ -1643,12 +1301,18 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                         (app.state.goes_opacity + 0.05 * steps).clamp(0.05, 1.0);
                 }
                 12 => {
-                    app.state.alerts_fill =
-                        (app.state.alerts_fill + 0.05 * steps).clamp(0.0, 1.0);
+                    app.state.alerts_fill = (app.state.alerts_fill + 0.05 * steps).clamp(0.0, 1.0);
                 }
                 13 => {
                     app.state.futurecast_opacity =
                         (app.state.futurecast_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                }
+                14 => {
+                    app.state.qpe_opacity = (app.state.qpe_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                }
+                15 => {
+                    app.state.model_field_opacity =
+                        (app.state.model_field_opacity + 0.05 * steps).clamp(0.05, 1.0);
                 }
                 16 => {
                     app.state.level3_opacity =
@@ -1658,23 +1322,398 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
                     app.state.midlevel_opacity =
                         (app.state.midlevel_opacity + 0.05 * steps).clamp(0.05, 1.0);
                 }
-                14 => {
-                    app.state.qpe_opacity = (app.state.qpe_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                18 => {
+                    app.state.mcd_fill = (app.state.mcd_fill + 0.05 * steps).clamp(0.0, 1.0);
                 }
-                15 => {
-                    app.state.model_field_opacity =
-                        (app.state.model_field_opacity + 0.05 * steps).clamp(0.05, 1.0);
+                19 => {
+                    app.state.qc_bias_db = (app.state.qc_bias_db + 0.5 * steps).clamp(-5.0, 5.0);
                 }
                 _ => {}
             });
-            });
         });
+    });
     if close_requested {
         open = false;
     }
     if !open {
         app.state.map_controls_open = false;
     }
+}
+
+/// Radar layer sliders and the small overlay toggles.
+fn map_controls_display(
+    ui: &mut egui::Ui,
+    app: &mut StormApp,
+    sliders: &mut Vec<(u8, egui::Rect)>,
+) {
+    let ref_moment = matches!(
+        app.state.moment,
+        Moment::Reflectivity | Moment::CompositeReflectivity
+    );
+    if ref_moment {
+        let r = ui
+            .add(
+                egui::Slider::new(&mut app.state.min_dbz, 0.0..=75.0)
+                    .step_by(5.0)
+                    .text("Min dBZ"),
+            )
+            .on_hover_text("Filters weak returns on REF products.");
+        sliders.push((0, r.rect));
+    } else {
+        ui.label(
+            egui::RichText::new("Min dBZ applies to REF products only")
+                .weak()
+                .small(),
+        );
+    }
+    let r = ui.add(egui::Slider::new(&mut app.state.opacity, 0.0..=1.0).text("Opacity"));
+    sliders.push((1, r.rect));
+    if app.state.show_mrms {
+        let r = ui.add(egui::Slider::new(&mut app.state.mrms_opacity, 0.05..=1.0).text("MRMS"));
+        sliders.push((10, r.rect));
+    }
+    if app.state.show_level3 {
+        let r = ui.add(
+            egui::Slider::new(&mut app.state.level3_opacity, 0.05..=1.0).text("N0Q Level III"),
+        );
+        sliders.push((16, r.rect));
+    }
+    if app.state.show_midlevel {
+        let r = ui.add(
+            egui::Slider::new(&mut app.state.midlevel_opacity, 0.05..=1.0).text("500 mb wind"),
+        );
+        sliders.push((17, r.rect));
+    }
+    if app.state.show_qpe {
+        let r = ui.add(egui::Slider::new(&mut app.state.qpe_opacity, 0.05..=1.0).text("QPE"));
+        sliders.push((14, r.rect));
+        qpe_legend(ui, app.state.qpe_product);
+    }
+    if app.state.show_model_field {
+        let r = ui.add(
+            egui::Slider::new(&mut app.state.model_field_opacity, 0.05..=1.0).text("Model field"),
+        );
+        sliders.push((15, r.rect));
+        model_field_legend(ui, app.state.model_field_kind);
+    }
+    if app.state.show_goes {
+        let r = ui.add(egui::Slider::new(&mut app.state.goes_opacity, 0.05..=1.0).text("GOES"));
+        sliders.push((11, r.rect));
+        ui.horizontal(|ui| {
+            ui.label("Satellite");
+            egui::ComboBox::from_id_salt("goes-layer")
+                .selected_text(app.state.goes_layer.label())
+                .show_ui(ui, |ui| {
+                    for layer in [
+                        radar_data::goes::GoesLayer::Infrared,
+                        radar_data::goes::GoesLayer::GeoColor,
+                        radar_data::goes::GoesLayer::AirMass,
+                        radar_data::goes::GoesLayer::WaterVapor,
+                    ] {
+                        ui.selectable_value(&mut app.state.goes_layer, layer, layer.label());
+                    }
+                });
+        });
+    }
+    if app.state.show_futurecast {
+        let r = ui.add(
+            egui::Slider::new(&mut app.state.futurecast_opacity, 0.05..=1.0).text("FutureCast"),
+        );
+        sliders.push((13, r.rect));
+        ui.checkbox(
+            &mut app.state.futurecast_precip_type,
+            "Color by precip type",
+        )
+        .on_hover_text(
+            "Use HRRR's categorical type field: snow blue, ice pellets purple, \
+             freezing rain pink; rain keeps the reflectivity ramp.",
+        );
+        if app.state.futurecast_precip_type {
+            futurecast_type_legend(ui);
+        }
+    }
+    ui.horizontal_wrapped(|ui| {
+        #[cfg(not(target_os = "android"))]
+        ui.checkbox(&mut app.state.map_probe, "Data probe")
+            .on_hover_text(
+                "Hover the map for the value under the cursor: product value, \
+                 beam height, distance and bearing from the radar",
+            );
+        ui.checkbox(&mut app.state.show_melting_layer, "0 °C level")
+            .on_hover_text(
+                "Isohypses of the melting-layer product (the radar's 0 °C level, \
+                 from the CC bright band) every 2 kft — rain below, snow above",
+            );
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut app.state.show_lightning, "Lightning (GLM)")
+            .on_hover_text(
+                match (&app.state.lightning_satellite, app.state.lightning.len()) {
+                    (Some(satellite), flashes) if flashes > 0 => format!(
+                        "{satellite} · {flashes} flashes in the last 20 minutes. NOAA GOES GLM, \
+                         one 20-second file per minute (~0.4 GB/day while on)."
+                    ),
+                    _ => "NOAA GOES-East/West GLM flashes, last 20 minutes. One 20-second \
+                          file per minute (~0.4 GB/day). Official public-domain data; off by default."
+                        .to_string(),
+                },
+            );
+        if app.state.show_lightning {
+            ui.checkbox(&mut app.state.lightning_density, "Flash density")
+                .on_hover_text(
+                    "Aggregate the last 20 minutes of GLM flashes into a density field \
+                     instead of drawing every individual strike.",
+                );
+        }
+    });
+    if app.state.show_lightning {
+        let near = radar_core::sites::site(&app.state.site_id).map_or(0, |site| {
+            app.state
+                .lightning
+                .iter()
+                .filter(|strike| {
+                    radar_render::surface_distance_m(
+                        site.longitude,
+                        site.latitude,
+                        strike.lon,
+                        strike.lat,
+                    ) < 300_000.0
+                })
+                .count()
+        });
+        let status = if app.state.lightning_pending {
+            "fetching the next GLM file…".to_string()
+        } else {
+            format!(
+                "{} · {} total · {} within 186 mi",
+                app.state.lightning_satellite.as_deref().unwrap_or("GOES"),
+                app.state.lightning.len(),
+                near
+            )
+        };
+        ui.label(egui::RichText::new(status).small().weak());
+    }
+}
+
+/// Station-layer switches.
+fn map_controls_stations(ui: &mut egui::Ui, app: &mut StormApp) {
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Stations").strong());
+    let mut synoptic = app.state.show_synoptic;
+    if ui
+        .checkbox(&mut synoptic, "Show stations on the map")
+        .on_hover_text("Synoptic network: NWS/mesonet/PWS stations (thermometer badges)")
+        .changed()
+    {
+        app.state.show_synoptic = synoptic;
+        app.state.persist_synoptic();
+        if synoptic {
+            app.fetch_synoptic_now();
+        }
+    }
+    let mut metar = app.state.show_metar;
+    if ui
+        .checkbox(&mut metar, "METAR airport observations")
+        .on_hover_text(
+            "Free aviationweather.gov METARs inside the radar window. \
+             Merged into the same station layer as Synoptic.",
+        )
+        .changed()
+    {
+        app.state.show_metar = metar;
+        if metar {
+            app.fetch_metar_now();
+        }
+    }
+    if app.state.show_metar {
+        let status = if app.state.metar_pending {
+            "fetching METARs…".to_string()
+        } else if let Some(err) = &app.state.metar_error {
+            format!("METAR: {err}")
+        } else {
+            let n = app
+                .state
+                .synoptic_stations
+                .iter()
+                .filter(|s| s.source == radar_data::synoptic::StationSource::Metar)
+                .count();
+            format!("{n} METAR stations · 10 min refresh")
+        };
+        ui.label(egui::RichText::new(status).small().weak());
+    }
+}
+
+/// Analysis windows and the two storm-feature switches.
+fn map_controls_analysis(ui: &mut egui::Ui, app: &mut StormApp) {
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Analysis").strong());
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button("Sounding")
+            .on_hover_text(
+                "Model, RAP or observed RAOB sounding for the selected radar site; \
+                 pick a map point inside the window",
+            )
+            .clicked()
+        {
+            app.state.sounding_open = !app.state.sounding_open;
+        }
+        if ui
+            .button("Storm trends")
+            .on_hover_text("Multi-scan peak-reflectivity and core-area history for tracked cells")
+            .clicked()
+        {
+            app.state.storm_trends_open = !app.state.storm_trends_open;
+        }
+        if ui
+            .button("VAD wind profile")
+            .on_hover_text("Radar-derived vertical wind profile for the current volume")
+            .clicked()
+        {
+            app.state.vad_open = !app.state.vad_open;
+        }
+        if ui
+            .button("HRRR forecast")
+            .on_hover_text("Hourly HRRR point forecast profiles and time-height")
+            .clicked()
+        {
+            app.state.hrrr_open = !app.state.hrrr_open;
+        }
+        if ui
+            .button("Ensemble plume")
+            .on_hover_text("GEFS member plumes with mean and 10–90% range for the selected site")
+            .clicked()
+        {
+            app.state.ensemble_open = !app.state.ensemble_open;
+        }
+        if ui
+            .button("Mid-level wind")
+            .on_hover_text("Animated HRRR 500 mb wind speed, height contours and wind barbs")
+            .clicked()
+        {
+            app.state.midlevel_open = !app.state.midlevel_open;
+        }
+        if ui
+            .button("Model comparison")
+            .on_hover_text(
+                "Side-by-side Open-Meteo model, RAP analysis, HRRR forecast and \
+                 optional observed RAOB",
+            )
+            .clicked()
+        {
+            app.state.model_compare_open = !app.state.model_compare_open;
+        }
+    });
+    ui.checkbox(&mut app.state.show_rotation, "Rotation / TVS signatures")
+        .on_hover_text(
+            "Mark low-level inbound/outbound velocity couplets. Experimental; \
+             each mark is a single-radar, single-scan detection.",
+        );
+    ui.checkbox(&mut app.state.show_hail_cores, "Hail cores / swath (MEHS)")
+        .on_hover_text(
+            "Mark hail cores from the maximum estimated hail size product and \
+             accumulate their positions across the loaded loop.",
+        );
+}
+
+/// Display-level QC and calibration.
+fn map_controls_qc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8, egui::Rect)>) {
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(egui::RichText::new("QC / calibration (REF)").strong())
+        .on_hover_text(
+            "Display-level corrections for the map's reflectivity raster. \
+             Raw REF and the probe remain unchanged. Experimental; map display only.",
+        );
+    ui.checkbox(&mut app.state.qc_clutter, "Clutter filter (CC)")
+        .on_hover_text(
+            "Mask low-CC gates in weak echo. Targets ground clutter and biological \
+             returns; strong hail/debris is left alone.",
+        );
+    ui.checkbox(
+        &mut app.state.qc_attenuation,
+        "Attenuation correction (KDP)",
+    )
+    .on_hover_text(
+        "Apply a small KDP-based path correction to reflectivity behind heavy \
+             precipitation. Experimental.",
+    );
+    let blockage_before = app.state.qc_blockage;
+    if ui
+        .checkbox(&mut app.state.qc_blockage, "Beam blockage (terrain DEM)")
+        .on_hover_text(
+            "Mask gates whose beam centre is below the terrain from a ~475 m AWS \
+             elevation grid. Downloads the DEM the first time it is enabled.",
+        )
+        .changed()
+        && app.state.qc_blockage
+        && !blockage_before
+    {
+        app.state.qc_terrain_error = None;
+        app.state.qc_terrain_site.clear();
+    }
+    if app.state.qc_blockage {
+        if app.state.qc_terrain_pending {
+            ui.label(egui::RichText::new("Loading terrain DEM…").weak().small());
+        } else if let Some(err) = &app.state.qc_terrain_error {
+            ui.label(
+                egui::RichText::new(format!("DEM failed: {err}"))
+                    .weak()
+                    .small(),
+            );
+            if ui.small_button("Retry DEM").clicked() {
+                app.state.qc_terrain_error = None;
+                app.state.qc_terrain_site.clear();
+            }
+        } else if app.state.qc_terrain.is_some() {
+            ui.label(
+                egui::RichText::new("DEM loaded · ~475 m grid")
+                    .weak()
+                    .small(),
+            );
+        }
+    }
+    let r = ui
+        .add(
+            egui::Slider::new(&mut app.state.qc_bias_db, -5.0..=5.0)
+                .step_by(0.5)
+                .text("REF bias")
+                .suffix(" dB"),
+        )
+        .on_hover_text(
+            "Manual calibration bias. Positive boosts reflectivity, negative lowers it. \
+             Use only when you know the site has a systematic bias.",
+        );
+    sliders.push((19, r.rect));
+}
+
+/// Watch, MCD and warning-polygon display.
+fn map_controls_alerts(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8, egui::Rect)>) {
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Alerts").strong());
+    ui.checkbox(&mut app.state.show_watches, "Show watches")
+        .on_hover_text(
+            "NWS watch boxes (tornado, severe thunderstorm, flood, winter…). \
+             This layer is off by default and draws at 80% transparency so the \
+             radar and basemap stay readable underneath. Clicking a watch in \
+             the Alerts window turns it on automatically.",
+        );
+    let mcd = ui.add(
+        egui::Slider::new(&mut app.state.mcd_fill, 0.0..=1.0)
+            .text("MCD fill")
+            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+    );
+    sliders.push((18, mcd.rect));
+    mcd.on_hover_text(
+        "Mesoscale discussion area fill opacity. The default is 15% \
+         (85% transparent); 0% leaves only the outline. The pointer still \
+         clears the fill locally so the radar is readable there.",
+    );
+    let fill = warning_fill_slider(ui, app);
+    sliders.push((12, fill));
 }
 
 fn qpe_legend(ui: &mut egui::Ui, product: radar_data::mrms::MrmsProduct) {
@@ -2683,7 +2722,8 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.qpe = None;
             app.state.qpe_requested_at = None;
         }
-        ui.add(egui::Slider::new(&mut app.state.qpe_opacity, 0.05..=1.0).text("QPE opacity"));
+        // Opacity lives in the map's Controls window; keep this Settings
+        // section to the product choice and its legend.
         qpe_legend(ui, app.state.qpe_product);
     }
 
@@ -2736,9 +2776,8 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.model_field = None;
             app.state.model_field_requested_at = None;
         }
-        ui.add(
-            egui::Slider::new(&mut app.state.model_field_opacity, 0.05..=1.0).text("Field opacity"),
-        );
+        // Opacity lives in the map's Controls window; keep this Settings
+        // section to the model/field/hour choice and its legend.
         model_field_legend(ui, app.state.model_field_kind);
     }
 
@@ -2845,51 +2884,6 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
     {
         app.state.verification_open = !app.state.verification_open;
     }
-    if ui
-        .button("Sounding")
-        .on_hover_text("Model, RAP or observed RAOB sounding and thermodynamic parameters for the selected site or a picked point")
-        .clicked()
-    {
-        app.state.sounding_open = !app.state.sounding_open;
-    }
-    if ui
-        .button("VAD wind profile")
-        .on_hover_text("Radar-derived vertical wind profile for the current volume")
-        .clicked()
-    {
-        app.state.vad_open = !app.state.vad_open;
-    }
-    if ui
-        .button("HRRR forecast")
-        .on_hover_text("Hourly HRRR point forecast profiles and time-height")
-        .clicked()
-    {
-        app.state.hrrr_open = !app.state.hrrr_open;
-    }
-    ui.checkbox(&mut app.state.show_rotation, "Rotation / TVS signatures")
-        .on_hover_text("Mark low-level velocity couplets (experimental)");
-    ui.checkbox(&mut app.state.show_hail_cores, "Hail cores / swath (MEHS)")
-        .on_hover_text("Mark MEHS hail cores and their positions across the loop");
-    ui.checkbox(&mut app.state.qc_clutter, "QC: clutter filter")
-        .on_hover_text("Map display: mask low-CC weak-echo clutter");
-    ui.checkbox(&mut app.state.qc_attenuation, "QC: attenuation correction")
-        .on_hover_text("Map display: KDP-based reflectivity correction");
-    if ui
-        .checkbox(&mut app.state.qc_blockage, "QC: beam blockage (DEM)")
-        .on_hover_text("Map display: mask gates below terrain using an AWS DEM")
-        .changed()
-        && app.state.qc_blockage
-    {
-        app.state.qc_terrain_error = None;
-        app.state.qc_terrain_site.clear();
-    }
-    ui.add(
-        egui::Slider::new(&mut app.state.qc_bias_db, -5.0..=5.0)
-            .step_by(0.5)
-            .text("REF bias")
-            .suffix(" dB"),
-    )
-    .on_hover_text("Map display: manual reflectivity calibration bias");
 
     // 3D volume pane: the split/max controls live on the panes themselves
     // (top-right corner chips); this is the on/off + the display settings.

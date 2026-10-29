@@ -375,6 +375,24 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     if ui.small_button("Clear Gemini key").clicked() {
                         app.state.gemini_api_key.clear();
                     }
+                    if !app.state.gemini_api_key.trim().is_empty()
+                        && ui
+                            .small_button("Test Gemini alert voice")
+                            .on_hover_text(
+                                "Speak a sample storm-arrival alert through the configured Gemini Live voice",
+                            )
+                            .clicked()
+                    {
+                        crate::gemini_live::speak_alert(
+                            crate::gemini_live::LiveConfig {
+                                api_key: app.state.gemini_api_key.trim().to_string(),
+                                model: app.state.gemini_model.trim().to_string(),
+                                voice: app.state.gemini_voice.clone(),
+                                system: String::new(),
+                            },
+                            "Live AI: a storm core is projected to reach your location in 25 minutes, moving east at 30 miles per hour.".to_string(),
+                        );
+                    }
                 }
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
@@ -988,7 +1006,9 @@ fn live_center(
         );
         if *live_toggle {
             ui.checkbox(live_speak, "Speak threats").on_hover_text(
-                "Speak only when a storm newly crosses the 30- or 10-minute arrival threshold",
+                "Speak only when a storm newly crosses the 30- or 10-minute arrival threshold. \
+                 Android uses the configured Gemini Live voice; it falls back to system TTS if \
+                 Gemini is unavailable.",
             );
         }
     });

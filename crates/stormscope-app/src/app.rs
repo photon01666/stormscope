@@ -3943,6 +3943,23 @@ impl StormApp {
                     && !self.state.voice_convo
                     && let Some(speech) = self.live_ai.speech_for(&assessment)
                 {
+                    #[cfg(target_os = "android")]
+                    {
+                        if self.state.gemini_api_key.trim().is_empty() {
+                            crate::voice::announce(speech);
+                        } else {
+                            crate::gemini_live::speak_alert(
+                                crate::gemini_live::LiveConfig {
+                                    api_key: self.state.gemini_api_key.trim().to_string(),
+                                    model: self.state.gemini_model.trim().to_string(),
+                                    voice: self.state.gemini_voice.clone(),
+                                    system: String::new(),
+                                },
+                                speech,
+                            );
+                        }
+                    }
+                    #[cfg(not(target_os = "android"))]
                     crate::voice::announce(speech);
                 }
             }

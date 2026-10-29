@@ -91,6 +91,36 @@ final class GeminiLiveAudio {
         }
     }
 
+    /**
+     * Speaker-only mode for one-shot Gemini Live alerts: no microphone is
+     * opened, so this works without RECORD_AUDIO permission.
+     */
+    static synchronized void startPlaybackOnly() {
+        if (sRunning) {
+            return;
+        }
+        sLastError = null;
+        try {
+            sTrack = buildTrack();
+            if (sTrack == null || sTrack.getState() != AudioTrack.STATE_INITIALIZED) {
+                throw new IllegalStateException("AudioTrack could not initialize");
+            }
+            synchronized (PLAY_LOCK) {
+                sPlayQueue.clear();
+            }
+            sLastPlaybackNs = 0L;
+            sRunning = true;
+            sTrack.play();
+            sPlayThread = new Thread(GeminiLiveAudio::playLoop, "gemini-alert-speaker");
+            sPlayThread.start();
+            Log.i(TAG, "Gemini Live playback started (24 kHz out)");
+        } catch (Exception e) {
+            sLastError = e.getMessage() == null ? e.toString() : e.getMessage();
+            Log.w(TAG, "Gemini Live playback start failed: " + e);
+            stop();
+        }
+    }
+
     static synchronized void stop() {
         if (!sRunning && sRecord == null && sTrack == null) {
             return;

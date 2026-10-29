@@ -513,6 +513,14 @@ public class MainActivity extends GameActivity {
         }
     }
 
+    /** Called from Rust (JNI, Java main thread): speaker only for one-shot alerts. */
+    public void stormscopeLiveAudioStartPlayback() {
+        GeminiLiveAudio.startPlaybackOnly();
+        if (!GeminiLiveAudio.isRunning()) {
+            sLiveError = GeminiLiveAudio.lastError();
+        }
+    }
+
     /** Called from Rust (JNI): `idle`, `permission`, `ready` or `error:<msg>`. */
     public String stormscopeLiveAudioState() {
         if (sLivePermissionPending) {

@@ -23,6 +23,11 @@ pub fn start() {
     post_void("stormscopeLiveAudioStart");
 }
 
+/// Start speaker-only output for a one-shot Gemini alert (no microphone).
+pub fn start_playback() {
+    post_void("stormscopeLiveAudioStartPlayback");
+}
+
 /// Stop and release the audio engine.
 pub fn stop() {
     post_void("stormscopeLiveAudioStop");

@@ -583,6 +583,207 @@ fn handle_server_message(text: &str, tx: &Sender<LiveEvent>) {
     }
 }
 
+/// One-shot Gemini Live announcement, serialized so alerts never overlap.
+pub fn speak_alert(config: LiveConfig, text: String) {
+    static QUEUE: std::sync::OnceLock<Sender<(LiveConfig, String)>> = std::sync::OnceLock::new();
+    let tx = QUEUE.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<(LiveConfig, String)>();
+        std::thread::Builder::new()
+            .name("gemini-alert".into())
+            .spawn(move || {
+                for (config, text) in rx {
+                    let rt = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(rt) => rt,
+                        Err(error) => {
+                            log::warn!("Gemini alert runtime failed: {error}");
+                            crate::voice::announce(text);
+                            continue;
+                        }
+                    };
+                    if let Err(error) = rt.block_on(run_announcement(config, &text)) {
+                        log::warn!("Gemini alert speech failed: {error}");
+                        // Keep the threat audible if the Live call fails.
+                        crate::voice::announce(text);
+                    }
+                }
+            })
+            .ok();
+        tx
+    });
+    let _ = tx.send((config, text));
+}
+
+async fn run_announcement(config: LiveConfig, text: &str) -> Result<(), String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    crate::android_live_audio::start_playback();
+    let wait_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let state = crate::android_live_audio::state();
+        if state == "ready" {
+            break;
+        }
+        if let Some(error) = state.strip_prefix("error:") {
+            return Err(format!("Speaker unavailable: {error}"));
+        }
+        if tokio::time::Instant::now() >= wait_deadline {
+            return Err("Timed out opening the speaker for the alert.".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let url = format!("{WS_BASE}?key={}", url_encode(&config.api_key));
+    let connect = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio_tungstenite::connect_async(&url),
+    );
+    let (mut socket, _) = match connect.await {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(error)) => return Err(connection_error(error)),
+        Err(_) => return Err("Timed out connecting to Gemini Live.".into()),
+    };
+
+    let model = config
+        .model
+        .trim()
+        .trim_start_matches("models/")
+        .to_string();
+    let voice = if config.voice.trim().is_empty() {
+        "Aoede"
+    } else {
+        config.voice.trim()
+    };
+    let mut setup = json!({
+        "setup": {
+            "model": format!("models/{model}"),
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "languageCode": "en-US",
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": { "voiceName": voice }
+                    }
+                }
+            },
+            "systemInstruction": {
+                "parts": [{ "text": "You are Stormscope's spoken storm alert. Read the supplied alert exactly once, clearly and at a natural pace. Do not greet, explain, add commentary, or ask questions. Use US English." }]
+            }
+        }
+    });
+    if model.contains("extended-thinking") {
+        setup["setup"]["generationConfig"]["thinkingConfig"] = json!({ "thinkingLevel": "high" });
+    }
+    socket
+        .send(Message::Text(setup.to_string().into()))
+        .await
+        .map_err(|error| format!("Could not configure the alert voice: {error}"))?;
+
+    let ack_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let remaining = ack_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("Gemini Live did not acknowledge the alert session.".into());
+        }
+        let message = match tokio::time::timeout(remaining, socket.next()).await {
+            Ok(Some(Ok(message))) => message,
+            Ok(Some(Err(error))) => {
+                return Err(format!("Gemini Live alert setup lost: {error}"));
+            }
+            Ok(None) | Err(_) => {
+                return Err("Gemini Live did not acknowledge the alert session.".into());
+            }
+        };
+        let Some(raw) = text_of(message) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if value.get("setupComplete").is_some() {
+            break;
+        }
+        if let Some(error) = server_error(&value) {
+            return Err(error);
+        }
+    }
+
+    let prompt =
+        format!("Say exactly this alert once, with no greeting and no extra words: {text}");
+    let turn = json!({
+        "clientContent": {
+            "turns": [{ "role": "user", "parts": [{ "text": prompt }] }],
+            "turnComplete": true
+        }
+    });
+    socket
+        .send(Message::Text(turn.to_string().into()))
+        .await
+        .map_err(|error| format!("Could not send the alert text: {error}"))?;
+
+    let mut audio_bytes: u64 = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("Gemini Live alert timed out.".into());
+        }
+        let next = tokio::time::timeout(remaining, socket.next()).await;
+        let message = match next {
+            Ok(Some(Ok(message))) => message,
+            Ok(Some(Err(error))) => {
+                return Err(format!("Gemini Live alert connection lost: {error}"));
+            }
+            Ok(None) | Err(_) => return Err("Gemini Live alert closed early.".into()),
+        };
+        let Some(raw) = text_of(message) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        if let Some(error) = server_error(&value) {
+            return Err(error);
+        }
+        let Some(content) = value.get("serverContent") else {
+            continue;
+        };
+        if let Some(parts) = content
+            .pointer("/modelTurn/parts")
+            .and_then(Value::as_array)
+        {
+            for part in parts {
+                let Some(data) = part.pointer("/inlineData/data").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Ok(pcm) = base64::engine::general_purpose::STANDARD.decode(data) else {
+                    continue;
+                };
+                if !pcm.is_empty() {
+                    audio_bytes += pcm.len() as u64;
+                    crate::android_live_audio::play(&pcm);
+                }
+            }
+        }
+        if content
+            .get("turnComplete")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            break;
+        }
+    }
+
+    // 24 kHz mono PCM16; let the queued audio finish before releasing the
+    // speaker. A small tail covers the sink latency.
+    let seconds = audio_bytes as f64 / (24_000.0 * 2.0);
+    tokio::time::sleep(Duration::from_secs_f64(seconds + 0.35)).await;
+    let _ = socket.close(None).await;
+    crate::android_live_audio::stop();
+    Ok(())
+}
+
 fn wait_for_tool_response(
     cmd_rx: &std::sync::mpsc::Receiver<LiveCommand>,
     stop: &AtomicBool,

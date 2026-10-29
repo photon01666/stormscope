@@ -1606,6 +1606,25 @@ fn map_controls_analysis(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.model_compare_open = !app.state.model_compare_open;
         }
     });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button("💧 Rain & snow totals")
+            .on_hover_text(
+                "What nearby NWS stations measured: rolling rain/snow buckets \
+                 and an event total summed from their hourly observations",
+            )
+            .clicked()
+        {
+            app.state.totals_open = !app.state.totals_open;
+        }
+        if ui
+            .button("QPE vs gauges")
+            .on_hover_text("Compare MRMS QPE with nearby NWS rain gauges for 1, 3, 6 or 24 hours")
+            .clicked()
+        {
+            app.state.verification_open = !app.state.verification_open;
+        }
+    });
     ui.checkbox(&mut app.state.show_rotation, "Rotation / TVS signatures")
         .on_hover_text(
             "Mark low-level inbound/outbound velocity couplets. Experimental; \
@@ -1708,8 +1727,8 @@ fn map_controls_alerts(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<
     );
     sliders.push((18, mcd.rect));
     mcd.on_hover_text(
-        "Mesoscale discussion area fill opacity. The default is 15% \
-         (85% transparent); 0% leaves only the outline. The pointer still \
+        "Mesoscale discussion area fill opacity. The default is 5% \
+         (95% transparent); 0% leaves only the outline. The pointer still \
          clears the fill locally so the radar is readable there.",
     );
     let fill = warning_fill_slider(ui, app);
@@ -2866,16 +2885,6 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
         .clicked()
     {
         app.state.alerts_popup_open = !app.state.alerts_popup_open;
-    }
-    if ui
-        .button("💧 Rain & snow totals")
-        .on_hover_text(
-            "What nearby NWS stations measured: rolling rain/snow buckets \
-             and an event total summed from their hourly observations",
-        )
-        .clicked()
-    {
-        app.state.totals_open = !app.state.totals_open;
     }
     if ui
         .button("QPE vs gauges")

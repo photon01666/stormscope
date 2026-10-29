@@ -118,7 +118,7 @@ pub(super) fn draw_mcds(
         let hovered = app.state.mcd_hover == Some(m.number);
         let color = mcd_color();
         // Mesoscale discussions are broad, long-lived areas. The Controls
-        // slider sets the resting opacity (15% fill / 85% transparent by
+        // slider sets the resting opacity (5% fill / 95% transparent by
         // default); hovering raises it just enough to confirm which area is
         // under the pointer.
         let base = app.state.mcd_fill.clamp(0.0, 1.0);

@@ -35,7 +35,7 @@ pub fn verification_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
         .id(egui::Id::new("stormscope.verification"))
         .default_pos(super::centered_popup_pos(ctx, size))
         .max_width((screen.x - 16.0).max(200.0))
-        .min_size(egui::vec2(520.0 * scale, 260.0 * scale));
+        .min_width((520.0 * scale).min((screen.x - 24.0).max(200.0)));
     #[cfg(target_os = "android")]
     if fill {
         window = window.title_bar(false);
@@ -48,7 +48,10 @@ pub fn verification_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
             .resizable(false)
             .constrain_to(inset)
     } else {
-        window.default_size(size).max_height(max_h).resizable(true)
+        // Size to the report instead of pinning a 500-point-tall window and
+        // padding the leftover space. The table keeps its own scroll cap, so
+        // a long list still fits on screen without an empty band underneath.
+        window.auto_sized().max_height(max_h)
     };
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close = false;
@@ -147,7 +150,9 @@ pub fn verification_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
                     .weak(),
                 );
             } else {
-                let table_h = (ui.available_height() - 54.0 * scale).max(120.0);
+                let table_h = (report.pairs.len() as f32 * 26.0 * scale)
+                    .min((max_h - 250.0 * scale).max(120.0))
+                    .max(120.0);
                 egui::ScrollArea::vertical()
                     .id_salt("stormscope.verification.table")
                     .max_height(table_h)
@@ -189,9 +194,6 @@ pub fn verification_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
                 .weak()
                 .small(),
             );
-        }
-        if !fill {
-            super::fill_popup_height(ui);
         }
     });
     if close {

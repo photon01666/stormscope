@@ -559,7 +559,7 @@ pub struct AppState {
     pub mcds: Vec<radar_data::mcds::Mcd>,
     pub show_mcds: bool,
     /// Opacity of the mesoscale-discussion area fill (0 = outline only).
-    /// Defaults to 15% fill, i.e. 85% transparent.
+    /// Defaults to 5% fill, i.e. 95% transparent.
     pub mcd_fill: f32,
     /// Discussion number under the pointer / whose detail popup is open.
     pub mcd_hover: Option<u32>,
@@ -1335,7 +1335,7 @@ impl Default for AppState {
             lsr_detail: None,
             mcds: Vec::new(),
             show_mcds: true,
-            mcd_fill: 0.15,
+            mcd_fill: 0.05,
             mcd_hover: None,
             mcd_hover_at: 0.0,
             mcd_detail: None,
@@ -2356,8 +2356,8 @@ mod tests {
     }
 
     #[test]
-    fn default_mcd_fill_is_fifteen_percent() {
-        assert!((AppState::default().mcd_fill - 0.15).abs() < 1e-6);
+    fn default_mcd_fill_is_five_percent() {
+        assert!((AppState::default().mcd_fill - 0.05).abs() < 1e-6);
     }
     use radar_core::VolumeMeta;
 

@@ -141,6 +141,7 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
     }
 
     // Tap or drag a finger/pointer along the strip to scrub the ring.
+    app.state.timeline_scrubbing = response.dragged();
     if response.clicked() || response.dragged() {
         if let Some(pos) = response.interact_pointer_pos() {
             let idx = ((pos.x - rect.left()) / slot).floor();

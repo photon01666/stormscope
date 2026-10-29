@@ -792,10 +792,21 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         && playing
                         && frame_changed
                         && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(180);
+                    // Scrubbing emits pointer positions at display rate. A
+                    // full raster for every one made the thumb trail the
+                    // finger; cap scrub rasters to ~30 fps and use the same
+                    // coarse grid, then do the sharp pass when it stops.
+                    let scrub_raster = app.state.timeline_scrubbing
+                        && frame_changed
+                        && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(33);
                     // Quarter-ish resolution is deliberately coarse: during a
                     // finger drag the radar only has to keep animating, while
                     // the basemap and pointer must stay at full frame rate.
-                    let raster_scale: f32 = if drag_animation_raster { 0.35 } else { 1.0 };
+                    let raster_scale: f32 = if drag_animation_raster || scrub_raster {
+                        0.35
+                    } else {
+                        1.0
+                    };
                     let mut h = std::collections::hash_map::DefaultHasher::new();
                     frame_sig.hash(&mut h);
                     app.state.view.zoom.to_bits().hash(&mut h);
@@ -826,7 +837,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         // in lockstep.
                         let settle_ms = if response.dragged() { 0 } else { 100 };
                         let settling = drag_animation_raster
+                            || scrub_raster
                             || (!response.dragged()
+                                && !app.state.timeline_scrubbing
                                 && app.radar_last_raster.elapsed()
                                     >= std::time::Duration::from_millis(settle_ms));
                         if settling {

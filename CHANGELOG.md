@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.7.3 — 2026-10-29
+
+**Android radar loop and controls**
+- The newest radar volume is shown first. Earlier scans are restored only
+  from what is already cached; the app no longer downloads a two-hour window
+  automatically at startup.
+- New **Last 2hr** button beside Play explicitly downloads and loops the last
+  two hours of radar. On Android the cache is pruned to two hours, and the
+  decoded-volume cache is bounded so the two-hour window is actually retained
+  instead of collapsing to four frames.
+- Android playback defaults to 4 fps (half the previous speed). Play is a
+  larger touch target on the phone.
+- Dragging the map pauses an active loop and resumes it on release. This removes
+  the playback judder while panning.
+- Timeline scrubbing now caps radar re-rasters during the drag, so the scrub
+  thumb tracks the finger; the sharp frame lands when the finger lifts.
+- The bottom timeline reserves the Android gesture-bar safe area, so the Play
+  row is never clipped on the first frame.
+- Android fullscreen keeps the bottom timeline scrubber visible.
+- The old forward/backward skip buttons and the Downloaded button were removed
+  from the timeline.
+- AI settings wraps provider/action rows and key fields on narrow screens; the
+  Android back gesture closes the Settings drawer.
+
 ## v1.7.2 — 2026-10-28
 
 **Watches, outlooks and map controls**

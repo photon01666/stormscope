@@ -17,7 +17,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -104,9 +104,12 @@ pub struct S3Source {
     /// Serializes `block_on` entries so concurrent callers don't contend on
     /// the single-threaded driver.
     rt_lock: Mutex<()>,
-    /// In-memory decoded volumes keyed by S3 key (the `Arc` short-circuit
-    /// for `fetch_archive` cache hits).
-    mem: Mutex<BTreeMap<String, Arc<radar_core::Volume>>>,
+    /// A tiny in-memory decoded-volume cache. The ring owns the frames that
+    /// are actually on screen; this only avoids re-decoding the last volume or
+    /// two when the ring asks for it again. It must stay bounded: an unbounded
+    /// map here used to pin every fetched scan (several GB on Android) while
+    /// the visible ring was being trimmed for memory.
+    mem: Mutex<VecDeque<(String, Arc<radar_core::Volume>)>>,
 }
 
 impl S3Source {
@@ -119,7 +122,7 @@ impl S3Source {
             cache,
             rt,
             rt_lock: Mutex::new(()),
-            mem: Mutex::new(BTreeMap::new()),
+            mem: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -246,15 +249,23 @@ impl S3Source {
     /// Fetch (memory-cache hit, disk-cache hit, or download) + decode a
     /// volume.
     pub fn fetch_archive(&self, r: &ArchiveVolumeRef) -> Result<Arc<radar_core::Volume>> {
-        if let Some(v) = self.mem.lock().unwrap().get(&r.key) {
+        const MEM_CACHE_VOLUMES: usize = 2;
+        if let Some((_, v)) = self
+            .mem
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(key, _)| key == &r.key)
+        {
             return Ok(Arc::clone(v));
         }
         let gz = self.fetch_archive_bytes(r)?;
         let volume = decode_archive_bytes(&gz)?;
-        self.mem
-            .lock()
-            .unwrap()
-            .insert(r.key.clone(), Arc::clone(&volume));
+        let mut mem = self.mem.lock().unwrap();
+        mem.push_back((r.key.clone(), Arc::clone(&volume)));
+        while mem.len() > MEM_CACHE_VOLUMES {
+            mem.pop_front();
+        }
         Ok(volume)
     }
 

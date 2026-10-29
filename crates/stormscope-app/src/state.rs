@@ -18,7 +18,7 @@ use std::sync::Arc;
 #[cfg(not(target_os = "android"))]
 pub const RING_CAPACITY: usize = 24;
 #[cfg(target_os = "android")]
-pub const RING_CAPACITY: usize = 8;
+pub const RING_CAPACITY: usize = 24;
 
 /// Resident-memory budget for the animation ring. Evicting oldest-first down
 /// to this keeps the app's footprint predictable: leaving it open all night
@@ -27,7 +27,7 @@ pub const RING_CAPACITY: usize = 8;
 #[cfg(not(target_os = "android"))]
 pub const RING_BUDGET_BYTES: usize = 3 * 1024 * 1024 * 1024;
 #[cfg(target_os = "android")]
-pub const RING_BUDGET_BYTES: usize = 512 * 1024 * 1024;
+pub const RING_BUDGET_BYTES: usize = 3 * 1024 * 1024 * 1024;
 
 /// Never trim below this many frames — a loop needs a few scans to be a loop.
 #[cfg(not(target_os = "android"))]
@@ -463,6 +463,10 @@ pub struct AppState {
     /// the finger lifts. Without this, every playback frame rasterized under
     /// the drag and produced judder.
     pub resume_loop_after_drag: bool,
+    /// The user is dragging the timeline scrub strip. The map uses this to
+    /// rasterize at reduced resolution instead of doing a full raster for
+    /// every pointer event.
+    pub timeline_scrubbing: bool,
     pub fps: f32,
 
     // Selection
@@ -1293,6 +1297,7 @@ impl Default for AppState {
             },
             loop_state: LoopState::Paused,
             resume_loop_after_drag: false,
+            timeline_scrubbing: false,
             fps: if cfg!(target_os = "android") {
                 4.0
             } else {

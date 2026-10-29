@@ -122,7 +122,8 @@ impl Sounding {
     ///
     /// This is a display aid, not a forecast: it blends CAPE, 0–6 km shear,
     /// CIN and the LCL. The exact weights are deliberately simple so the
-    /// number can be explained and tuned.
+    /// number can be explained and tuned. The final score is gated by
+    /// surface-based CAPE so a sheared but stable profile reads minimal.
     pub fn severe_potential(&self) -> f64 {
         let cape = (self.sb_cape_jkg / 2500.0).clamp(0.0, 1.0).sqrt();
         let shear = (self.shear_0_6km_ms / 25.0).clamp(0.0, 1.0);
@@ -131,14 +132,20 @@ impl Sounding {
             .lcl_height_m
             .map(|z| ((2500.0 - z) / 1500.0).clamp(0.0, 1.0))
             .unwrap_or(0.5);
-        (100.0 * (0.55 * cape + 0.30 * shear + 0.10 * cin + 0.05 * lcl)).clamp(0.0, 100.0)
+        // Shear, a low LCL and no CIN do not make severe storms without
+        // buoyancy. Scale the whole score by a small-CAPE gate so a stable
+        // profile cannot earn 30-40 points from wind shear alone.
+        let buoyancy = (self.sb_cape_jkg.max(0.0) / 100.0).clamp(0.0, 1.0);
+        (100.0 * (0.55 * cape + 0.30 * shear + 0.10 * cin + 0.05 * lcl) * buoyancy)
+            .clamp(0.0, 100.0)
     }
 
     /// Heuristic 0–100 tornado-environment favorability.
     ///
     /// Leans on low-level SRH and shear, LCL height, CAPE and CIN. Positive
     /// SRH favors right-moving supercells; negative SRH is ignored here
-    /// (the sounding panel still displays it).
+    /// (the sounding panel still displays it). Like the severe score, the
+    /// result is gated by surface-based CAPE.
     pub fn tornado_potential(&self) -> f64 {
         let srh1 = (self.srh_0_1km.max(0.0) / 200.0).clamp(0.0, 1.0);
         let srh3 = (self.srh_0_3km.max(0.0) / 300.0).clamp(0.0, 1.0);
@@ -149,8 +156,10 @@ impl Sounding {
             .lcl_height_m
             .map(|z| ((2200.0 - z) / 1400.0).clamp(0.0, 1.0))
             .unwrap_or(0.5);
+        let buoyancy = (self.sb_cape_jkg.max(0.0) / 100.0).clamp(0.0, 1.0);
         (100.0
-            * (0.30 * srh1 + 0.20 * srh3 + 0.20 * shear1 + 0.15 * lcl + 0.10 * cape + 0.05 * cin))
+            * (0.30 * srh1 + 0.20 * srh3 + 0.20 * shear1 + 0.15 * lcl + 0.10 * cape + 0.05 * cin)
+            * buoyancy)
             .clamp(0.0, 100.0)
     }
 
@@ -630,5 +639,46 @@ mod tests {
         ]);
         assert_eq!(rain.winter_type(), "rain");
         assert_eq!(rain.winter_potential(), 0.0);
+    }
+
+    #[test]
+    fn stable_shear_profile_has_no_severe_or_tornado_potential() {
+        let mut s = sounding(vec![
+            lvl(1000.0, 300.0, 4.0, 95.0),
+            lvl(850.0, 1500.0, 1.0, 90.0),
+            lvl(700.0, 3000.0, -8.0, 80.0),
+            lvl(500.0, 5500.0, -25.0, 60.0),
+        ]);
+        s.sb_cape_jkg = 0.0;
+        s.sb_cin_jkg = 0.0;
+        s.lcl_height_m = Some(621.0);
+        s.shear_0_1km_ms = 6.0;
+        s.shear_0_3km_ms = 9.0;
+        s.shear_0_6km_ms = 18.0;
+        s.srh_0_1km = -59.0;
+        s.srh_0_3km = -87.0;
+
+        assert_eq!(s.severe_potential(), 0.0);
+        assert_eq!(s.tornado_potential(), 0.0);
+        assert_eq!(Sounding::potential_label(s.severe_potential()), "minimal");
+    }
+
+    #[test]
+    fn cape_unlocks_severe_and_tornado_potential() {
+        let mut s = sounding(vec![
+            lvl(1000.0, 300.0, 24.0, 70.0),
+            lvl(850.0, 1500.0, 18.0, 65.0),
+            lvl(700.0, 3000.0, 8.0, 55.0),
+            lvl(500.0, 5500.0, -15.0, 40.0),
+        ]);
+        s.sb_cape_jkg = 1500.0;
+        s.sb_cin_jkg = 0.0;
+        s.lcl_height_m = Some(900.0);
+        s.shear_0_6km_ms = 20.0;
+        s.srh_0_1km = 150.0;
+        s.srh_0_3km = 200.0;
+
+        assert!(s.severe_potential() > 20.0);
+        assert!(s.tornado_potential() > 10.0);
     }
 }

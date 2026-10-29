@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.7.5 — 2026-10-29
+
+**Sounding potential correction**
+- Severe-storm and tornado potential are now gated by surface-based CAPE.
+  A stable profile with CAPE near 0 J/kg but strong shear, a low LCL, or no
+  CIN no longer earns 30–40 points from those ingredients alone.
+- This fixes readings such as 37/100 severe and 28/100 tornado in a
+  rain-cooled, zero-CAPE environment; both now read 0/minimal.
+- Added regression tests for a stable sheared profile and a buoyant profile.
+
 ## v1.7.4 — 2026-10-29
 
 **Android: Gemini Live threat voice**

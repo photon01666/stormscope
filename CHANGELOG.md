@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.7.4 — 2026-10-29
+
+**Android: Gemini Live threat voice**
+- **Speak threats** now uses the configured Gemini Live model and voice instead
+  of Android's system TTS. Each alert opens a short speaker-only Live session,
+  speaks the alert, and closes it; no microphone permission or recording is
+  used.
+- Live alert speech is serialized so two announcements cannot overlap.
+- If Gemini is unavailable or no Gemini key is set, the alert falls back to the
+  Android system TTS.
+- Added **Test Gemini alert voice** to the Gemini Live settings section so the
+  configured voice can be checked without waiting for a storm.
+- Android package is `1.7.4` (`versionCode` 30).
+
 ## v1.7.3 — 2026-10-29
 
 **Android radar loop and controls**

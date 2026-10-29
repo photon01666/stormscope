@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.7.2 — 2026-10-28
+
+**Watches, outlooks and map controls**
+- NWS watches are now a separate map layer with a **Watches** tab in the
+  Alerts window and a **Show watches** switch in Map controls. The layer is off
+  by default, draws at 80% transparency, and a watch row turns it on and centers
+  the map when clicked.
+- Map controls is now a narrow, vertical, full-height window that fits without
+  scrolling. Analysis buttons are packed tighter, and duplicate Settings
+  buttons were removed.
+- SPC outlook has its own **SPC outlook** tab in Map controls. **ALL** now lists
+  and draws every available product — Categorical, Tornado, Wind and Hail — and
+  the outlook fill slider applies to all of them, not just categorical.
+- Mesoscale discussion fill has its own **MCD fill** slider, defaulting to 5%
+  (95% transparent).
+- **QPE vs rain gauges** is now a narrow vertical report with station cards,
+  and **Rain & snow totals** / **QPE vs gauges** moved to Map controls →
+  Analysis. The Settings menu no longer repeats those buttons, Sounding, VAD,
+  HRRR, rotation/hail or QC controls.
+- Android package version is `1.7.2` (`versionCode` 28). The stacked map
+  controls, SPC tab and moved buttons are shared by Linux, Windows and Android.
+
 ## v1.7.1 — 2026-10-28
 
 **Live AI Tracking**

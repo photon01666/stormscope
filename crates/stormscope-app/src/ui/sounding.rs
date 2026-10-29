@@ -505,7 +505,8 @@ pub(super) fn params(ui: &mut egui::Ui, s: &Sounding) {
         .on_hover_text(
             "A heuristic 0–100 favorability score, not an official forecast or \n\
              a substitute for SPC outlooks and warnings. It blends CAPE, shear, \n\
-             SRH, CIN and LCL height.",
+             SRH and LCL height, and is gated to near zero when surface-based \n\
+             CAPE is negligible, CIN is strong, or the LFC is higher than 500 hPa.",
         );
     potential_bar(ui, "Severe storms", s.severe_potential());
     potential_bar(ui, "Tornadoes", s.tornado_potential());

@@ -121,45 +121,56 @@ impl Sounding {
     /// Heuristic 0–100 favorability for organized severe storms.
     ///
     /// This is a display aid, not a forecast: it blends CAPE, 0–6 km shear,
-    /// CIN and the LCL. The exact weights are deliberately simple so the
-    /// number can be explained and tuned. The final score is gated by
-    /// surface-based CAPE so a sheared but stable profile reads minimal.
+    /// and the LCL, then applies multiplicative gates for surface-based
+    /// buoyancy, CIN and LFC height. The exact weights are deliberately
+    /// simple so the number can be explained and tuned.
     pub fn severe_potential(&self) -> f64 {
         let cape = (self.sb_cape_jkg / 2500.0).clamp(0.0, 1.0).sqrt();
         let shear = (self.shear_0_6km_ms / 25.0).clamp(0.0, 1.0);
-        let cin = cin_factor(self.sb_cin_jkg);
         let lcl = self
             .lcl_height_m
             .map(|z| ((2500.0 - z) / 1500.0).clamp(0.0, 1.0))
             .unwrap_or(0.5);
         // Shear, a low LCL and no CIN do not make severe storms without
-        // buoyancy. Scale the whole score by a small-CAPE gate so a stable
-        // profile cannot earn 30-40 points from wind shear alone.
-        let buoyancy = (self.sb_cape_jkg.max(0.0) / 100.0).clamp(0.0, 1.0);
-        (100.0 * (0.55 * cape + 0.30 * shear + 0.10 * cin + 0.05 * lcl) * buoyancy)
-            .clamp(0.0, 100.0)
+        // surface-based buoyancy and a reachable LFC.
+        let gate = (self.sb_cape_jkg.max(0.0) / 100.0).clamp(0.0, 1.0) * self.convective_gate();
+        (100.0 * (0.55 * cape + 0.30 * shear + 0.05 * lcl) * gate).clamp(0.0, 100.0)
+    }
+
+    /// Multiplicative gate for surface-based deep convection.
+    ///
+    /// A strong cap or an LFC near the tropopause means the surface-based
+    /// CAPE is not operationally reachable. At -814 J/kg CIN and a 250 hPa
+    /// LFC this is zero, so the severe and tornado scores cannot be inflated
+    /// by wind shear, a low LCL, or a thin high-based CAPE sliver.
+    fn convective_gate(&self) -> f64 {
+        let cin = cin_factor(self.sb_cin_jkg);
+        let lfc = match self.lfc_pressure_hpa {
+            Some(p) if p >= 600.0 => 1.0,
+            Some(p) if p <= 500.0 => 0.0,
+            Some(p) => ((p - 500.0) / 100.0).clamp(0.0, 1.0),
+            None => 1.0,
+        };
+        cin * lfc
     }
 
     /// Heuristic 0–100 tornado-environment favorability.
     ///
-    /// Leans on low-level SRH and shear, LCL height, CAPE and CIN. Positive
-    /// SRH favors right-moving supercells; negative SRH is ignored here
-    /// (the sounding panel still displays it). Like the severe score, the
-    /// result is gated by surface-based CAPE.
+    /// Leans on low-level SRH and shear, LCL height and CAPE. Positive SRH
+    /// favors right-moving supercells; negative SRH contributes zero (it is
+    /// not absolute-valued). Like the severe score, the result is gated by
+    /// surface-based CAPE, CIN and LFC height.
     pub fn tornado_potential(&self) -> f64 {
         let srh1 = (self.srh_0_1km.max(0.0) / 200.0).clamp(0.0, 1.0);
         let srh3 = (self.srh_0_3km.max(0.0) / 300.0).clamp(0.0, 1.0);
         let shear1 = (self.shear_0_1km_ms / 15.0).clamp(0.0, 1.0);
         let cape = (self.sb_cape_jkg / 2000.0).clamp(0.0, 1.0);
-        let cin = cin_factor(self.sb_cin_jkg);
         let lcl = self
             .lcl_height_m
             .map(|z| ((2200.0 - z) / 1400.0).clamp(0.0, 1.0))
             .unwrap_or(0.5);
-        let buoyancy = (self.sb_cape_jkg.max(0.0) / 100.0).clamp(0.0, 1.0);
-        (100.0
-            * (0.30 * srh1 + 0.20 * srh3 + 0.20 * shear1 + 0.15 * lcl + 0.10 * cape + 0.05 * cin)
-            * buoyancy)
+        let gate = (self.sb_cape_jkg.max(0.0) / 100.0).clamp(0.0, 1.0) * self.convective_gate();
+        (100.0 * (0.30 * srh1 + 0.20 * srh3 + 0.20 * shear1 + 0.15 * lcl + 0.10 * cape) * gate)
             .clamp(0.0, 100.0)
     }
 
@@ -664,6 +675,29 @@ mod tests {
     }
 
     #[test]
+    fn extreme_cin_and_high_lfc_block_surface_based_scores() {
+        let mut s = sounding(vec![
+            lvl(1000.0, 300.0, 4.0, 95.0),
+            lvl(850.0, 1500.0, 1.0, 90.0),
+            lvl(700.0, 3000.0, -8.0, 80.0),
+            lvl(500.0, 5500.0, -25.0, 60.0),
+        ]);
+        s.sb_cape_jkg = 130.0;
+        s.sb_cin_jkg = -814.0;
+        s.lfc_pressure_hpa = Some(250.0);
+        s.el_pressure_hpa = Some(150.0);
+        s.lcl_height_m = Some(946.0);
+        s.shear_0_1km_ms = 4.0;
+        s.shear_0_3km_ms = 11.0;
+        s.shear_0_6km_ms = 15.0;
+        s.srh_0_1km = -52.0;
+        s.srh_0_3km = -186.0;
+
+        assert_eq!(s.severe_potential(), 0.0);
+        assert_eq!(s.tornado_potential(), 0.0);
+    }
+
+    #[test]
     fn cape_unlocks_severe_and_tornado_potential() {
         let mut s = sounding(vec![
             lvl(1000.0, 300.0, 24.0, 70.0),
@@ -673,6 +707,7 @@ mod tests {
         ]);
         s.sb_cape_jkg = 1500.0;
         s.sb_cin_jkg = 0.0;
+        s.lfc_pressure_hpa = Some(700.0);
         s.lcl_height_m = Some(900.0);
         s.shear_0_6km_ms = 20.0;
         s.srh_0_1km = 150.0;

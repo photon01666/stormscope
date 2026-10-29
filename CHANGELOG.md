@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.7.6 — 2026-10-29
+
+**Sounding potential: gate on CIN and LFC height**
+- Severe-storm and tornado potential now require a reachable surface-based
+  parcel. A strong cap or a high LFC shuts both scores down even when a small
+  amount of CAPE is reported.
+- CIN of −814 J/kg and an LFC at 250 hPa now produce **0/100 severe** and
+  **0/100 tornado** instead of 36 and 19.
+- CIN is weighted multiplicatively from 1.0 at −25 J/kg to 0 at −150 J/kg;
+  an LFC above 500 hPa also forces zero.
+- Negative SRH already contributes zero to the tornado score; it is not
+  absolute-valued.
+- Added a regression test for the capped, high-LFC profile.
+
 ## v1.7.5 — 2026-10-29
 
 **Sounding potential correction**

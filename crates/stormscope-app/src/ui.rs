@@ -234,6 +234,12 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.alert_detail = None;
         } else if app.state.alerts_popup_open {
             app.state.alerts_popup_open = false;
+        } else if app.state.sidebar_pinned {
+            // The Android Settings chip pins the full-screen controls/settings
+            // drawer. Back should close that drawer before the system gets the
+            // gesture and leaves the app.
+            app.state.sidebar_pinned = false;
+            app.state.sidebar_dismissed = true;
         }
     }
 
@@ -244,6 +250,15 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
         if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
             set_fullscreen(ui.ctx(), app);
         }
+        // Android fullscreen keeps the timeline scrubber: a long-press gives
+        // the map the whole screen, but the user still needs to scrub the
+        // loop without leaving fullscreen. Desktop stays map-only.
+        #[cfg(target_os = "android")]
+        egui::Panel::bottom("fullscreen_timeline").show(ui, |ui| {
+            crate::timeline::timeline(ui, app);
+            let inset = ui.ctx().input(|i| i.safe_area_insets().0.bottom).max(24.0);
+            ui.add_space(inset);
+        });
         egui::CentralPanel::default().show(ui, |ui| {
             crate::ui::map::map(ui, app);
             app.map_rect_at = Some(ui.available_rect_before_wrap());
@@ -281,10 +296,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
         // the panel taller.
         #[cfg(target_os = "android")]
         {
-            let inset = ui
-                .ctx()
-                .input(|i| i.safe_area_insets().0.bottom)
-                .max(24.0);
+            let inset = ui.ctx().input(|i| i.safe_area_insets().0.bottom).max(24.0);
             ui.add_space(inset);
         }
     });

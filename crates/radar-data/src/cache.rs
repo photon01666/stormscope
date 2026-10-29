@@ -278,6 +278,39 @@ impl DiskCache {
         Ok(())
     }
 
+    /// Delete cached Level II volumes whose *scan time* is older than
+    /// `max_age`. Used on Android to keep at most the last two hours of radar
+    /// on disk; the archive paths still work, but old files are pruned after
+    /// they are written.
+    pub fn sweep_radar_age(&self, max_age: chrono::Duration) -> std::io::Result<()> {
+        let cutoff = chrono::Utc::now() - max_age;
+        let root = self.root.join("l2");
+        let sites = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        for site_entry in sites.flatten() {
+            if !site_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let site = site_entry.file_name().to_string_lossy().to_string();
+            let Ok(files) = std::fs::read_dir(site_entry.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let name = file.file_name().to_string_lossy().to_string();
+                let Some(start) = parse_cached_name(&site, &name) else {
+                    continue;
+                };
+                if start < cutoff {
+                    let _ = std::fs::remove_file(file.path());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// All files under `dir` as (mtime, size, path), oldest-first unordered.
     fn files_under(&self, dir: &Path) -> std::io::Result<Vec<(SystemTime, u64, PathBuf)>> {
         let mut out = Vec::new();
@@ -343,6 +376,38 @@ mod tests {
         let p = cache.write("l2/KTLX/x.gz", b"hello").unwrap();
         assert!(p.starts_with(&root));
         assert_eq!(cache.read("l2/KTLX/x.gz").unwrap().unwrap(), b"hello");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn radar_age_sweep_removes_only_old_scan_times() {
+        let root = scratch("radar-age");
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = DiskCache::new(root.clone(), 1 << 20);
+        let now = chrono::Utc::now();
+        let old = (now - chrono::Duration::hours(3)).format("%Y%m%d_%H%M%S");
+        let new = (now - chrono::Duration::minutes(30)).format("%Y%m%d_%H%M%S");
+        cache
+            .write(&format!("l2/KTWX/KTWX{old}_V06.gz"), b"old")
+            .unwrap();
+        cache
+            .write(&format!("l2/KTWX/KTWX{new}_V06.gz"), b"new")
+            .unwrap();
+        cache.write("tiles/8/1/2.tile", b"tile").unwrap();
+        cache.sweep_radar_age(chrono::Duration::hours(2)).unwrap();
+        assert!(
+            cache
+                .read(&format!("l2/KTWX/KTWX{old}_V06.gz"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            cache
+                .read(&format!("l2/KTWX/KTWX{new}_V06.gz"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(cache.read("tiles/8/1/2.tile").unwrap().is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 

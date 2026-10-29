@@ -459,6 +459,10 @@ pub struct AppState {
     pub map_controls_tab: MapControlsTab,
     pub view3d_controls_open: bool,
     pub loop_state: LoopState,
+    /// Android: a map drag temporarily paused an active loop; resume it when
+    /// the finger lifts. Without this, every playback frame rasterized under
+    /// the drag and produced judder.
+    pub resume_loop_after_drag: bool,
     pub fps: f32,
 
     // Selection
@@ -1288,7 +1292,12 @@ impl Default for AppState {
                 now.hour() * 60 + now.minute()
             },
             loop_state: LoopState::Paused,
-            fps: 8.0,
+            resume_loop_after_drag: false,
+            fps: if cfg!(target_os = "android") {
+                4.0
+            } else {
+                8.0
+            },
             site_id: site.id.to_string(),
             default_site: saved_default,
             moment: Moment::Reflectivity,

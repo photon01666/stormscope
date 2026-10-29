@@ -116,6 +116,8 @@ pub fn run(
     archive_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     let cache = DiskCache::with_default_max(DiskCache::default_root());
+    #[cfg(target_os = "android")]
+    let _ = cache.sweep_radar_age(chrono::Duration::hours(2));
     // Warning-archive backfill (opt-in, newest-first, rate-limited). It
     // lives beside the data cache, not inside it: day-files are immutable.
     let mut crawl = radar_data::warnings_archive::ArchiveCrawler::new(
@@ -293,6 +295,18 @@ pub fn run(
                         len: 0,
                     });
                     load_last_hour(&source, &site, &out);
+                }
+                DataCmd::LoadLastTwoHours(site) => {
+                    current_site = site.clone();
+                    archive = None;
+                    watchdog_enabled = false;
+                    backfill.clear();
+                    let _ = out.send(DataMsg::ArchiveInfo {
+                        total: 0,
+                        start: 0,
+                        len: 0,
+                    });
+                    load_last_two_hours(&source, &site, &out);
                 }
                 DataCmd::SetArchiveCrawl(on) => {
                     crawl.set_enabled(on);
@@ -1653,7 +1667,10 @@ fn prime_site(
     Option<chrono::DateTime<Utc>>,
     VecDeque<radar_data::ArchiveVolumeRef>,
 ) {
-    const PRIME_SCANS: usize = crate::state::RING_CAPACITY;
+    // Two hours of NEXRAD scans at the usual ~5-minute cadence. The live
+    // ring may retain fewer on a phone, but the background prefetch still
+    // covers the full two-hour window instead of only the cached subset.
+    const PRIME_SCANS: usize = 24;
     let today = chrono::Utc::now()
         .with_timezone(crate::timefmt::central())
         .date_naive();
@@ -1676,50 +1693,49 @@ fn prime_site(
         return (None, VecDeque::new());
     }
 
-    // What is already on disk, newest-first (the listing's own order).
-    let cached: Vec<&radar_data::ArchiveVolumeRef> =
-        vols.iter().filter(|r| is_cached(source, r)).collect();
     let newest = vols[0].volume_start;
-    let newest_is_cached = cached.first().map(|r| r.volume_start) == Some(newest);
 
     // Drop whatever is on the ring before pushing, or a frame from the
     // previous station lingers under the new one.
     let _ = out.send(DataMsg::ClearFrames);
 
-    let mut delivered = None;
-    if !newest_is_cached {
-        // The first frame the user sees after a switch: get it moving before
-        // the backfill starts.
-        delivered = emit_volume(source, &vols[0], out);
-        if delivered.is_some() {
-            log::info!(
-                "live refresh: scan {}",
-                crate::timefmt::fmt_central(&newest)
-            );
-        }
+    // Show the newest volume first, whether it comes from S3 or the disk
+    // cache. The rest of the two-hour window is only queued after this call:
+    // the map gets a current frame before any backfill download competes for
+    // bandwidth, and motion/tracks fill in as the previous scans arrive.
+    let delivered = emit_volume(source, &vols[0], out);
+    if delivered.is_some() {
+        log::info!(
+            "live refresh: scan {} (newest first)",
+            crate::timefmt::fmt_central(&newest)
+        );
     }
 
+    // Restore only the recent scans already on disk. Nothing from the
+    // two-hour window is downloaded automatically: the explicit "Last 2hr"
+    // action owns that. The previous scan is the one exception, because storm
+    // motion/tracks need it; that is a single volume, not the whole window.
+    let cached: Vec<&radar_data::ArchiveVolumeRef> = vols
+        .iter()
+        .skip(1)
+        .filter(|r| is_cached(source, r))
+        .collect();
     let mut queue: VecDeque<radar_data::ArchiveVolumeRef> = cached.into_iter().cloned().collect();
-    // Motion needs the scan immediately before the newest. The queue above
-    // only holds volumes already on disk, so a fresh site would otherwise sit
-    // on one frame until the next scan (5 minutes). Fetch that one scan on
-    // purpose: ~5 MB buys an immediate storm-track vector.
-    if let Some(previous) = vols.get(1) {
-        if !is_cached(source, previous)
-            && !queue
-                .iter()
-                .any(|r| r.volume_start == previous.volume_start)
-        {
-            log::info!(
-                "prime {site}: fetching the previous scan ({}) for motion",
-                crate::timefmt::fmt_central(&previous.volume_start)
-            );
-            queue.push_back(previous.clone());
-        }
+    if let Some(previous) = vols.get(1)
+        && !is_cached(source, previous)
+        && !queue
+            .iter()
+            .any(|r| r.volume_start == previous.volume_start)
+    {
+        log::info!(
+            "prime {site}: fetching the previous scan ({}) for motion",
+            crate::timefmt::fmt_central(&previous.volume_start)
+        );
+        queue.push_back(previous.clone());
     }
     if !queue.is_empty() {
         log::info!(
-            "prime {site}: {} scans already on disk, newest {}",
+            "prime {site}: {} cached earlier scans queued behind {}",
             queue.len(),
             crate::timefmt::fmt_central(&newest)
         );
@@ -1728,10 +1744,7 @@ fn prime_site(
             queue.len()
         )));
     }
-    // When the newest is already cached it heads the queue, so report it as
-    // delivered for freshness tracking even though it hasn't replayed yet.
-    let newest_cached = queue.front().map(|r| r.volume_start);
-    (delivered.or(newest_cached), queue)
+    (delivered, queue)
 }
 
 /// One polite catch-up check: if the archive bucket has a scan *newer* than
@@ -1780,36 +1793,41 @@ fn archive_catchup(
     }
 }
 
-/// Load the newest ~1 hour of scans (`LAST_HOUR_SCANS`, ~13 at NEXRAD's
-/// ~4.5-min cadence) into the ring, oldest→newest, for immediate looping.
-/// Clears the ring first so playback covers exactly the recent hour.
-fn load_last_hour(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
-    const LAST_HOUR_SCANS: usize = 13;
+/// Load a recent window of scans into the ring, oldest→newest, for immediate
+/// looping. The caller chooses the window; scans are fetched explicitly by
+/// this action (the startup path never auto-downloads the whole window).
+fn load_recent_window(
+    source: &S3Source,
+    site: &str,
+    scans: usize,
+    label: &str,
+    out: &Sender<DataMsg>,
+) {
     let today = chrono::Utc::now()
         .with_timezone(crate::timefmt::central())
         .date_naive();
     let mut vols = list_central_day(source, site, today).unwrap_or_default();
     // Early morning Central: today has few scans, so top up from yesterday's
-    // newest so "last hour" always fills.
-    if vols.len() < LAST_HOUR_SCANS {
+    // newest so the requested window always fills.
+    if vols.len() < scans {
         if let Some(yday) = today.pred_opt() {
             let y = list_central_day(source, site, yday).unwrap_or_default();
             for r in y {
-                if vols.len() >= LAST_HOUR_SCANS {
+                if vols.len() >= scans {
                     break;
                 }
                 vols.push(r);
             }
         }
     }
-    vols.truncate(LAST_HOUR_SCANS);
+    vols.truncate(scans);
     if vols.is_empty() {
         let _ = out.send(DataMsg::Status(format!("no recent scans for {site}")));
         return;
     }
     let _ = out.send(DataMsg::ClearFrames);
     let _ = out.send(DataMsg::Status(format!(
-        "loading last hour ({})…",
+        "loading {label} ({})…",
         vols.len()
     )));
     // vols is newest-first; reverse for forward playback.
@@ -1819,13 +1837,23 @@ fn load_last_hour(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
                 let _ = out.send(DataMsg::Volume(volume));
             }
             Err(e) => {
-                log::warn!("last-hour fetch {} failed: {e:#}", r.file_name());
+                log::warn!("{label} fetch {} failed: {e:#}", r.file_name());
                 let _ = out.send(DataMsg::Error(format!("{}: {e:#}", r.file_name())));
             }
         }
         std::thread::sleep(Duration::from_millis(120));
     }
-    log::info!("last-hour loop loaded for {site}");
+    log::info!("{label} loop loaded for {site}");
+}
+
+/// Load the newest ~1 hour of scans (~13 at NEXRAD's ~4.5-min cadence).
+fn load_last_hour(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
+    load_recent_window(source, site, 13, "last hour", out);
+}
+
+/// Load the newest ~2 hours of scans (~24 at NEXRAD's ~4.5-min cadence).
+fn load_last_two_hours(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
+    load_recent_window(source, site, 24, "last 2 hours", out);
 }
 
 /// Restart the real-time poller for `site`.

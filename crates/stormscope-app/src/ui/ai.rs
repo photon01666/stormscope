@@ -132,7 +132,9 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         } else {
             (size.x - 40.0).max(320.0)
         };
-        ui.set_width(width.max(320.0));
+        // On the phone use the real available width; forcing a 320-point
+        // minimum pushed rows past the right edge on narrow screens.
+        ui.set_width(if fill { width } else { width.max(320.0) });
         // Pad the scroll content (not the viewport) by the keyboard height:
         // the window and focused widget do not resize, so focus stays put,
         // but the form has room to scroll clear of the keyboard. When the
@@ -168,7 +170,7 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                 ui.separator();
 
                 ui.label(egui::RichText::new("Provider").strong());
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .button("OpenCode Go")
                         .on_hover_text(
@@ -260,11 +262,12 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
 
                 ui.add_space(6.0);
                 ui.label("API key");
+                let key_button_reserve = 96.0 * text_scale;
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut app.state.ai_api_key)
                             .password(!app.state.ai_show_key)
-                            .desired_width((ui.available_width() - 72.0).max(100.0))
+                            .desired_width((ui.available_width() - key_button_reserve).max(100.0))
                             .hint_text(if anthropic {
                                 "Paste your Anthropic API key"
                             } else {
@@ -320,11 +323,14 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     );
                     ui.add_space(4.0);
                     ui.label("Gemini API key");
+                    let key_button_reserve = 96.0 * text_scale;
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut app.state.gemini_api_key)
                                 .password(!app.state.gemini_show_key)
-                                .desired_width((ui.available_width() - 72.0).max(100.0))
+                                .desired_width(
+                                    (ui.available_width() - key_button_reserve).max(100.0),
+                                )
                                 .hint_text("Paste your AI Studio key"),
                         );
                         if ui
@@ -371,7 +377,7 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     }
                 }
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .button("Save")
                         .on_hover_text(

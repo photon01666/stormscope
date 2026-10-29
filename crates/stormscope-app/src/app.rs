@@ -289,6 +289,7 @@ pub enum DataCmd {
     LoadArchiveText(String),
     /// Load the newest ~1 hour of scans into the ring for immediate looping.
     LoadLastHour(String),
+    LoadLastTwoHours(String),
     /// Page the loaded archive day earlier (-1) or later (+1).
     ArchiveWindowShift(i32),
     /// Leave archive mode: clear the ring and refresh with the newest
@@ -634,7 +635,11 @@ pub struct MarkerEta {
 /// drag can keep it georeferenced by translation instead of rubber-banding.
 pub struct RadarTex {
     pub handle: egui::TextureHandle,
+    /// Full raster signature (frame content + view + scale).
     pub sig: u64,
+    /// Frame-content signature only (no view/scale). Used to keep the loop
+    /// animating during a drag without rasterizing every pointer frame.
+    pub frame_sig: u64,
     /// Viewport origin (Mercator px) at raster time.
     pub ox: f64,
     pub oy: f64,

@@ -77,6 +77,14 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 .or_else(|| response.interact_pointer_pos())
         {
             app.map_drag_start = Some((app.state.view, pointer));
+            // Android: rasterizing under a moving finger produced judder even
+            // at low resolution. Pause the loop for the duration of the pan
+            // (the Play/Pause button follows), then resume on release.
+            #[cfg(target_os = "android")]
+            if app.state.loop_state == crate::state::LoopState::Playing {
+                app.state.loop_state = crate::state::LoopState::Paused;
+                app.state.resume_loop_after_drag = true;
+            }
         }
         if let Some((start_view, start_pointer)) = app.map_drag_start {
             if let Some(pointer) = response.interact_pointer_pos() {
@@ -93,6 +101,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     }
     if response.drag_stopped() {
         app.map_drag_start = None;
+        #[cfg(target_os = "android")]
+        if app.state.resume_loop_after_drag {
+            app.state.loop_state = crate::state::LoopState::Playing;
+            app.state.resume_loop_after_drag = false;
+        }
     }
     if measuring {
         measure_interaction(rect, &response, view, app);
@@ -747,24 +760,49 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         || app.state.loop_state == crate::state::LoopState::Playing
                             && app.view3d_interact_at.elapsed()
                                 < std::time::Duration::from_millis(150);
-                    let raster_scale: f32 = 1.0;
                     use std::hash::{Hash, Hasher};
+                    // Frame content without the view: during a drag the view
+                    // changes every pointer frame, but this only changes when
+                    // the loop advances or a display setting changes.
+                    let mut fh = std::collections::hash_map::DefaultHasher::new();
+                    frame.volume_start.timestamp_millis().hash(&mut fh);
+                    std::sync::Arc::as_ptr(&volume).hash(&mut fh);
+                    app.state.moment.hash(&mut fh);
+                    app.state.tilt_deg.to_bits().hash(&mut fh);
+                    ((app.state.opacity * 100.0) as u32).hash(&mut fh);
+                    app.state.min_dbz.to_bits().hash(&mut fh);
+                    app.state.qc_clutter.hash(&mut fh);
+                    app.state.qc_attenuation.hash(&mut fh);
+                    app.state.qc_bias_db.to_bits().hash(&mut fh);
+                    app.state.qc_blockage.hash(&mut fh);
+                    let frame_sig = fh.finish();
+
+                    let playing = app.state.loop_state == crate::state::LoopState::Playing;
+                    let frame_changed = app
+                        .radar_tex
+                        .as_ref()
+                        .map_or(true, |t| t.frame_sig != frame_sig);
+                    // While the loop is playing, keep animating through a drag
+                    // with a half-res raster once per playback frame. Between
+                    // frames the stale texture is translated with the pan, so
+                    // the pointer stays smooth; without this the radar froze
+                    // for the whole drag even though the loop was still
+                    // advancing.
+                    let drag_animation_raster = response.dragged()
+                        && playing
+                        && frame_changed
+                        && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(180);
+                    // Quarter-ish resolution is deliberately coarse: during a
+                    // finger drag the radar only has to keep animating, while
+                    // the basemap and pointer must stay at full frame rate.
+                    let raster_scale: f32 = if drag_animation_raster { 0.35 } else { 1.0 };
                     let mut h = std::collections::hash_map::DefaultHasher::new();
-                    frame.volume_start.timestamp_millis().hash(&mut h);
-                    std::sync::Arc::as_ptr(&volume).hash(&mut h);
-                    app.state.moment.hash(&mut h);
-                    app.state.tilt_deg.to_bits().hash(&mut h);
+                    frame_sig.hash(&mut h);
                     app.state.view.zoom.to_bits().hash(&mut h);
                     app.state.view.center_lat.to_bits().hash(&mut h);
                     app.state.view.center_lon.to_bits().hash(&mut h);
                     app.state.view.width().hash(&mut h);
                     app.state.view.height().hash(&mut h);
-                    ((app.state.opacity * 100.0) as u32).hash(&mut h);
-                    app.state.min_dbz.to_bits().hash(&mut h);
-                    app.state.qc_clutter.hash(&mut h);
-                    app.state.qc_attenuation.hash(&mut h);
-                    app.state.qc_bias_db.to_bits().hash(&mut h);
-                    app.state.qc_blockage.hash(&mut h);
                     raster_scale.to_bits().hash(&mut h); // scale changes re-raster
                     let sig = h.finish();
 
@@ -777,18 +815,20 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         // the drag offset when painting (below), instead of
                         // letting it rubber-band against the moving tiles.
                         //
-                        // During a drag the map must never rasterize: the full
-                        // raster took 17–30 ms and a half-res raster still took
-                        // 6–16 ms, both enough to drop frames while the pointer
-                        // is moving. Translate the last full-resolution texture
-                        // for the duration of the drag and raster once it stops.
-                        // That keeps the basemap, radar and pointer in lockstep;
-                        // the small uncovered edge is preferable to a lagging
-                        // overlay.
+                        // Normally a drag never rasterizes: the full raster
+                        // took 17–30 ms and a half-res raster still took
+                        // 6–16 ms, both enough to drop frames while the
+                        // pointer is moving. The exception is an active loop:
+                        // once per playback frame we allow one half-res raster
+                        // so the radar keeps animating under the finger.
+                        // Between those frames the stale texture is translated
+                        // with the pan, keeping the basemap, radar and pointer
+                        // in lockstep.
                         let settle_ms = if response.dragged() { 0 } else { 100 };
-                        let settling = !response.dragged()
-                            && app.radar_last_raster.elapsed()
-                                >= std::time::Duration::from_millis(settle_ms);
+                        let settling = drag_animation_raster
+                            || (!response.dragged()
+                                && app.radar_last_raster.elapsed()
+                                    >= std::time::Duration::from_millis(settle_ms));
                         if settling {
                             let min_dbz = match app.state.moment {
                                 radar_core::Moment::Reflectivity
@@ -896,6 +936,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                     // per-frame texture allocation churn.
                                     rt.handle.set(color, egui::TextureOptions::LINEAR);
                                     rt.sig = sig;
+                                    rt.frame_sig = frame_sig;
                                     rt.ox = ox0;
                                     rt.oy = oy0;
                                     rt.zoom = view.zoom;
@@ -909,6 +950,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                     app.radar_tex = Some(crate::app::RadarTex {
                                         handle: tex,
                                         sig,
+                                        frame_sig,
                                         ox: ox0,
                                         oy: oy0,
                                         zoom: view.zoom,

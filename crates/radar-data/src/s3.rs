@@ -238,6 +238,8 @@ impl S3Source {
         let gz = gzip(&bytes).context("gzip-compressing volume for cache")?;
         self.cache.write(&rel, &gz)?;
         let _ = self.cache.sweep(); // opportunistic size cap
+        #[cfg(target_os = "android")]
+        let _ = self.cache.sweep_radar_age(chrono::Duration::hours(2));
         Ok(gz)
     }
 
@@ -621,6 +623,8 @@ fn persist_volume(
                 gz.len()
             );
             let _ = cache.sweep(); // opportunistic size cap
+            #[cfg(target_os = "android")]
+            let _ = cache.sweep_radar_age(chrono::Duration::hours(2));
         }
         Err(e) => log::warn!("realtime {site}: caching volume {name} failed: {e:#}"),
     }

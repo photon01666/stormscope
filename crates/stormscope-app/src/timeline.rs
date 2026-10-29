@@ -14,10 +14,20 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
     }
 
     ui.horizontal_wrapped(|ui| {
-        // Play/pause.
+        // Play/pause. The phone gets a larger touch target; the skip-to-end
+        // buttons are gone on every platform because the scrub strip already
+        // covers that job.
         let playing = app.state.loop_state == LoopState::Playing;
         let label = if playing { "Pause" } else { "Play" };
-        if ui.button(label).clicked() {
+        let play = if cfg!(target_os = "android") {
+            ui.add(
+                egui::Button::new(egui::RichText::new(label).size(16.0).strong())
+                    .min_size(egui::vec2(76.0, 40.0)),
+            )
+        } else {
+            ui.button(label)
+        };
+        if play.clicked() {
             if playing {
                 app.state.loop_state = LoopState::Paused;
                 // Stopping means "show me now": jump to the newest scan.
@@ -29,11 +39,20 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
                 app.state.loop_state = LoopState::Playing;
             }
         }
-        if ui.button("⏮").clicked() {
-            app.state.playhead = 0;
-        }
-        if ui.button("⏭").clicked() {
-            app.state.playhead = app.state.ring.len().saturating_sub(1);
+        let last2 = if cfg!(target_os = "android") {
+            ui.add(egui::Button::new("Last 2hr").min_size(egui::vec2(84.0, 40.0)))
+        } else {
+            ui.button("Last 2hr")
+        };
+        if last2
+            .on_hover_text(
+                "Download and loop the last 2 hours of radar scans instead of only the cached loop",
+            )
+            .clicked()
+        {
+            let _ = app
+                .tx
+                .send(DataCmd::LoadLastTwoHours(app.state.site_id.clone()));
         }
         #[cfg(target_os = "android")]
         {
@@ -71,14 +90,6 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
             ui.label(crate::timefmt::fmt_central(&f.volume_start));
         } else {
             ui.label("no frames");
-        }
-        ui.separator();
-        if ui
-            .button("Downloaded…")
-            .on_hover_text("Browse every cached day for this station")
-            .clicked()
-        {
-            app.state.downloads_open = true;
         }
     });
 
@@ -188,8 +199,6 @@ fn futurecast_timeline(ui: &mut egui::Ui, app: &mut StormApp) {
     let init = futurecast.init;
     let plan = futurecast.plan.clone();
     let loaded_mask: Vec<bool> = futurecast.frames.iter().map(|f| f.is_some()).collect();
-    let first_loaded = futurecast.first_loaded();
-    let last_loaded = futurecast.last_loaded();
     let plan_len = plan.len();
     let loaded = loaded_mask.iter().filter(|ready| **ready).count();
     let selected_info = futurecast.selected_info().cloned();
@@ -210,7 +219,10 @@ fn futurecast_timeline(ui: &mut egui::Ui, app: &mut StormApp) {
             });
         let play_label = if playing { "Pause" } else { "Play" };
         let play = if cfg!(target_os = "android") {
-            ui.add(egui::Button::new(play_label).min_size(egui::vec2(56.0, 32.0)))
+            ui.add(
+                egui::Button::new(egui::RichText::new(play_label).size(16.0).strong())
+                    .min_size(egui::vec2(76.0, 40.0)),
+            )
         } else {
             ui.button(play_label)
         };
@@ -219,27 +231,6 @@ fn futurecast_timeline(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.futurecast_last_step = ui.input(|i| i.time);
             if app.state.futurecast_playing {
                 app.state.loop_state = LoopState::Paused;
-            }
-        }
-        let jump = |ui: &mut egui::Ui, label: &str| {
-            if cfg!(target_os = "android") {
-                ui.add(egui::Button::new(label).min_size(egui::vec2(34.0, 32.0)))
-            } else {
-                ui.button(label)
-            }
-        };
-        if jump(ui, "⏮").clicked() {
-            if let Some(index) = first_loaded
-                && let Some(fc) = app.state.futurecast.as_mut()
-            {
-                fc.selected = index;
-            }
-        }
-        if jump(ui, "⏭").clicked() {
-            if let Some(index) = last_loaded
-                && let Some(fc) = app.state.futurecast.as_mut()
-            {
-                fc.selected = index;
             }
         }
         let run_label = if cfg!(target_os = "android") {

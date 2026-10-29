@@ -380,6 +380,9 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Archived NWS text for a historical warning (clicked on the map).
     alerts::archive_detail_popup(ui.ctx(), app);
 
+    // "Really load the last 2 hours?" confirmation, drawn over everything.
+    last_two_hours_confirm(ui.ctx(), app);
+
     // "Really clear …?" confirmation, drawn over everything. Rendered after
     // the panels so it isn't clipped by them; the Settings menu closes
     // itself before opening this.
@@ -3919,6 +3922,49 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         open = false;
     }
     app.state.archive_popup_open = open;
+}
+
+/// Confirm the explicit "Last 2hr" download before it starts.
+fn last_two_hours_confirm(ctx: &egui::Context, app: &mut StormApp) {
+    if !app.state.confirm_last_two_hours {
+        return;
+    }
+    let mut accepted = false;
+    let mut dismissed = false;
+    let res = egui::containers::Modal::new(egui::Id::new("stormscope.confirm-last-2hr"))
+        .backdrop_color(egui::Color32::from_black_alpha(150))
+        .show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            ui.heading("Download the last 2 hours?");
+            ui.add_space(6.0);
+            ui.label(format!(
+                "This downloads and loops the previous two hours of radar for {}. \
+                 It can use a significant amount of mobile data.",
+                app.state.site_id
+            ));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    dismissed = true;
+                }
+                if ui.add(egui::Button::new("Download last 2hr")).clicked() {
+                    accepted = true;
+                }
+            });
+        });
+    if res.should_close() {
+        dismissed = true;
+    }
+    if accepted {
+        let _ = app.tx.send(crate::app::DataCmd::LoadLastTwoHours(
+            app.state.site_id.clone(),
+            app.state.newest_start(),
+        ));
+        dismissed = true;
+    }
+    if dismissed {
+        app.state.confirm_last_two_hours = false;
+    }
 }
 
 /// Android: centred modal offering a newer release and running the whole

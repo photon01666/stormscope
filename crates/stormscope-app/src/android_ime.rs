@@ -77,6 +77,33 @@ pub fn set_system_bars_hidden(hidden: bool) {
     }));
 }
 
+/// One short haptic tick for timeline scrubbing. The Java method performs the
+/// platform haptic so it respects the user's haptic settings.
+pub fn haptic_tick() {
+    let Some(app) = ANDROID_APP.get() else {
+        return;
+    };
+    let vm_ptr = app.vm_as_ptr() as usize;
+    let activity_ptr = app.activity_as_ptr() as usize;
+    app.run_on_java_main_thread(Box::new(move || {
+        let vm = unsafe { jni::JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) };
+        let res = vm.attach_current_thread(|env| {
+            let activity =
+                unsafe { jni::objects::JObject::from_raw(env, activity_ptr as jni::sys::jobject) };
+            env.call_method(
+                &activity,
+                jni::jni_str!("stormscopeHapticTick"),
+                jni::jni_sig!("()V"),
+                &[],
+            )?;
+            Ok::<(), jni::errors::Error>(())
+        });
+        if let Err(e) = res {
+            log::debug!("haptic tick failed: {e}");
+        }
+    }));
+}
+
 /// Height of the soft keyboard in physical pixels (0 when it is closed).
 /// GameActivity receives the IME insets; MainActivity records the latest one
 /// and this reads it back for the AI window's bottom inset.

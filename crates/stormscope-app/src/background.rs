@@ -296,7 +296,7 @@ pub fn run(
                     });
                     load_last_hour(&source, &site, &out);
                 }
-                DataCmd::LoadLastTwoHours(site) => {
+                DataCmd::LoadLastTwoHours(site, newest) => {
                     current_site = site.clone();
                     archive = None;
                     watchdog_enabled = false;
@@ -306,7 +306,7 @@ pub fn run(
                         start: 0,
                         len: 0,
                     });
-                    load_last_two_hours(&source, &site, &out);
+                    load_last_two_hours(&source, &site, newest, &out);
                 }
                 DataCmd::SetArchiveCrawl(on) => {
                     crawl.set_enabled(on);
@@ -529,6 +529,20 @@ pub fn run(
                     let (now, queued) = prime_site(&source, &current_site, &out);
                     backfill = queued;
                     if let Some(ts) = now {
+                        last_delivered = Some(ts);
+                    }
+                }
+                DataCmd::RefreshLive(site) => {
+                    // Returning from Android background: keep the frames
+                    // already in memory and just restart/catch up the live
+                    // feed. Do not clear or replay the cached window.
+                    current_site = site;
+                    archive = None;
+                    watchdog_enabled = true;
+                    backfill.clear();
+                    start_live(&source, &current_site, &mut live, &out);
+                    if let Some(ts) = archive_catchup(&source, &current_site, last_delivered, &out)
+                    {
                         last_delivered = Some(ts);
                     }
                 }
@@ -1711,38 +1725,20 @@ fn prime_site(
         );
     }
 
-    // Restore only the recent scans already on disk. Nothing from the
-    // two-hour window is downloaded automatically: the explicit "Last 2hr"
-    // action owns that. The previous scan is the one exception, because storm
-    // motion/tracks need it; that is a single volume, not the whole window.
-    let cached: Vec<&radar_data::ArchiveVolumeRef> = vols
-        .iter()
-        .skip(1)
-        .filter(|r| is_cached(source, r))
-        .collect();
-    let mut queue: VecDeque<radar_data::ArchiveVolumeRef> = cached.into_iter().cloned().collect();
-    if let Some(previous) = vols.get(1)
-        && !is_cached(source, previous)
-        && !queue
-            .iter()
-            .any(|r| r.volume_start == previous.volume_start)
-    {
-        log::info!(
-            "prime {site}: fetching the previous scan ({}) for motion",
-            crate::timefmt::fmt_central(&previous.volume_start)
-        );
+    // Do not replay the cached two-hour window on startup or resume: that
+    // was a multi-second NAND read of every scan on every reopen and a quick
+    // app switch. Only the scan immediately before the newest is queued,
+    // because motion/tracks need a second frame; the explicit Last 2hr action
+    // owns history.
+    let mut queue: VecDeque<radar_data::ArchiveVolumeRef> = VecDeque::new();
+    if let Some(previous) = vols.get(1) {
         queue.push_back(previous.clone());
-    }
-    if !queue.is_empty() {
-        log::info!(
-            "prime {site}: {} cached earlier scans queued behind {}",
-            queue.len(),
-            crate::timefmt::fmt_central(&newest)
-        );
-        let _ = out.send(DataMsg::Status(format!(
-            "restoring {} cached scans…",
-            queue.len()
-        )));
+        if !is_cached(source, previous) {
+            log::info!(
+                "prime {site}: fetching the previous scan ({}) for motion",
+                crate::timefmt::fmt_central(&previous.volume_start)
+            );
+        }
     }
     (delivered, queue)
 }
@@ -1801,6 +1797,8 @@ fn load_recent_window(
     site: &str,
     scans: usize,
     label: &str,
+    clear: bool,
+    range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     out: &Sender<DataMsg>,
 ) {
     let today = chrono::Utc::now()
@@ -1820,18 +1818,26 @@ fn load_recent_window(
             }
         }
     }
-    vols.truncate(scans);
+    if let Some((after, before)) = range {
+        vols.retain(|r| r.volume_start >= after && r.volume_start <= before);
+    } else {
+        vols.truncate(scans);
+    }
     if vols.is_empty() {
         let _ = out.send(DataMsg::Status(format!("no recent scans for {site}")));
         return;
     }
-    let _ = out.send(DataMsg::ClearFrames);
+    if clear {
+        let _ = out.send(DataMsg::ClearFrames);
+    }
     let _ = out.send(DataMsg::Status(format!(
         "loading {label} ({})…",
         vols.len()
     )));
-    // vols is newest-first; reverse for forward playback.
-    for r in vols.iter().rev() {
+    // Newest-first: the latest scan is visible immediately while older scans
+    // fill in behind it. The ring inserts by time, so playback order is still
+    // chronological.
+    for r in &vols {
         match source.fetch_archive(r) {
             Ok(volume) => {
                 let _ = out.send(DataMsg::Volume(volume));
@@ -1848,12 +1854,31 @@ fn load_recent_window(
 
 /// Load the newest ~1 hour of scans (~13 at NEXRAD's ~4.5-min cadence).
 fn load_last_hour(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
-    load_recent_window(source, site, 13, "last hour", out);
+    load_recent_window(source, site, 13, "last hour", true, None, out);
 }
 
 /// Load the newest ~2 hours of scans (~24 at NEXRAD's ~4.5-min cadence).
-fn load_last_two_hours(source: &S3Source, site: &str, out: &Sender<DataMsg>) {
-    load_recent_window(source, site, 24, "last 2 hours", out);
+///
+/// Does not clear the ring: the live poller's newest frame is often ahead of
+/// the archive listing, and clearing it made the map jump backwards to the
+/// newest archived scan while the real live frame disappeared.
+fn load_last_two_hours(
+    source: &S3Source,
+    site: &str,
+    newest: Option<chrono::DateTime<chrono::Utc>>,
+    out: &Sender<DataMsg>,
+) {
+    let before = newest.unwrap_or_else(chrono::Utc::now);
+    let after = before - chrono::Duration::hours(2);
+    load_recent_window(
+        source,
+        site,
+        24,
+        "last 2 hours",
+        false,
+        Some((after, before)),
+        out,
+    );
 }
 
 /// Restart the real-time poller for `site`.

@@ -467,6 +467,8 @@ pub struct AppState {
     /// rasterize at reduced resolution instead of doing a full raster for
     /// every pointer event.
     pub timeline_scrubbing: bool,
+    /// The Last 2hr confirmation modal is open.
+    pub confirm_last_two_hours: bool,
     pub fps: f32,
 
     // Selection
@@ -1298,6 +1300,7 @@ impl Default for AppState {
             loop_state: LoopState::Paused,
             resume_loop_after_drag: false,
             timeline_scrubbing: false,
+            confirm_last_two_hours: false,
             fps: if cfg!(target_os = "android") {
                 4.0
             } else {

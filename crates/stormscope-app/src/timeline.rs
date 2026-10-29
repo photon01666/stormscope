@@ -50,9 +50,7 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
             )
             .clicked()
         {
-            let _ = app
-                .tx
-                .send(DataCmd::LoadLastTwoHours(app.state.site_id.clone()));
+            app.state.confirm_last_two_hours = true;
         }
         #[cfg(target_os = "android")]
         {
@@ -145,7 +143,12 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
     if response.clicked() || response.dragged() {
         if let Some(pos) = response.interact_pointer_pos() {
             let idx = ((pos.x - rect.left()) / slot).floor();
-            app.state.playhead = (idx as usize).min(n - 1);
+            let next = (idx as usize).min(n - 1);
+            if next != app.state.playhead {
+                app.state.playhead = next;
+                #[cfg(target_os = "android")]
+                crate::android_ime::haptic_tick();
+            }
         }
     }
     if let Some(pos) = response.hover_pos() {

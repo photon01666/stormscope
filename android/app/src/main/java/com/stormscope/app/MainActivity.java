@@ -209,6 +209,16 @@ public class MainActivity extends GameActivity {
         }
     }
 
+    /** Called from Rust (JNI, UI thread): one subtle tick per scrub frame. */
+    public void stormscopeHapticTick() {
+        try {
+            getWindow().getDecorView().performHapticFeedback(
+                    android.view.HapticFeedbackConstants.CLOCK_TICK);
+        } catch (Exception e) {
+            Log.d(TAG, "haptic tick failed", e);
+        }
+    }
+
     /** Called from Rust (JNI, UI thread): hand an APK to the system installer. */
     public void stormscopeInstallApk(String path) {
         try {

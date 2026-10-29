@@ -289,7 +289,7 @@ pub enum DataCmd {
     LoadArchiveText(String),
     /// Load the newest ~1 hour of scans into the ring for immediate looping.
     LoadLastHour(String),
-    LoadLastTwoHours(String),
+    LoadLastTwoHours(String, Option<chrono::DateTime<chrono::Utc>>),
     /// Page the loaded archive day earlier (-1) or later (+1).
     ArchiveWindowShift(i32),
     /// Leave archive mode: clear the ring and refresh with the newest
@@ -298,6 +298,7 @@ pub enum DataCmd {
     /// travels with the command so the prime and poller can never diverge
     /// from what the app is watching (a silent desync dropped every volume).
     EnterLive(String),
+    RefreshLive(String),
     /// Derive storm-relative velocity for one motion setting (the SRM
     /// product's inputs change with the sliders, so this can't be attached
     /// at decode like VIL/TOPS/MEHS).
@@ -4437,7 +4438,9 @@ impl StormApp {
                     .newest_start()
                     .is_none_or(|newest| chrono::Utc::now() - newest > chrono::Duration::minutes(6))
             {
-                let _ = self.tx.send(DataCmd::EnterLive(self.state.site_id.clone()));
+                let _ = self
+                    .tx
+                    .send(DataCmd::RefreshLive(self.state.site_id.clone()));
             }
             // Background update check: once a day, ask GitHub for a newer
             // release and surface it as a centred modal when one exists.

@@ -792,10 +792,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         && playing
                         && frame_changed
                         && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(180);
-                    // Scrubbing emits pointer positions at display rate. A
-                    // full raster for every one made the thumb trail the
-                    // finger; cap scrub rasters to ~30 fps and use the same
-                    // coarse grid, then do the sharp pass when it stops.
+                    // Scrubbing should still animate the radar, but full-res
+                    // rasters for every pointer event made the thumb lag.
+                    // Raster at ~30 fps on a coarse grid, then sharpen when
+                    // the finger lifts.
                     let scrub_raster = app.state.timeline_scrubbing
                         && frame_changed
                         && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(33);
@@ -1097,14 +1097,19 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     draw_archive_warnings(&painter, origin, &view, app);
 
     // --- Derived storm tracks (cell arrows + 30-min nowcast) ---------------
-    // Tracks always refresh (marker ETAs ride on them); only the arrows are
-    // gated on the toggle.
-    update_tracks(app);
-    update_marker_etas(app);
+    // Recomputing track and rotation fields for every scrub tick was the
+    // expensive part of dragging the timeline (especially as more frames
+    // arrived). Keep the last result while the thumb moves, then refresh the
+    // current pair when the finger lifts. The radar raster itself still
+    // animates during the scrub.
+    if !app.state.timeline_scrubbing {
+        update_tracks(app);
+        update_marker_etas(app);
+        update_severe_layers(app);
+    }
     if app.state.show_tracks {
         draw_tracks(&painter, origin, &view, app);
     }
-    update_severe_layers(app);
     if app.state.show_rotation {
         draw_rotation_signatures(&painter, origin, &view, app);
     }

@@ -302,21 +302,34 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                     .small(),
                 );
 
-                #[cfg(target_os = "android")]
                 {
                     ui.add_space(10.0);
                     ui.separator();
+                    #[cfg(target_os = "android")]
                     ui.label(
-                        egui::RichText::new("Gemini Live — natural voice conversation").strong(),
+                        egui::RichText::new("Gemini Live — voice conversation & alerts").strong(),
                     );
+                    #[cfg(not(target_os = "android"))]
+                    ui.label(
+                        egui::RichText::new("Gemini voice for storm alerts").strong(),
+                    );
+                    #[cfg(target_os = "android")]
                     ui.label(
                         egui::RichText::new(
-                            "Android only. Google AI Studio's Live API holds a native \
-                     speech-to-speech conversation and receives the same weather snapshot \
-                     as a typed question, as text. Voice audio is streamed to Google; the \
-                     microphone pauses while Gemini speaks so it does not hear itself. \
-                     Talk tests the voice key directly. Get a key at \
-                     aistudio.google.com/apikey.",
+                            "Google AI Studio's Live API holds a native speech-to-speech \
+                     conversation and also speaks background storm alerts with the same \
+                     voice. It receives the same weather snapshot as a typed question. \
+                     Get a key at aistudio.google.com/apikey.",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                    #[cfg(not(target_os = "android"))]
+                    ui.label(
+                        egui::RichText::new(
+                            "When a key is set, storm alerts are spoken with the configured \
+                     Gemini Live voice. With no key — or if Gemini fails — Stormscope \
+                     falls back to Piper. Get a key at aistudio.google.com/apikey.",
                         )
                         .weak()
                         .small(),
@@ -379,10 +392,13 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                         && ui
                             .small_button("Test Gemini alert voice")
                             .on_hover_text(
-                                "Speak a sample storm-arrival alert through the configured Gemini Live voice",
+                                "Speak a sample storm-arrival alert through the configured Gemini voice",
                             )
                             .clicked()
                     {
+                        let sample = "Live AI: a storm core is projected to reach your location \
+                            in 25 minutes, moving east at 30 miles per hour.";
+                        #[cfg(target_os = "android")]
                         crate::gemini_live::speak_alert(
                             crate::gemini_live::LiveConfig {
                                 api_key: app.state.gemini_api_key.trim().to_string(),
@@ -390,8 +406,17 @@ fn settings_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
                                 voice: app.state.gemini_voice.clone(),
                                 system: String::new(),
                             },
-                            "Live AI: a storm core is projected to reach your location in 25 minutes, moving east at 30 miles per hour.".to_string(),
+                            sample.to_string(),
                         );
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            crate::voice::set_gemini_voice(
+                                &app.state.gemini_api_key,
+                                &app.state.gemini_model,
+                                &app.state.gemini_voice,
+                            );
+                            crate::voice::announce(sample);
+                        }
                     }
                 }
                 ui.add_space(8.0);

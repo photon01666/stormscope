@@ -67,6 +67,17 @@ public class StormWatchService extends Service {
     private static final double RADIUS_KM = 50.0 * 1.609344;
     private static final int MAX_SPOKEN = 3;
 
+    static {
+        try {
+            System.loadLibrary("stormscope_android");
+        } catch (Throwable error) {
+            Log.w(TAG, "Gemini alert library unavailable: " + error);
+        }
+    }
+
+    /** One-shot Gemini speech; returns false when unavailable so TTS falls back. */
+    private static native boolean nativeSpeakGemini(String configJson, String text);
+
     private final DateTimeFormatter timeFmt =
             DateTimeFormatter.ofPattern("h:mm a", Locale.US);
     private final ArrayDeque<String> pendingSpeech = new ArrayDeque<>();
@@ -430,6 +441,21 @@ public class StormWatchService extends Service {
         if (text == null || text.trim().isEmpty()) {
             return;
         }
+        GeminiPrefs gemini = readGeminiPrefs();
+        if (!gemini.apiKey.isEmpty()) {
+            try {
+                JSONObject config = new JSONObject()
+                        .put("api_key", gemini.apiKey)
+                        .put("model", gemini.model)
+                        .put("voice", gemini.voice);
+                if (nativeSpeakGemini(config.toString(), text)) {
+                    Log.i(TAG, "Storm Watch speaking via Gemini: " + text);
+                    return;
+                }
+            } catch (Throwable error) {
+                Log.w(TAG, "Gemini alert speech unavailable: " + error);
+            }
+        }
         synchronized (pendingSpeech) {
             if (!ttsReady || tts == null) {
                 if (pendingSpeech.size() >= 8) {
@@ -772,6 +798,35 @@ public class StormWatchService extends Service {
         return names[idx];
     }
 
+    private GeminiPrefs readGeminiPrefs() {
+        GeminiPrefs out = new GeminiPrefs();
+        File file = new File(getFilesDir(), "config/stormscope/ai.json");
+        if (!file.isFile()) {
+            return out;
+        }
+        try (FileInputStream in = new FileInputStream(file)) {
+            byte[] bytes = new byte[(int) file.length()];
+            int read = in.read(bytes);
+            if (read <= 0) {
+                return out;
+            }
+            JSONObject json = new JSONObject(new String(bytes, 0, read, StandardCharsets.UTF_8));
+            out.apiKey = json.optString("gemini_api_key", "").trim();
+            out.model = json.optString("gemini_model",
+                    "gemini-3.8-live-extended-thinking").trim();
+            out.voice = json.optString("gemini_voice", "Aoede").trim();
+            if (out.model.isEmpty()) {
+                out.model = "gemini-3.8-live-extended-thinking";
+            }
+            if (out.voice.isEmpty()) {
+                out.voice = "Aoede";
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Storm Watch cannot read Gemini settings: " + e);
+        }
+        return out;
+    }
+
     private VoicePrefs readVoicePrefs() {
         VoicePrefs out = new VoicePrefs();
         File file = new File(getFilesDir(),
@@ -982,6 +1037,12 @@ public class StormWatchService extends Service {
             this.expires = expires;
             this.instruction = instruction;
         }
+    }
+
+    private static final class GeminiPrefs {
+        String apiKey = "";
+        String model = "gemini-3.8-live-extended-thinking";
+        String voice = "Aoede";
     }
 
     private static final class VoicePrefs {

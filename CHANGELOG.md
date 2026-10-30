@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.8.8 — 2026-10-30
+
+**Gemini voice for storm alerts**
+- Linux and Windows now use the configured Gemini Live voice for spoken storm
+  alerts. If no Gemini key is set, or Gemini fails, Stormscope falls back to
+  the existing Piper voice (and then the system voice).
+- Android alert speech now uses Gemini when a key is configured, including
+  foreground NWS alerts and Storm Watch background alerts. With no key — or
+  if Gemini is unavailable — the existing Android system TTS remains the
+  fallback.
+- Gemini key, model, voice and test controls are now available on desktop as
+  well as Android.
+
 ## v1.8.7 — 2026-10-30
 
 **FutureCast valid-time card restored**

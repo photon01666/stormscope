@@ -605,8 +605,8 @@ pub fn speak_alert(config: LiveConfig, text: String) {
                     };
                     if let Err(error) = rt.block_on(run_announcement(config, &text)) {
                         log::warn!("Gemini alert speech failed: {error}");
-                        // Keep the threat audible if the Live call fails.
-                        crate::voice::announce(text);
+                        // Keep the alert audible if the Live call fails.
+                        crate::android_tts::speak(&text);
                     }
                 }
             })

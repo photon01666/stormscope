@@ -31,6 +31,8 @@ mod brief;
 mod embedded_piper;
 #[cfg(target_os = "android")]
 pub mod gemini_live;
+#[cfg(not(target_os = "android"))]
+mod gemini_speech;
 mod live_ai;
 mod player;
 pub mod render3d;

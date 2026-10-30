@@ -23,6 +23,64 @@ pub extern "system" fn Java_com_stormscope_app_MainActivity_nativeSetForeground(
     stormscope_app::android_lifecycle::set_foreground(foreground != 0);
 }
 
+/// Called by `StormWatchService` before speaking a background alert. Returns
+/// false when Gemini is not configured/available so Java keeps its system-TTS
+/// fallback.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_stormscope_app_StormWatchService_nativeSpeakGemini(
+    env: *mut jni::sys::JNIEnv,
+    _class: *mut jni::sys::jclass,
+    config: jni::sys::jstring,
+    text: jni::sys::jstring,
+) -> jni::sys::jboolean {
+    if env.is_null() || config.is_null() || text.is_null() {
+        return false;
+    }
+    let mut unowned = unsafe { jni::EnvUnowned::from_raw(env) };
+    let outcome = unowned.with_env(|env| -> Result<bool, jni::errors::Error> {
+        let config = unsafe { jni::objects::JString::from_raw(env, config) };
+        let text = unsafe { jni::objects::JString::from_raw(env, text) };
+        let Ok(config) = config.try_to_string(env) else {
+            return Ok(false);
+        };
+        let Ok(text) = text.try_to_string(env) else {
+            return Ok(false);
+        };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&config) else {
+            return Ok(false);
+        };
+        let api_key = config
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if api_key.is_empty() || !stormscope_app::android_live_audio::is_available() {
+            return Ok(false);
+        }
+        let model = config
+            .get("model")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or("gemini-3.8-live-extended-thinking");
+        let voice = config
+            .get("voice")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or("Aoede");
+        stormscope_app::gemini_live::speak_alert(
+            stormscope_app::gemini_live::LiveConfig {
+                api_key: api_key.to_string(),
+                model: model.to_string(),
+                voice: voice.to_string(),
+                system: String::new(),
+            },
+            text,
+        );
+        Ok(true)
+    });
+    outcome.resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
 /// GameActivity's native entry point.
 ///
 /// Uses the Rust ABI (not `extern "C"`) as required by `android-activity`.

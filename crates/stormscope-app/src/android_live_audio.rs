@@ -18,6 +18,12 @@ pub fn register(app: AndroidApp) {
     let _ = ANDROID_APP.set(app);
 }
 
+/// True once the Activity has registered the Android audio bridge. The
+/// background Storm Watch service uses this before trying a Gemini alert.
+pub fn is_available() -> bool {
+    ANDROID_APP.get().is_some()
+}
+
 /// Ask Java to initialize the mic/speaker and request RECORD_AUDIO if needed.
 pub fn start() {
     post_void("stormscopeLiveAudioStart");

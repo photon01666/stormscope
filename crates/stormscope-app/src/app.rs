@@ -4452,6 +4452,12 @@ impl StormApp {
         if let Some(fix) = self.state.gps_fix {
             voice_points.push(fix);
         }
+        #[cfg(not(target_os = "android"))]
+        crate::voice::set_gemini_voice(
+            &self.state.gemini_api_key,
+            &self.state.gemini_model,
+            &self.state.gemini_voice,
+        );
         #[cfg(target_os = "android")]
         {
             // Storm Watch gates background radar on the GPS fix and every

@@ -81,6 +81,37 @@ struct SeenAlerts {
 static FILTER: OnceLock<Mutex<VoiceFilter>> = OnceLock::new();
 static SEEN: OnceLock<Mutex<SeenAlerts>> = OnceLock::new();
 
+/// Gemini alert voice. `None` means no key is configured, so the existing
+/// platform voice (Piper on desktop, system TTS on Android) is used.
+#[derive(Clone, Debug)]
+struct GeminiVoiceSettings {
+    api_key: String,
+    model: String,
+    voice: String,
+}
+static GEMINI_VOICE: OnceLock<Mutex<Option<GeminiVoiceSettings>>> = OnceLock::new();
+
+/// Mirror the Gemini key/model/voice from Settings into the voice worker.
+pub fn set_gemini_voice(api_key: &str, model: &str, voice: &str) {
+    let key = api_key.trim();
+    let config = (!key.is_empty()).then(|| GeminiVoiceSettings {
+        api_key: key.to_string(),
+        model: model.trim().to_string(),
+        voice: voice.trim().to_string(),
+    });
+    if let Ok(mut current) = GEMINI_VOICE.get_or_init(|| Mutex::new(None)).lock() {
+        *current = config;
+    }
+}
+
+fn gemini_settings() -> Option<GeminiVoiceSettings> {
+    GEMINI_VOICE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|config| config.clone())
+}
+
 /// Update the filter used by both the UI-triggered and background-triggered
 /// voice paths.
 pub fn set_filter(filter: VoiceFilter) {
@@ -604,11 +635,34 @@ pub fn announce(text: impl Into<String>) {
 
 #[cfg(target_os = "android")]
 fn speak_blocking(text: &str) {
+    if let Some(gemini) = gemini_settings() {
+        crate::gemini_live::speak_alert(
+            crate::gemini_live::LiveConfig {
+                api_key: gemini.api_key,
+                model: gemini.model,
+                voice: gemini.voice,
+                system: String::new(),
+            },
+            text.to_string(),
+        );
+        return;
+    }
     crate::android_tts::speak(text);
 }
 
 #[cfg(not(target_os = "android"))]
 fn speak_blocking(text: &str) {
+    if let Some(gemini) = gemini_settings().map(|config| crate::gemini_speech::Config {
+        api_key: config.api_key,
+        model: config.model,
+        voice: config.voice,
+    }) {
+        log::info!("voice: speaking through Gemini voice {}", gemini.voice);
+        if crate::gemini_speech::speak(&gemini, text) {
+            return;
+        }
+        log::warn!("voice: Gemini speech failed; falling back to Piper");
+    }
     if let Some(voice) = selected_voice() {
         log::info!("voice: Piper selected {}", voice.label);
         if speak_piper(text, voice) {
@@ -622,6 +676,37 @@ fn speak_blocking(text: &str) {
         log::warn!("voice: no Piper voice discovered; using the system voice");
     }
     speak_system(text);
+}
+
+/// Write 24 kHz mono PCM16 into a temporary WAV and play it through the
+/// desktop audio helper. Used by Gemini speech; Piper remains the fallback.
+#[cfg(not(target_os = "android"))]
+pub(crate) fn play_pcm16_wav(pcm: &[u8], sample_rate: u32) -> bool {
+    if pcm.len() < 2 {
+        return false;
+    }
+    let data_len = (pcm.len() & !1) as u32;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(&pcm[..data_len as usize]);
+    let path = temp_wav_path();
+    if std::fs::write(&path, wav).is_err() {
+        return false;
+    }
+    let played = play_wav(&path);
+    let _ = std::fs::remove_file(&path);
+    played
 }
 
 #[cfg(not(target_os = "android"))]

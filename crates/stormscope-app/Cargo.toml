@@ -89,6 +89,22 @@ png = "0.17"
 
 # Android: the IME bridge polls GameActivity's editor state (Gboard commits
 # land there even though winit never forwards IME text to egui).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+# Gemini Live one-shot voice for desktop alerts (same WebSocket protocol as
+# the Android voice session, with local WAV playback and Piper fallback).
+base64 = "0.23"
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt", "time", "net", "macros"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
+    "connect",
+    "rustls-tls-webpki-roots",
+] }
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+] }
+
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
 jni = "0.22"

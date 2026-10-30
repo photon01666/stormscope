@@ -3156,8 +3156,8 @@ fn radar_sweep_radius_px(
 /// displayed volume.
 fn draw_radar_sweep(painter: &egui::Painter, pos: egui::Pos2, now: f64, radius: f32) {
     const PERIOD_SECS: f64 = 20.0;
-    const TRAIL_RAD: f32 = 0.75;
-    const SEGMENTS: usize = 22;
+    const TRAIL_RAD: f32 = 0.62;
+    const SEGMENTS: usize = 20;
 
     let beam = ((now.rem_euclid(PERIOD_SECS) / PERIOD_SECS) * std::f64::consts::TAU) as f32;
     for i in 0..SEGMENTS {
@@ -3167,7 +3167,7 @@ fn draw_radar_sweep(painter: &egui::Painter, pos: egui::Pos2, now: f64, radius: 
         let a1 = beam - TRAIL_RAD * f1;
         let p0 = pos + egui::vec2(a0.sin() * radius, -a0.cos() * radius);
         let p1 = pos + egui::vec2(a1.sin() * radius, -a1.cos() * radius);
-        let alpha = (18.0 * (1.0 - f0)).max(2.0) as u8;
+        let alpha = (9.0 * (1.0 - f0)).max(1.0) as u8;
         painter.add(egui::Shape::convex_polygon(
             vec![pos, p0, p1],
             egui::Color32::from_rgba_unmultiplied(150, 210, 255, alpha),
@@ -3178,16 +3178,16 @@ fn draw_radar_sweep(painter: &egui::Painter, pos: egui::Pos2, now: f64, radius: 
     painter.line_segment(
         [pos, tip],
         egui::Stroke::new(
-            1.4,
-            egui::Color32::from_rgba_unmultiplied(170, 220, 255, 90),
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(170, 220, 255, 52),
         ),
     );
     painter.circle_stroke(
         pos,
         radius,
         egui::Stroke::new(
-            0.8,
-            egui::Color32::from_rgba_unmultiplied(150, 210, 255, 24),
+            0.6,
+            egui::Color32::from_rgba_unmultiplied(150, 210, 255, 14),
         ),
     );
 }

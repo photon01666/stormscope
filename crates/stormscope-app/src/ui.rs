@@ -1571,10 +1571,10 @@ fn map_controls_display(
 fn map_controls_stations(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.add_space(4.0);
     ui.separator();
-    ui.label(egui::RichText::new("Stations").strong());
+    ui.label(egui::RichText::new("Local Weather Stations").strong());
     let mut synoptic = app.state.show_synoptic;
     if ui
-        .checkbox(&mut synoptic, "Show stations on the map")
+        .checkbox(&mut synoptic, "Show weather stations on map")
         .on_hover_text("Synoptic network: NWS/mesonet/PWS stations (thermometer badges)")
         .changed()
     {

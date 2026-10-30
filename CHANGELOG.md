@@ -11,6 +11,8 @@
   a slow cellular download now clearly reads as loading instead of a stalled
   app.
 - Removed the old fetching indicator.
+- Map controls now say **Local Weather Stations** and **Show weather stations
+  on map**.
 
 ## v1.7.8 — 2026-10-29
 

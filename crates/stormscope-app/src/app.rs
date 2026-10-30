@@ -3494,6 +3494,18 @@ impl StormApp {
                 "Still waiting for a GPS fix — place a marker, or try the GPS button.".into(),
             );
         }
+        self.build_brief_inner(look, None, None)
+    }
+
+    /// The full snapshot builder shared by manual chat and the automatic live
+    /// update. The live path passes the tracks and ETAs it just computed so
+    /// both sides of the prompt describe the same scan.
+    fn build_brief_inner(
+        &self,
+        look: &[LookPointSample],
+        tracks_override: Option<&[radar_render::StormTrack]>,
+        marker_etas_override: Option<&[Option<MarkerEta>]>,
+    ) -> Result<crate::brief::Brief, String> {
         let Some(site) = radar_core::sites::site(&self.state.site_id) else {
             return Err("No radar site is selected.".into());
         };
@@ -3503,23 +3515,24 @@ impl StormApp {
         // The map computes tracks while drawing, but an AI question can
         // arrive before the first draw (especially right after a site
         // switch). Derive from the two newest scans here if needed.
-        let tracks_owned: Vec<radar_render::StormTrack> =
-            if let Some((_, tracks)) = &self.tracks_cache {
-                tracks.clone()
-            } else if self.state.ring.len() >= 2 {
-                let n = self.state.ring.len();
-                let prev = &self.state.ring[n - 2];
-                let cur = &self.state.ring[n - 1];
-                radar_render::compute_tracks(
-                    &prev.volume,
-                    &cur.volume,
-                    self.state.tilt_deg,
-                    site.latitude,
-                    site.longitude,
-                )
-            } else {
-                Vec::new()
-            };
+        let tracks_owned: Vec<radar_render::StormTrack> = if let Some(tracks) = tracks_override {
+            tracks.to_vec()
+        } else if let Some((_, tracks)) = &self.tracks_cache {
+            tracks.clone()
+        } else if self.state.ring.len() >= 2 {
+            let n = self.state.ring.len();
+            let prev = &self.state.ring[n - 2];
+            let cur = &self.state.ring[n - 1];
+            radar_render::compute_tracks(
+                &prev.volume,
+                &cur.volume,
+                self.state.tilt_deg,
+                site.latitude,
+                site.longitude,
+            )
+        } else {
+            Vec::new()
+        };
         let scan_interval_min = if self.state.ring.len() >= 2 {
             let n = self.state.ring.len();
             Some(
@@ -3531,6 +3544,7 @@ impl StormApp {
             None
         };
         let tracks: &[radar_render::StormTrack] = &tracks_owned;
+        let marker_etas = marker_etas_override.unwrap_or(&self.marker_etas);
         let mrms = self.state.mrms.as_ref().map(|(m, _)| m.as_slice());
         let goes = self.state.goes.as_ref().map(|(i, _)| i.as_slice());
         let srm = self.state.srm_cache.as_ref().map(|(_, v)| v.as_ref());
@@ -3549,7 +3563,7 @@ impl StormApp {
             volume: &volume,
             min_dbz: self.state.min_dbz,
             markers: &self.state.markers,
-            marker_etas: &self.marker_etas,
+            marker_etas,
             tracks,
             alerts: &self.state.alerts,
             outlook: self.state.outlook.as_ref(),
@@ -3832,27 +3846,39 @@ impl StormApp {
                 .num_minutes()
                 .max(1),
         );
-        let brief = crate::brief::build_live(&crate::brief::LiveBriefInputs {
+        // The live update sees exactly what a manual question sees: the
+        // full snapshot (sounding, rotation, hail, VAD, QPE, model fields,
+        // MRMS, GOES, HRRR/FutureCast, totals, reports) plus the live scan
+        // series and deterministic primary assessment.
+        let full = match self.build_brief_inner(&[], Some(&tracks), Some(&marker_etas)) {
+            Ok(full) => full,
+            Err(error) => {
+                log::warn!("Live AI: could not build the full snapshot: {error}");
+                self.live_ai.retry_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+                return;
+            }
+        };
+        let brief = match crate::brief::live_brief_from_full(
+            &full,
             site,
-            volume: &volume,
-            min_dbz: self.state.min_dbz,
-            markers: &self.state.markers,
-            marker_etas: &marker_etas,
-            tracks: &tracks,
-            alerts: &self.state.alerts,
-            outlook: self.state.outlook.as_ref(),
-            forecast: self.state.forecast.as_ref(),
-            observation: self.state.observation.as_ref(),
-            gps_fix: self.state.gps_fix,
-            primary: &primary,
-            assessment: &assessment,
-            memory: &memory,
-            new_warnings: &new_warnings,
-            scan_number: self.live_ai.scan_number + 1,
+            scan,
+            &primary,
+            &assessment,
+            &memory,
+            &new_warnings,
+            self.live_ai.scan_number + 1,
             scan_interval_min,
             now,
-        });
-
+        ) {
+            Ok(brief) => brief,
+            Err(error) => {
+                log::warn!("Live AI: could not augment the full snapshot: {error}");
+                self.live_ai.retry_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+                return;
+            }
+        };
         let request = self
             .live_ai
             .begin(scan, site.id.to_string(), assessment, &self.state.alerts);

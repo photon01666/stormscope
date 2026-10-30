@@ -4,6 +4,11 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -70,6 +75,11 @@ public class StormWatchService extends Service {
     /** Latest Open-Meteo condition, used to pick the animated notification glyph. */
     private volatile int lastWeatherCode = -1;
     private volatile boolean lastIsDay = true;
+    /** Cached NWS surface observation text and station URL. */
+    private volatile String nwsCondition;
+    private volatile long nwsConditionAt;
+    private volatile String nwsStationUrl;
+    private volatile long nwsStationAt;
 
     private SharedPreferences prefs;
     private Handler main;
@@ -199,9 +209,16 @@ public class StormWatchService extends Service {
         // substantially larger than the platform default. The ViewFlipper
         // alternates two frames of the current-conditions glyph.
         RemoteViews views = new RemoteViews(getPackageName(), R.layout.notification_storm_watch);
-        int[] frames = weatherFrames(lastWeatherCode, lastIsDay);
-        views.setImageViewResource(R.id.storm_watch_icon_a, frames[0]);
-        views.setImageViewResource(R.id.storm_watch_icon_b, frames[1]);
+        if (!lastIsDay && (lastWeatherCode == 0 || lastWeatherCode == 1 || lastWeatherCode == 2)) {
+            // The night glyph is the real lunar phase, not a generic crescent.
+            Bitmap moon = moonPhaseBitmap(192);
+            views.setImageViewBitmap(R.id.storm_watch_icon_a, moon);
+            views.setImageViewBitmap(R.id.storm_watch_icon_b, moon);
+        } else {
+            int[] frames = weatherFrames(lastWeatherCode, lastIsDay);
+            views.setImageViewResource(R.id.storm_watch_icon_a, frames[0]);
+            views.setImageViewResource(R.id.storm_watch_icon_b, frames[1]);
+        }
         views.setTextViewText(R.id.storm_watch_body, line == null ? "" : line);
         views.setViewVisibility(
                 R.id.storm_watch_body,
@@ -221,6 +238,79 @@ public class StormWatchService extends Service {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .build();
+    }
+
+    /** True when an active NWS alert text contains any of the given words. */
+    private static boolean hasAlert(JSONArray features, String... words) {
+        for (int i = 0; i < features.length(); i++) {
+            JSONObject props = features.optJSONObject(i) == null
+                    ? null : features.optJSONObject(i).optJSONObject("properties");
+            if (props == null) {
+                continue;
+            }
+            String event = props.optString("event", "").toLowerCase(Locale.US);
+            for (String word : words) {
+                if (event.contains(word)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The real lunar phase, 0 = new, 0.5 = full, 0.75 = last quarter. */
+    private static double moonPhase() {
+        double jd = System.currentTimeMillis() / 1000.0 / 86_400.0 + 2_440_587.5;
+        double phase = ((jd - 2_451_550.097_66) / 29.530_588_853) % 1.0;
+        return phase < 0.0 ? phase + 1.0 : phase;
+    }
+
+    /** Draw the lunar phase into a notification bitmap. */
+    private static Bitmap moonPhaseBitmap(int size) {
+        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        float c = size / 2.0f;
+        float r = size * 0.38f;
+        double phase = moonPhase();
+        double rx = r * Math.cos(2.0 * Math.PI * phase);
+        boolean waxing = phase < 0.5;
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setStyle(Paint.Style.FILL);
+
+        paint.setColor(0xFF333333);
+        canvas.drawCircle(c, c, r, paint);
+
+        canvas.save();
+        if (waxing) {
+            canvas.clipRect(c, c - r, c + r, c + r);
+        } else {
+            canvas.clipRect(c - r, c - r, c, c + r);
+        }
+        paint.setColor(0xFFE8E8E8);
+        canvas.drawCircle(c, c, r, paint);
+        if (rx >= 0.0) {
+            paint.setColor(0xFF333333);
+            canvas.drawOval(new RectF(c - (float) rx, c - r, c + (float) rx, c + r), paint);
+        }
+        canvas.restore();
+
+        if (rx < 0.0) {
+            canvas.save();
+            if (waxing) {
+                canvas.clipRect(c - r, c - r, c, c + r);
+            } else {
+                canvas.clipRect(c, c - r, c + r, c + r);
+            }
+            paint.setColor(0xFFE8E8E8);
+            canvas.drawOval(new RectF(c + (float) rx, c - r, c - (float) rx, c + r), paint);
+            canvas.restore();
+        }
+
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(Math.max(1.0f, size * 0.018f));
+        paint.setColor(0xFF777777);
+        canvas.drawCircle(c, c, r, paint);
+        return bitmap;
     }
 
     /** Two frames for the notification glyph, keyed off the Open-Meteo code. */
@@ -394,24 +484,26 @@ public class StormWatchService extends Service {
             updateNotification("Waiting for a GPS fix");
             return;
         }
+        VoicePrefs voice = readVoicePrefs();
+
+        JSONArray features = null;
+        try {
+            features = new JSONObject(fetch(lat, lon)).optJSONArray("features");
+        } catch (Exception e) {
+            Log.w(TAG, "Storm Watch fetch failed: " + e);
+        }
+        boolean thunderNearby = features != null && hasAlert(features, "thunderstorm", "tornado", "severe");
+        boolean wetNearby = features != null && hasAlert(features, "flood", "rain", "shower");
+
         // The persistent notification doubles as a current-conditions readout;
-        // refresh it even while the app is foreground.
-        String weather = weatherSummary(lat, lon);
+        // refresh it even while the app is foreground. NWS alerts override a
+        // coarse model "overcast" code when storms/rain are actually nearby.
+        String weather = weatherSummary(lat, lon, thunderNearby, wetNearby);
         if (weather != null) {
             weatherLine = weather;
         }
         String line = weatherLine != null ? weatherLine : "Current weather unavailable";
         updateNotification(line);
-
-        VoicePrefs voice = readVoicePrefs();
-
-        JSONArray features;
-        try {
-            features = new JSONObject(fetch(lat, lon)).optJSONArray("features");
-        } catch (Exception e) {
-            Log.w(TAG, "Storm Watch fetch failed: " + e);
-            return;
-        }
         if (features == null) {
             return;
         }
@@ -533,14 +625,58 @@ public class StormWatchService extends Service {
      * no single current-weather endpoint as cheap as this): a compact
      * "63°F · Clear · wind ESE 6 mph" string, or null when unavailable.
      */
-    private String weatherSummary(double lat, double lon) {
+    /** Nearest NWS surface observation text, cached for five minutes. */
+    private String nwsObservation(double lat, double lon) {
+        long now = System.currentTimeMillis();
+        if (nwsCondition != null && now - nwsConditionAt < 5 * 60_000L) {
+            return nwsCondition;
+        }
+        try {
+            if (nwsStationUrl == null || now - nwsStationAt > 24 * 60 * 60_000L) {
+                String pointsUrl = String.format(Locale.US,
+                        "https://api.weather.gov/points/%.4f,%.4f", lat, lon);
+                JSONObject points = new JSONObject(getJson(pointsUrl));
+                JSONObject props = points.optJSONObject("properties");
+                String stations = props == null ? "" : props.optString("observationStations", "");
+                if (stations.isEmpty()) {
+                    return nwsCondition;
+                }
+                JSONArray features = new JSONObject(getJson(stations)).optJSONArray("features");
+                if (features == null || features.length() == 0) {
+                    return nwsCondition;
+                }
+                JSONObject first = features.optJSONObject(0);
+                String id = first == null ? "" : first.optString("id", "");
+                if (id.isEmpty()) {
+                    return nwsCondition;
+                }
+                nwsStationUrl = id;
+                nwsStationAt = now;
+            }
+            JSONObject observation = new JSONObject(getJson(nwsStationUrl + "/observations/latest"));
+            JSONObject props = observation.optJSONObject("properties");
+            if (props != null) {
+                String text = props.optString("textDescription", "").trim();
+                if (!text.isEmpty()) {
+                    nwsCondition = text;
+                    nwsConditionAt = now;
+                    return text;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "NWS observation fetch failed: " + e);
+        }
+        return nwsCondition;
+    }
+
+    private String weatherSummary(double lat, double lon, boolean thunderNearby, boolean wetNearby) {
         try {
             String url = String.format(Locale.US,
                     "https://api.open-meteo.com/v1/forecast"
                             + "?latitude=%.4f&longitude=%.4f"
                             + "&current=temperature_2m,weather_code,is_day,wind_speed_10m,"
-                            + "wind_direction_10m&temperature_unit=fahrenheit"
-                            + "&wind_speed_unit=mph",
+                            + "wind_direction_10m,precipitation,rain,showers"
+                            + "&temperature_unit=fahrenheit&wind_speed_unit=mph",
                     lat, lon);
             JSONObject current = new JSONObject(getJson(url)).optJSONObject("current");
             if (current == null) {
@@ -550,13 +686,44 @@ public class StormWatchService extends Service {
             double wind = current.optDouble("wind_speed_10m", Double.NaN);
             double dir = current.optDouble("wind_direction_10m", Double.NaN);
             int code = current.optInt("weather_code", -1);
+            double precip = current.optDouble("precipitation", 0.0);
+            double showers = current.optDouble("showers", 0.0);
+            String observed = nwsObservation(lat, lon);
+            String word = observed != null && !observed.isEmpty()
+                    ? observed : weatherWord(code);
+            String lowerWord = word.toLowerCase(Locale.US);
+            if (lowerWord.contains("thunder")) {
+                word = "Thunderstorms";
+                code = 95;
+            } else if (lowerWord.contains("snow") || lowerWord.contains("sleet")
+                    || lowerWord.contains("ice")) {
+                code = 71;
+            } else if (lowerWord.contains("rain") || lowerWord.contains("shower")) {
+                code = 61;
+            } else if (lowerWord.contains("clear")) {
+                code = lowerWord.contains("mostly") ? 1 : 0;
+            } else if (lowerWord.contains("partly")) {
+                code = 2;
+            } else if (lowerWord.contains("cloud") || lowerWord.contains("overcast")) {
+                code = 3;
+            } else if (lowerWord.contains("fog") || lowerWord.contains("mist")) {
+                code = 45;
+            }
+            if (thunderNearby) {
+                word = "Thunderstorms";
+                code = 95;
+            } else if (wetNearby || precip > 0.05) {
+                if (word.equals("Overcast") || word.equals("Cloudy") || word.isEmpty()) {
+                    word = showers > 0.05 ? "Showers" : "Rain";
+                    code = 61;
+                }
+            }
             lastWeatherCode = code;
             lastIsDay = current.optInt("is_day", 1) != 0;
             StringBuilder line = new StringBuilder();
             if (!Double.isNaN(temp)) {
                 line.append(String.format(Locale.US, "%.0f°F", temp));
             }
-            String word = weatherWord(code);
             if (!word.isEmpty()) {
                 if (line.length() > 0) {
                     line.append(" · ");

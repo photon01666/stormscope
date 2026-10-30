@@ -284,43 +284,21 @@ pub fn system_prompt() -> String {
 /// model must never get wrong: this is a new volume scan, and it has a memory
 /// of the previous scans.
 pub fn live_system_prompt() -> String {
-    "You are a meteorologist giving a live radar update to a spotter. \
-     Every request is ONE NEW FULL LEVEL II VOLUME SCAN. All elevation slices in that \
-     volume arrive together; this is not a single sweep and it is not an independent \
-     question. The app receives a new volume every 4-6 minutes and sends you the next one \
-     automatically.\n\
-     Rules:\n\
-     - `scan_series.history` is your memory of the previous volume scans: each entry has \
-     the scan time, the primary location, the deterministic arrival estimate, the warnings, \
-     the nearby tracked cells and the previous summary. Use it to compare and describe trends. \
-     Never claim to remember a scan that is not in that array.\n\
-     - Lead with what changed since the previous scan. If nothing meaningful changed, say so \
-     in one sentence instead of repeating the last update.\n\
-     - The app computes `live.primary.eta`. Quote that number and clock time exactly. Never \
-     calculate an arrival time yourself. If it is absent, say no tracked core is heading there; \
-     do not turn that into \"no storm.\"\n\
-     - The ETA is for the >=40 dBZ storm core, not the leading rain shield. Say that when it \
-     matters. A warning in effect at the location outranks an ETA.\n\
-     - `live.primary.source` matters. If it is `selected_station`, there is no marker or GPS \
-     inside the selected radar's coverage, so the estimate is for that radar site. Say \
-     \"the <site id from radar.site> radar site\" and NEVER call it the spotter's location. If it is \
-     `gps` or `marker`, speak about that point normally.\n\
-     - The primary location is already chosen. If there are additional markers, mention them \
-     only if they add something the primary point does not.\n\
-     - Use only the snapshot. Never invent a measurement, warning, time or place. Keep clock \
-     times in the user's local timezone and give everyday units (miles, mph, °F, inches). \
-     Do not recite radar acronyms unless the snapshot's plain meaning needs them.\n\
-     - No tables, code blocks, headings, markdown or directives. Do not emit LOOK:, DATA: or \
-     MAP: lines; live tracking must not move the map or fetch more layers.\n\
-     - Length: 80-140 words. Structure: what changed; whether anything is heading to the \
-     primary location and when; the hazard and confidence; one final line starting \
-     \"Watch for:\".\n\
-     - If a warning covers the primary location, say so in the first sentence. If \
-     `live.primary.surface_precip` is true, say precipitation is overhead now. \
-     `surface_reflectivity_dbz` is a 5x5 low-tilt median, not proof of rain reaching the \
-     ground: 15-20 dBZ alone can be clear-air, insects, virga or clutter, so call those \
-     light radar returns and do not call them precipitation. If the scan has no motion yet \
-     (first volume), say arrival timing is unavailable until the next scan."
+    r#"You are a meteorologist giving a live radar update to a spotter. Every request is ONE NEW FULL LEVEL II VOLUME SCAN. All elevation slices in that volume arrive together; this is not a single sweep and it is not an independent question. The app receives a new volume every 4-6 minutes and sends you the next one automatically.
+Rules:
+- `scan_series.history` is your memory of the previous volume scans: each entry has the scan time, the primary location, the deterministic arrival estimate, the warnings, the nearby tracked cells and the previous summary. Use it to compare and describe trends. Never claim to remember a scan that is not in that array.
+- Lead with what changed since the previous scan. If nothing meaningful changed, say so in one sentence instead of repeating the last update.
+- The app computes `live.primary.eta`. Quote that number and clock time exactly. Never calculate an arrival time yourself. If it is absent, say no tracked core is heading there; do not turn that into "no storm."
+- The ETA is for the >=40 dBZ storm core, not the leading rain shield. Say that when it matters. A warning in effect at the location outranks an ETA.
+- `live.primary.source` matters. If it is `selected_station`, there is no marker or GPS inside the selected radar's coverage, so the estimate is for that radar site. Say "the <site id from radar.site> radar site" and NEVER call it the spotter's location. If it is `gps` or `marker`, speak about that point normally.
+- The primary location is already chosen. If there are additional markers, mention them only if they add something the primary point does not.
+- Use only the snapshot. Never invent a measurement, warning, time or place. Keep clock times in the user's local timezone and give everyday units (miles, mph, °F, inches). Do not recite radar acronyms unless the snapshot's plain meaning needs them.
+- No tables, code blocks, headings, markdown or directives. Do not emit LOOK:, DATA: or MAP: lines; live tracking must not move the map or fetch more layers.
+- Length: 80-140 words. Structure: what changed; whether anything is heading to the primary location and when; the hazard and confidence; one final line starting "Watch for:".
+- If a warning covers the primary location, say so in the first sentence. If `live.primary.surface_precip` is true, say precipitation is overhead now. `surface_reflectivity_dbz` is a 5x5 low-tilt median, not proof of rain reaching the ground: 15-20 dBZ alone can be clear-air, insects, virga or clutter, so call those light radar returns and do not call them precipitation.
+- Frozen precipitation requires `surface_observation.temperature_f` at or below 38 F, or observation conditions that explicitly name snow or ice. Above 40 F never mention snow, ice, wet snow, the melting level or snow rate; HCA "mixed" values and a low melting level in weak echoes are warm-weather artifacts. If no surface observation is loaded, do not mention frozen precipitation at all.
+- If the scan has no motion yet (first volume), say arrival timing is unavailable until the next scan.
+- The snapshot includes the same environment and layer data as the manual chat: sounding, rotation, hail, VAD, QPE, model field, MRMS, GOES, HRRR and FutureCast when loaded. Use it to explain the full picture, but keep the live update short and do not request more data."#
         .to_string()
 }
 
@@ -538,16 +516,26 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
                 "precip_last_hour_in": obs.precip_last_hour_mm.map(|mm| round2(mm / 25.4)),
             }),
         );
-        if let Some(temp_f) = obs.temperature_c.map(c_to_f) {
-            let guidance = if temp_f >= 45.0 {
-                "Surface temperature is well above freezing: snow and ice are NOT possible. Do                  not mention snow, ice, the melting level, or snow rate. Weak-echo HCA 'mixed'                  values are clutter or melting-layer artifacts."
-            } else if temp_f >= 34.0 {
-                "Surface temperature is near freezing: rain or a rain/snow mix is possible. Do                  not call it all snow unless the observation text says snow."
-            } else {
-                "Surface temperature is at or below freezing: snow and ice are possible; use HCA,                  snow rate and the melting level."
-            };
-            root.insert("precip_type_guidance".into(), json!(guidance));
-        }
+        let guidance = match obs.temperature_c.map(c_to_f) {
+            Some(temp_f) if temp_f >= 45.0 => {
+                "Surface temperature is well above freezing: snow and ice are NOT possible. Do not mention snow, ice, wet snow, the melting level or snow rate. Weak-echo HCA 'mixed' values are clutter or melting-layer artifacts."
+            }
+            Some(temp_f) if temp_f >= 34.0 => {
+                "Surface temperature is near freezing: rain or a rain/snow mix is possible. Do not call it all snow unless the observation text says snow."
+            }
+            Some(_) => {
+                "Surface temperature is at or below freezing: snow and ice are possible; use HCA, snow rate and the melting level."
+            }
+            None => {
+                "Surface temperature is unavailable: do not mention snow, ice, wet snow, the melting level or snow rate."
+            }
+        };
+        root.insert("precip_type_guidance".into(), json!(guidance));
+    } else {
+        root.insert(
+            "precip_type_guidance".into(),
+            json!("No surface observation is loaded: do not mention snow, ice, wet snow, the melting level or snow rate. There is no evidence for frozen precipitation."),
+        );
     }
 
     if let Some(forecast) = input.forecast {
@@ -1158,6 +1146,26 @@ pub fn build_live(input: &LiveBriefInputs<'_>) -> Brief {
                 "visibility_mi": obs.visibility_m.map(|m| round1f(m / 1609.344)),
             }),
         );
+        let guidance = match obs.temperature_c.map(c_to_f) {
+            Some(temp_f) if temp_f >= 45.0 => {
+                "Surface temperature is well above freezing: snow and ice are NOT possible. Do not mention snow, ice, wet snow, the melting level or snow rate. Weak-echo HCA 'mixed' values are clutter or melting-layer artifacts."
+            }
+            Some(temp_f) if temp_f >= 34.0 => {
+                "Surface temperature is near freezing: rain or a rain/snow mix is possible. Do not call it all snow unless the observation text says snow."
+            }
+            Some(_) => {
+                "Surface temperature is at or below freezing: snow and ice are possible; use HCA, snow rate and the melting level."
+            }
+            None => {
+                "Surface temperature is unavailable: do not mention snow, ice, wet snow, the melting level or snow rate."
+            }
+        };
+        root.insert("precip_type_guidance".into(), json!(guidance));
+    } else {
+        root.insert(
+            "precip_type_guidance".into(),
+            json!("No surface observation is loaded: do not mention snow, ice, wet snow, the melting level or snow rate. There is no evidence for frozen precipitation."),
+        );
     }
 
     if let Some(forecast) = input.forecast {
@@ -1232,6 +1240,108 @@ pub fn build_live(input: &LiveBriefInputs<'_>) -> Brief {
         user,
         label: format!("{} {} · live", site.id, scan.format("%H:%M")),
     }
+}
+
+/// Add the live scan series and primary assessment to a full manual-chat
+/// snapshot. This keeps the automatic update on exactly the same data diet as
+/// a manual question: sounding, rotation, hail, VAD, QPE, model fields, MRMS,
+/// GOES, HRRR and FutureCast are already in `full`.
+pub fn live_brief_from_full(
+    full: &Brief,
+    site: &radar_core::sites::RadarSite,
+    scan: DateTime<Utc>,
+    primary: &LiveLocation,
+    assessment: &LiveAssessment,
+    memory: &[LiveMemory],
+    new_warnings: &[String],
+    scan_number: u64,
+    scan_interval_min: Option<i64>,
+    now: DateTime<Utc>,
+) -> Result<Brief, String> {
+    let body = full
+        .user
+        .strip_prefix("Snapshot (JSON):\n")
+        .ok_or_else(|| "full snapshot was not in the expected format".to_string())?;
+    let mut root: Value =
+        serde_json::from_str(body).map_err(|e| format!("full snapshot JSON: {e}"))?;
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| "full snapshot was not a JSON object".to_string())?;
+
+    let history: Vec<Value> = memory
+        .iter()
+        .rev()
+        .take(MEMORY_IN_PROMPT)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(memory_json)
+        .collect();
+    obj.insert(
+        "scan_series".into(),
+        json!({
+            "scan_number": scan_number,
+            "scan_time_utc": scan.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "scan_interval_min": scan_interval_min,
+            "cadence": "A new full Level II volume scan arrives every 4-6 minutes; all elevation slices in one volume arrive together.",
+            "history": history,
+        }),
+    );
+
+    let markers = obj.get("markers").cloned().unwrap_or_else(|| json!([]));
+    obj.insert(
+        "live".into(),
+        json!({
+            "primary": {
+                "name": primary.feed_label(),
+                "label": primary.label,
+                "lat": round4(primary.lat),
+                "lon": round4(primary.lon),
+                "source": primary.source.label(),
+                "coverage_km": round1(primary.coverage_km),
+                "eta": assessment.eta.as_ref().map(|eta| eta_json(eta, now)),
+                "surface_reflectivity_dbz": assessment.surface_dbz.map(round),
+                "surface_precip": assessment.surface_precip,
+                "warning": assessment.warning,
+                "nearest_cell": assessment.nearest.as_ref().map(nearest_json),
+                "threat": assessment.threat.label(),
+                "headline": assessment.headline,
+            },
+            "markers": markers,
+            "new_warnings": new_warnings,
+            "note": "The primary point is chosen by the app: GPS, then a marker inside the selected radar's coverage, then the selected radar site itself. Never call the station fallback the spotter's location.",
+        }),
+    );
+    obj.insert("new_warnings".into(), json!(new_warnings));
+
+    if let Some(status) = obj.get_mut("data_status") {
+        status["note"] = json!(
+            "Live snapshot: use only this data. Do not request additional layers or nominate LOOK/DATA/MAP points."
+        );
+    }
+    if !obj.contains_key("precip_type_guidance") {
+        obj.insert(
+            "precip_type_guidance".into(),
+            json!("No surface observation is loaded: do not mention snow, ice, wet snow, the melting level or snow rate."),
+        );
+    }
+
+    let user = format!(
+        "New full Level II volume scan #{scan_number} for {site_id}. This is one scan in a time series, not a standalone question. `scan_series.history` contains your previous analyses and the actual tracked cells from those scans; compare against it and lead with what changed since scan {previous}.\n\nSnapshot (JSON):\n{snapshot}\n\nWrite the short live update now. Quote `live.primary.eta` exactly if present. Use `radar.site` for the station id and do not substitute a different site. If `live.primary.source` is `selected_station`, name that radar site and do not call it the spotter's location. Do not use LOOK, DATA or MAP directives.",
+        site_id = site.id,
+        previous = memory
+            .iter()
+            .rev()
+            .find(|m| m.scan < scan)
+            .map(|m| m.scan_number.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        snapshot = serde_json::to_string(&root).unwrap_or_else(|_| "{}".into()),
+    );
+    Ok(Brief {
+        system: live_system_prompt(),
+        user,
+        label: format!("{} {} · live", site.id, scan.format("%H:%M")),
+    })
 }
 
 fn eta_json(eta: &crate::live_ai::LiveEta, now: DateTime<Utc>) -> Value {

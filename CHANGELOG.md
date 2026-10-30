@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.8.1 — 2026-10-30
+
+**Live AI sees the full weather picture**
+- Automatic Live AI scans now use the same full snapshot as manual chat:
+  sounding, rotation/TVS candidates, hail, VAD, QPE, HRRR/model fields, MRMS,
+  GOES, FutureCast, station totals, storm reports, MCDs, warnings, forecast
+  and the actual current view.
+- Added surface-observation temperature and an explicit precipitation-type
+  guard. At 45°F or warmer the model is told snow and ice are impossible; with
+  no observation it must not mention frozen precipitation. This fixes “wet
+  snow” being mentioned at 67°F.
+- The live prompt now states that the full snapshot is present and that it
+  must not request more data.
+
+**Android notification weather**
+- Current conditions now prefer the nearest NWS surface observation instead
+  of a coarse Open-Meteo condition code. Nearby thunderstorm/severe/tornado
+  alerts and observed rain override “Overcast/Cloudy” with the correct storm
+  or rain word and icon.
+- Clear/mostly-clear night notifications now draw the actual lunar phase, so
+  the notification icon matches the forecast’s waning/waxing phase.
+
 ## v1.8.0 — 2026-10-30
 
 **Map controls wording**

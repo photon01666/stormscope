@@ -749,6 +749,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 volume.sweep_index_for_tilt_moment(app.state.tilt_deg, app.state.moment)
             {
                 let sweep = &volume.sweeps[si];
+                let startup_site_match =
+                    volume.meta.site_id == app.state.site_id || volume.meta.site_id == "UNKNOWN";
                 if sweep.moment(app.state.moment).is_some() {
                     // Motion = another re-raster is expected imminently (drag,
                     // playback, or a burst of wheel-zoom steps). Motion frames
@@ -1046,6 +1048,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             // Current view: draw in place (a motion raster is
                             // stretched to the viewport rect for free).
                             painter.image(rt.handle.id(), tile_resp.rect, uv, egui::Color32::WHITE);
+                            if startup_site_match {
+                                app.state.startup_radar_visible = true;
+                            }
                         } else {
                             // Stale under the gesture throttle: show it
                             // georeferenced instead of blanking. A pan is a
@@ -1081,6 +1086,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                 uv,
                                 egui::Color32::WHITE,
                             );
+                            if startup_site_match {
+                                app.state.startup_radar_visible = true;
+                            }
                         }
                     }
                 }

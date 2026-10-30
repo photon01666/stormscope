@@ -439,6 +439,9 @@ pub struct AppState {
     pub archive_text_requested: std::collections::HashSet<String>,
     /// The in-flight bulk radar load, if any (see [`LoadProgress`]).
     pub load_progress: Option<LoadProgress>,
+    /// The first live radar frame has actually been painted on the map.
+    /// Startup keeps the large loading card up until this becomes true.
+    pub startup_radar_visible: bool,
     /// Last site whose volumes were dropped as "not the selected station"
     /// (logs once per distinct site so a desync is visible).
     pub site_mismatch_logged: Option<String>,
@@ -1286,6 +1289,7 @@ impl Default for AppState {
             archive_warnings_requested: None,
             archive_jump: None,
             load_progress: None,
+            startup_radar_visible: false,
             site_mismatch_logged: None,
             archive_detail: None,
             archive_texts: std::collections::HashMap::new(),

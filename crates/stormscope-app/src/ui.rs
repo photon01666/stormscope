@@ -322,8 +322,8 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     // Floating auto-hide sidebar, drawn over the map.
     sidebar_overlay(ui.ctx(), app, middle);
 
-    // Bulk radar download/stream progress (top-center, above the map).
-    load_progress_pill(ui.ctx(), app, middle);
+    // First-run radar loading: stay up until a live frame is actually painted.
+    startup_loading_overlay(ui.ctx(), app);
 
     // Armed map pick: the forecast window is minimised, so tell the user
     // what the next tap does (and give them a way out).
@@ -389,64 +389,87 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     confirm_clear_dialog(ui.ctx(), app);
 }
 
-/// The bulk radar load pill: spinner, what is downloading, and a progress
-/// bar — a multi-second prime or archive window must never read as a stuck
-/// app. Auto-hides shortly after completion (or if the stream goes quiet).
-fn load_progress_pill(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) {
-    // It is drawn in the Foreground order, so it would paint over the AI
-    // window's header while a load runs.
+/// Large first-run loading card. It is shown from app launch until the first
+/// live radar raster has actually been painted, not merely until the download
+/// reports complete. On cellular the newest Level II volume can take several
+/// seconds, and a blank map otherwise looks like a stalled app.
+fn startup_loading_overlay(ctx: &egui::Context, app: &mut StormApp) {
+    if app.state.startup_radar_visible {
+        return;
+    }
+    // No live radar is expected while FutureCast is the active map.
+    if app.state.show_futurecast {
+        app.state.startup_radar_visible = true;
+        return;
+    }
+    // Do not cover a window the user has explicitly opened.
     if app.state.ai_open || app.state.forecast_open {
         return;
     }
-    let Some(p) = app.state.load_progress.clone() else {
-        return;
-    };
-    let finished = p.total > 0 && p.done >= p.total;
-    let stale = p.at.elapsed() > std::time::Duration::from_secs(8);
-    if stale || (finished && p.at.elapsed() > std::time::Duration::from_millis(1500)) {
-        app.state.load_progress = None;
-        return;
-    }
+
     let scale = app.sidebar_scale.max(1.0);
-    egui::Area::new(egui::Id::new("stormscope.load_progress"))
+    let p = app.state.load_progress.clone();
+    let finished = p.as_ref().is_some_and(|p| p.total > 0 && p.done >= p.total);
+    let title = if finished {
+        "Preparing the radar display"
+    } else if p.as_ref().is_some_and(|p| p.cached) {
+        "Loading radar data from the cache"
+    } else if p.is_some() {
+        "Downloading the latest radar data"
+    } else {
+        "Checking for the latest radar scan"
+    };
+    let detail = p.as_ref().map_or_else(
+        || "The map will appear as soon as the newest volume is ready.".to_string(),
+        |p| {
+            if p.total > 0 {
+                format!("{} · {} of {} scans", p.label, p.done, p.total)
+            } else {
+                p.label.clone()
+            }
+        },
+    );
+    let progress = p
+        .as_ref()
+        .filter(|p| p.total > 0)
+        .map(|p| (p.done as f32 / p.total as f32, p.done, p.total));
+
+    egui::Area::new(egui::Id::new("stormscope.startup_loading"))
         .order(egui::Order::Foreground)
-        .fixed_pos(egui::pos2(
-            middle.center().x - 220.0 * scale,
-            middle.min.y + 80.0 * scale,
-        ))
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .constrain(true)
         .interactable(false)
         .fade_in(false)
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style())
-                .fill(egui::Color32::from_black_alpha(220))
+                .fill(egui::Color32::from_black_alpha(242))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(150, 210, 255, 110),
+                ))
                 .show(ui, |ui| {
-                    ui.set_min_width(440.0 * scale);
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(18.0 * scale));
-                        ui.label(
-                            egui::RichText::new(if finished {
-                                format!("{} — rendering", p.label)
-                            } else if p.cached {
-                                format!("Fetching cache · {}", p.label)
-                            } else {
-                                format!("Downloading {}", p.label)
-                            })
-                            .strong()
-                            .size(13.0 * scale),
-                        );
-                        if p.total > 0 {
+                    ui.set_min_width(520.0 * scale);
+                    ui.add_space(8.0 * scale);
+                    ui.vertical_centered(|ui| {
+                        ui.add(egui::Spinner::new().size(38.0 * scale));
+                        ui.add_space(12.0 * scale);
+                        ui.label(egui::RichText::new(title).strong().size(23.0 * scale));
+                        ui.add_space(6.0 * scale);
+                        ui.label(egui::RichText::new(detail).size(14.0 * scale).weak());
+                        if let Some((fraction, done, total)) = progress {
+                            ui.add_space(14.0 * scale);
                             ui.add(
-                                egui::ProgressBar::new(p.done as f32 / p.total as f32)
-                                    .desired_width(150.0 * scale)
-                                    .text(format!("{}/{}", p.done, p.total)),
+                                egui::ProgressBar::new(fraction)
+                                    .desired_width(360.0 * scale)
+                                    .text(format!("{done}/{total}")),
                             );
                         }
+                        ui.add_space(4.0 * scale);
                     });
+                    ui.add_space(6.0 * scale);
                 });
         });
-    // Keep the spinner spinning and the bar moving while the load runs.
-    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    ctx.request_repaint_after(std::time::Duration::from_millis(33));
 }
 
 /// While a map pick is armed the forecast window is minimised so the map is

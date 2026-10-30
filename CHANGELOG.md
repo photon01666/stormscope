@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.7.9 — 2026-10-29
+
+**Startup radar loading card**
+- Replaced the small top-center fetch pill with a large centered spinner card
+  that says whether the app is downloading, using the cache, or preparing the
+  first radar image.
+- The card stays up until a live radar raster has actually been painted on
+  the map, not merely until the download reports complete. A blank map during
+  a slow cellular download now clearly reads as loading instead of a stalled
+  app.
+- Removed the old fetching indicator.
+
 ## v1.7.8 — 2026-10-29
 
 **Map focus: station labels, scanning sweep, FutureCast-only view**

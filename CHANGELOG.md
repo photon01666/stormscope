@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.8.3 — 2026-10-30
+
+**Zone-based winter alerts reach Storm Watch**
+- Storm Watch now treats a point-filtered NWS alert with no polygon as
+  covering the point, instead of dropping it. Winter storm watches and
+  warnings are commonly zone-based, so they could be silently skipped before.
+- Blizzard, ice storm, snow squall, and other winter watches/warnings are
+  covered, as are the existing tornado, severe thunderstorm, flood, wind, and
+  emergency products. Advisories and statements remain excluded.
+
 ## v1.8.2 — 2026-10-30
 
 **Android background radar follows Storm Watch**

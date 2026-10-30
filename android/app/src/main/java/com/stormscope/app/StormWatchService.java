@@ -895,7 +895,11 @@ public class StormWatchService extends Service {
 
     private static boolean within50Miles(JSONObject geometry, double lat, double lon) {
         if (geometry == null) {
-            return false;
+            // The alerts endpoint was queried with ?point=, so a zone-based
+            // alert with no polygon is already known to cover this point.
+            // Winter storm watches/warnings are commonly zone-based; treating
+            // a missing polygon as "not here" silently dropped them.
+            return true;
         }
         String type = geometry.optString("type", "");
         JSONArray coordinates = geometry.optJSONArray("coordinates");

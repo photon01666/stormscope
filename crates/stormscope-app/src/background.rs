@@ -230,9 +230,15 @@ pub fn run(
     #[cfg(target_os = "android")]
     let mut background_covered = false;
     #[cfg(target_os = "android")]
+    let mut background_exact_covered = false;
+    #[cfg(target_os = "android")]
+    let mut background_near_covered = false;
+    #[cfg(target_os = "android")]
     let mut background_points: Vec<(f64, f64)> = Vec::new();
     #[cfg(target_os = "android")]
-    let mut background_checked_at = already_elapsed(Duration::from_secs(60));
+    let mut background_exact_checked_at = already_elapsed(Duration::from_secs(60));
+    #[cfg(target_os = "android")]
+    let mut background_near_checked_at = already_elapsed(Duration::from_secs(300));
     #[cfg(target_os = "android")]
     let mut background_active = false;
 
@@ -1395,35 +1401,34 @@ pub fn run(
             points.truncate(12);
             let point_count = points.len();
             let points_changed = points != background_points;
-            let due = background_checked_at.elapsed() >= Duration::from_secs(60);
+            let exact_due = background_exact_checked_at.elapsed() >= Duration::from_secs(60);
+            let near_due = background_near_checked_at.elapsed() >= Duration::from_secs(300);
             if !watch_enabled || !live_mode || points.is_empty() {
+                background_exact_covered = false;
+                background_near_covered = false;
                 background_covered = false;
-            } else if points_changed || due {
-                let mut covered = false;
-                let mut checked_any = false;
-                if let Some(alerts) = alerts.as_ref() {
-                    for (lat, lon) in &points {
-                        match alerts.active_at_point(*lat, *lon) {
-                            Ok(warnings) => {
-                                checked_any = true;
-                                if warnings.iter().any(is_watch_or_warning) {
-                                    covered = true;
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                log::debug!("background watch check at {lat:.3},{lon:.3}: {e:#}")
-                            }
-                        }
+            } else {
+                if points_changed || exact_due {
+                    if let Some(alerts) = alerts.as_ref()
+                        && let Some(covered) = exact_watch_warning_at(alerts, &points)
+                    {
+                        background_exact_covered = covered;
                     }
+                    background_exact_checked_at = std::time::Instant::now();
                 }
-                // If every point request failed, keep the previous answer
-                // instead of cutting the feed on a transient network error.
-                if checked_any {
-                    background_covered = covered;
+                // The nationwide listing is ~1.7 MB, so the 50-mile sweep
+                // runs every five minutes. Exact point checks still run every
+                // minute and catch a warning that begins covering the point.
+                if !background_exact_covered && (points_changed || near_due) {
+                    if let Some(alerts) = alerts.as_ref()
+                        && let Some(covered) = nearby_watch_warning(alerts, &points)
+                    {
+                        background_near_covered = covered;
+                    }
+                    background_near_checked_at = std::time::Instant::now();
                 }
+                background_covered = background_exact_covered || background_near_covered;
                 background_points = points;
-                background_checked_at = std::time::Instant::now();
             }
             if background_covered {
                 if !background_active {
@@ -2081,6 +2086,38 @@ fn drain_live(
         }
     }
     newest
+}
+
+/// Exact-point alerts: NWS `?point=` already includes zone-based products
+/// that have no polygon. Returns None when every point request failed.
+#[cfg(target_os = "android")]
+fn exact_watch_warning_at(alerts: &AlertSource, points: &[(f64, f64)]) -> Option<bool> {
+    let mut checked_any = false;
+    let mut covered = false;
+    for (lat, lon) in points {
+        match alerts.active_at_point(*lat, *lon) {
+            Ok(warnings) => {
+                checked_any = true;
+                if warnings.iter().any(is_watch_or_warning) {
+                    covered = true;
+                    break;
+                }
+            }
+            Err(e) => log::debug!("background point check at {lat:.3},{lon:.3}: {e:#}"),
+        }
+    }
+    checked_any.then_some(covered)
+}
+
+/// A watch/warning whose polygon is within 50 miles of any GPS/marker point.
+/// Uses one nationwide listing so multiple points do not multiply downloads.
+#[cfg(target_os = "android")]
+fn nearby_watch_warning(alerts: &AlertSource, points: &[(f64, f64)]) -> Option<bool> {
+    let all = alerts.active_all().ok()?;
+    Some(
+        all.iter()
+            .any(|w| is_watch_or_warning(w) && crate::voice::near_points(w, points)),
+    )
 }
 
 /// True for every watch, warning or emergency product, plus the two winter

@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.8.5 — 2026-10-30
+
+**50-mile background radar radius**
+- Background radar now treats a watch/warning polygon within 50 miles of
+  the GPS fix or any map marker as active, not only alerts that directly
+  cover the point.
+- Exact point checks still run every minute for zone-based alerts (including
+  Winter Weather and Ice Storm advisories). The nationwide 50-mile sweep runs
+  every five minutes.
+- Storm Watch voice/text behavior is unchanged.
+
 ## v1.8.4 — 2026-10-30
 
 **Winter Weather and Ice Storm advisories**

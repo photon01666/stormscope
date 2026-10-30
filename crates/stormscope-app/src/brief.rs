@@ -315,9 +315,12 @@ pub fn live_system_prompt() -> String {
      - Length: 80-140 words. Structure: what changed; whether anything is heading to the \
      primary location and when; the hazard and confidence; one final line starting \
      \"Watch for:\".\n\
-     - If a warning covers the primary location, say so in the first sentence. If the surface \
-     already has precipitation, say it is overhead now. If the scan has no motion yet (first \
-     volume), say arrival timing is unavailable until the next scan."
+     - If a warning covers the primary location, say so in the first sentence. If \
+     `live.primary.surface_precip` is true, say precipitation is overhead now. \
+     `surface_reflectivity_dbz` is a 5x5 low-tilt median, not proof of rain reaching the \
+     ground: 15-20 dBZ alone can be clear-air, insects, virga or clutter, so call those \
+     light radar returns and do not call them precipitation. If the scan has no motion yet \
+     (first volume), say arrival timing is unavailable until the next scan."
         .to_string()
 }
 
@@ -1049,6 +1052,7 @@ pub fn build_live(input: &LiveBriefInputs<'_>) -> Brief {
                 "coverage_km": round1(input.primary.coverage_km),
                 "eta": input.assessment.eta.as_ref().map(|eta| eta_json(eta, input.now)),
                 "surface_reflectivity_dbz": input.assessment.surface_dbz.map(round),
+                "surface_precip": input.assessment.surface_precip,
                 "warning": input.assessment.warning,
                 "nearest_cell": input.assessment.nearest.as_ref().map(nearest_json),
                 "threat": input.assessment.threat.label(),

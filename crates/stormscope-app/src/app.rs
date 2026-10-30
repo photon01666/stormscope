@@ -3809,8 +3809,16 @@ impl StormApp {
 
         let now = chrono::Utc::now();
         let primary = crate::live_ai::LiveLocation::resolve(&self.state, site, &volume);
-        let assessment =
-            crate::live_ai::assess(&volume, site, &tracks, &self.state.alerts, &primary, now);
+        let assessment = crate::live_ai::assess(
+            &volume,
+            site,
+            &tracks,
+            &self.state.alerts,
+            &primary,
+            now,
+            self.live_ai.overhead,
+        );
+        self.live_ai.overhead = assessment.surface_precip;
         let marker_etas = crate::live_ai::marker_etas(&tracks, &self.state.markers);
         // First scan after enabling (or a site switch): seed the alert set so
         // the existing warnings are context, not a burst of "new" ones.

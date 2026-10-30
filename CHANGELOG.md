@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.7.7 — 2026-10-29
+
+**Live AI: fix false “precipitation overhead” and Watch/Quiet flapping**
+- “Precipitation overhead” no longer comes from one 20 dBZ gate. The app now
+  takes a 5×5 gate median from the lowest reflectivity tilt at the primary
+  point, so a speckle, clear-air/insect return, virga, or higher-tilt echo does
+  not become surface rain.
+- Precipitation must reach a **25 dBZ** coherent median to turn on; it stays on
+  until the median falls below **18 dBZ**, adding hysteresis so 18/20 dBZ
+  scan-to-scan wobble cannot flap Watch and Quiet.
+- A genuine 40+ dBZ core still counts even if it is small relative to the
+  neighborhood.
+- Higher tilts are ignored when the lowest tilt has no return.
+- The live prompt now receives a separate `surface_precip` flag and is told not
+  to call 15–20 dBZ light returns precipitation.
+
 ## v1.7.6 — 2026-10-29
 
 **Sounding potential: gate on CIN and LFC height**

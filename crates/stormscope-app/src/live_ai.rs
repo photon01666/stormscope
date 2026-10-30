@@ -36,6 +36,12 @@ pub const TRACK_TILT_DEG: f32 = 0.5;
 /// A quiet period this long resets the speech threshold, so a later storm can
 /// trigger the 30-minute announcement again.
 const SPEECH_RESET: Duration = Duration::from_secs(15 * 60);
+/// A coherent low-tilt return must reach this median to count as precipitation
+/// overhead. A single 20 dBZ gate is often clear-air, insect, virga or clutter.
+const SURFACE_PRECIP_ENTER_DBZ: f32 = 25.0;
+/// Once precipitation is overhead, keep it until the return falls below this.
+/// This deadband stops a scan-to-scan 18/20 dBZ wobble from flapping the feed.
+const SURFACE_PRECIP_EXIT_DBZ: f32 = 18.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocationSource {
@@ -190,7 +196,12 @@ impl ThreatLevel {
 pub struct LiveAssessment {
     pub location: LiveLocation,
     pub eta: Option<LiveEta>,
+    /// Median of a 5x5 low-tilt neighborhood at the primary point. This is a
+    /// radar return, not proof of precipitation reaching the ground.
     pub surface_dbz: Option<f32>,
+    /// True only when the low-tilt return is coherent and strong enough to
+    /// call precipitation overhead, with hysteresis across scans.
+    pub surface_precip: bool,
     pub warning: Option<String>,
     pub nearest: Option<LiveNearest>,
     pub threat: ThreatLevel,
@@ -205,7 +216,7 @@ impl LiveAssessment {
     /// included here: the existing warning voice path owns those, so they do
     /// not get announced twice.
     fn speech_bucket(&self) -> Option<SpeechBucket> {
-        if self.surface_dbz.is_some_and(|dbz| dbz >= 20.0) {
+        if self.surface_precip {
             return Some(SpeechBucket::Overhead);
         }
         let minutes = self.eta.as_ref()?.minutes;
@@ -296,6 +307,8 @@ pub struct LiveAi {
     pub seen_alerts: HashSet<String>,
     pub scan_number: u64,
     pub prev_tracks: Vec<StormTrack>,
+    /// Hysteresis state for "precipitation overhead" across scans.
+    pub overhead: bool,
     seq: u64,
     last_speech: Option<SpeechBucket>,
     quiet_since: Option<Instant>,
@@ -317,6 +330,7 @@ impl LiveAi {
         self.last_speech = None;
         self.quiet_since = None;
         self.scan_number = 0;
+        self.overhead = false;
         self.seq = self.seq.wrapping_add(1);
     }
 
@@ -325,6 +339,7 @@ impl LiveAi {
         self.retry_at = None;
         self.last_scan = None;
         self.failures = 0;
+        self.overhead = false;
         self.seq = self.seq.wrapping_add(1);
     }
 
@@ -424,7 +439,7 @@ impl LiveAi {
         }
         self.last_speech = bucket;
         let location = assessment.location.spoken_label();
-        if assessment.surface_dbz.is_some_and(|dbz| dbz >= 20.0) {
+        if assessment.surface_precip {
             return Some(format!(
                 "Live AI: precipitation is overhead at {location}. Check the latest scan."
             ));
@@ -542,9 +557,11 @@ pub fn assess(
     alerts: &[Warning],
     location: &LiveLocation,
     now: DateTime<Utc>,
+    previous_overhead: bool,
 ) -> LiveAssessment {
     let eta = eta_at(tracks, location.lat, location.lon);
     let surface_dbz = surface_dbz(volume, site, location.lat, location.lon);
+    let surface_precip = overhead_now(surface_dbz, previous_overhead);
     let warning = alerts
         .iter()
         .filter(|w| w.expires > now)
@@ -585,7 +602,7 @@ pub fn assess(
     {
         ThreatLevel::Threat
     } else if eta.as_ref().is_some_and(|e| e.minutes <= 60.0)
-        || surface_dbz.is_some_and(|dbz| dbz >= 20.0)
+        || surface_precip
         || nearest.as_ref().is_some_and(|n| n.distance_mi <= 10.0)
     {
         ThreatLevel::Watch
@@ -602,7 +619,7 @@ pub fn assess(
             eta.heading,
             eta.speed_mph
         )
-    } else if surface_dbz.is_some_and(|dbz| dbz >= 20.0) {
+    } else if surface_precip {
         format!("Precipitation overhead at {}", location.feed_label())
     } else if let Some(nearest) = &nearest {
         format!(
@@ -619,6 +636,7 @@ pub fn assess(
         location: location.clone(),
         eta,
         surface_dbz,
+        surface_precip,
         warning,
         nearest,
         threat,
@@ -699,34 +717,87 @@ pub fn smooth_tracks(prev: &[StormTrack], fresh: Vec<StormTrack>) -> Vec<StormTr
         .collect()
 }
 
+/// Apply the precipitation-overhead deadband. Start at 25 dBZ, but once the
+/// flag is on keep it until the coherent return drops below 18 dBZ.
+fn overhead_now(dbz: Option<f32>, previous: bool) -> bool {
+    match dbz {
+        Some(dbz) if previous => dbz >= SURFACE_PRECIP_EXIT_DBZ,
+        Some(dbz) => dbz >= SURFACE_PRECIP_ENTER_DBZ,
+        None => false,
+    }
+}
+
+/// Median reflectivity of a 5x5 gate neighborhood on the **lowest** elevation
+/// sweep that carries reflectivity.
+///
+/// The old implementation returned the first finite gate from any sweep. That
+/// let a single 20 dBZ speckle (or a higher-tilt echo aloft) become
+/// "precipitation overhead". Requiring a coherent low-tilt neighborhood and
+/// ignoring higher sweeps removes that false positive.
 fn surface_dbz(volume: &Volume, site: &RadarSite, lat: f64, lon: f64) -> Option<f32> {
     let range_km =
         radar_render::surface_distance_m(site.longitude, site.latitude, lon, lat) as f32 / 1000.0;
     let bearing = radar_render::initial_bearing_deg(site.longitude, site.latitude, lon, lat) as f32;
-    for sweep in &volume.sweeps {
-        let Some(md) = sweep.moment(Moment::Reflectivity) else {
-            continue;
-        };
-        let elevation =
-            if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
-                sweep.elevation_measured_deg
+
+    let sweep = volume
+        .sweeps
+        .iter()
+        .filter(|sweep| sweep.moment(Moment::Reflectivity).is_some())
+        .min_by(|a, b| {
+            let ea = if a.elevation_measured_deg.is_finite() && a.elevation_measured_deg != 0.0 {
+                a.elevation_measured_deg
             } else {
-                sweep.elevation_deg
+                a.elevation_deg
             };
-        let height = radar_core::sampling::beam_height_km(range_km, elevation);
-        let slant = range_km.hypot(height);
-        let Some(ray) = radar_core::sampling::nearest_ray_index(&sweep.azimuths_deg, bearing)
-        else {
-            continue;
+            let eb = if b.elevation_measured_deg.is_finite() && b.elevation_measured_deg != 0.0 {
+                b.elevation_measured_deg
+            } else {
+                b.elevation_deg
+            };
+            ea.partial_cmp(&eb).unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+    let md = sweep.moment(Moment::Reflectivity)?;
+    let elevation =
+        if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
+            sweep.elevation_measured_deg
+        } else {
+            sweep.elevation_deg
         };
-        let Some(gate) = radar_core::sampling::gate_index_at_slant(md, slant) else {
-            continue;
-        };
-        if let Some(value) = md.value(ray, gate).filter(|v| v.is_finite()) {
-            return Some(value);
+    let height = radar_core::sampling::beam_height_km(range_km, elevation);
+    let slant = range_km.hypot(height);
+    let ray = radar_core::sampling::nearest_ray_index(&sweep.azimuths_deg, bearing)?;
+    let gate = radar_core::sampling::gate_index_at_slant(md, slant)?;
+
+    let mut values = Vec::with_capacity(25);
+    for dr in -2i32..=2 {
+        let r = (ray as i32 + dr).rem_euclid(md.ray_count as i32) as usize;
+        for dg in -2i32..=2 {
+            let g = gate as i32 + dg;
+            if g < 0 || g as usize >= md.gate_count {
+                continue;
+            }
+            if let Some(value) = md.value(r, g as usize).filter(|v| v.is_finite()) {
+                values.push(value);
+            }
         }
     }
-    None
+    if values.len() < 9 {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // A coherent 40+ dBZ core is precipitation even if it is small relative
+    // to a 5x5 window; do not let the median hide a real downpour.
+    if let Some(max) = values.last().copied()
+        && max >= 40.0
+    {
+        return Some(max);
+    }
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        Some((values[mid - 1] + values[mid]) * 0.5)
+    } else {
+        Some(values[mid])
+    }
 }
 
 fn fmt_minutes(minutes: f64) -> String {
@@ -843,6 +914,7 @@ mod tests {
                 delta_cells: 0,
             }),
             surface_dbz: None,
+            surface_precip: false,
             warning: None,
             nearest: None,
             threat: ThreatLevel::Watch,
@@ -855,6 +927,43 @@ mod tests {
         assert!(live.speech_for(&assessment).is_none());
         assessment.eta.as_mut().unwrap().minutes = 8.0;
         assert!(live.speech_for(&assessment).is_some());
+    }
+
+    #[test]
+    fn surface_dbz_ignores_a_higher_tilt_echo_when_the_low_tilt_is_empty() {
+        let mut volume = volume_with_range(100.0);
+        let mut high = volume.sweeps[0].clone();
+        high.elevation_deg = 1.5;
+        high.elevation_measured_deg = 1.5;
+        high.moments[0].data.fill(62); // 60 dBZ
+        volume.sweeps.push(high);
+        let lat = site().latitude;
+        let lon = site().longitude + 0.5;
+        assert_eq!(surface_dbz(&volume, site(), lat, lon), None);
+    }
+
+    #[test]
+    fn surface_dbz_uses_the_low_tilt_median_not_a_higher_sweep() {
+        let mut volume = volume_with_range(100.0);
+        volume.sweeps[0].moments[0].data.fill(32); // 30 dBZ
+        let mut high = volume.sweeps[0].clone();
+        high.elevation_deg = 1.5;
+        high.elevation_measured_deg = 1.5;
+        high.moments[0].data.fill(62); // 60 dBZ
+        volume.sweeps.push(high);
+        let lat = site().latitude;
+        let lon = site().longitude + 0.5;
+        assert_eq!(surface_dbz(&volume, site(), lat, lon), Some(30.0));
+    }
+
+    #[test]
+    fn overhead_uses_hysteresis_and_rejects_single_gate_returns() {
+        assert!(!overhead_now(Some(24.9), false));
+        assert!(overhead_now(Some(25.0), false));
+        assert!(overhead_now(Some(20.0), true));
+        assert!(overhead_now(Some(18.0), true));
+        assert!(!overhead_now(Some(17.9), true));
+        assert!(!overhead_now(None, true));
     }
 
     #[test]
@@ -886,6 +995,7 @@ mod tests {
             &[],
             &primary,
             Utc.with_ymd_and_hms(2026, 10, 28, 12, 0, 0).unwrap(),
+            false,
         );
         let memory = LiveMemory {
             scan: Utc.with_ymd_and_hms(2026, 10, 28, 11, 55, 0).unwrap(),
@@ -942,6 +1052,7 @@ mod tests {
             location,
             eta: None,
             surface_dbz: None,
+            surface_precip: false,
             warning: None,
             nearest: None,
             threat: ThreatLevel::Quiet,

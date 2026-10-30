@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.7.8 — 2026-10-29
+
+**Map focus: station labels, scanning sweep, FutureCast-only view**
+- Radar-site names are hidden by default and appear only on mouse hover or
+  for three seconds after a tap. Radar sites now use a light-blue PPI scope
+  icon instead of a plain dot.
+- Added a slow, translucent azimuth sweep across the selected live site's
+  full range-ring circle. It repaints at 60 fps on desktop and 30 fps on
+  Android. It is illustrative: the displayed data is still the latest
+  completed Level II volume, not the antenna's instantaneous beam position.
+- In FutureCast mode, the map now keeps only the basemap, FutureCast layer,
+  custom markers (with names, without storm ETA) and the GPS dot/halo. Radar,
+  warnings, outlooks, MCDs, tracks, lightning, radar/synoptic stations and
+  names, range rings, totals, AI annotations, the value probe and the
+  FutureCast valid-time card are hidden.
+- Hidden FutureCast overlays no longer respond to taps/clicks; custom markers
+  remain editable.
+
 ## v1.7.7 — 2026-10-29
 
 **Live AI: fix false “precipitation overhead” and Watch/Quiet flapping**

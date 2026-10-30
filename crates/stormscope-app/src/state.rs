@@ -687,6 +687,10 @@ pub struct AppState {
     /// the one-second tooltip delay).
     pub synoptic_hover: Option<String>,
     pub synoptic_hover_at: f64,
+    /// Radar site under the map pointer. Its name is shown only while hovered.
+    pub radar_site_hover: Option<String>,
+    /// Radar site whose name was pinned by a tap/click, and when it expires.
+    pub radar_site_label: Option<(String, f64)>,
     /// When the forecast/observation currently on screen was fetched, for the
     /// auto-refresh cadence.
     pub forecast_fetched_at: Option<std::time::Instant>,
@@ -1435,6 +1439,8 @@ impl Default for AppState {
             youtube_player_error: None,
             synoptic_hover: None,
             synoptic_hover_at: 0.0,
+            radar_site_hover: None,
+            radar_site_label: None,
             uv_index: None,
             gps_fix: None,
             gps_polled_at: f64::NEG_INFINITY,

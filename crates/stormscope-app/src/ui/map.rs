@@ -6,7 +6,7 @@
 //!   2. range rings + SPC outlook fills
 //!   3. radar sweep raster
 //!   4. SPC outlook outlines + warning polygons + storm tracks
-//!   5. radar site dots + city labels (above data, always visible)
+//!   5. radar site dots (names shown on hover/tap)
 //!   6. user markers (above radar + warnings)
 //!   7. measure tool line + pins + blue bubble (topmost, grabbable)
 //!
@@ -39,11 +39,15 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     app.state.view.width_px = rect.width();
     app.state.view.height_px = rect.height();
     let view = app.state.view;
+    // FutureCast is a forecast-only view: keep the basemap, forecast layer,
+    // custom markers and GPS dot; suppress every other map overlay.
+    let futurecast_only = app.state.show_futurecast;
 
     // Pan: drag moves the map content with the pointer. Disabled in
     // measure mode, where drags draw the distance line instead.
     // While the name popup is open, measure clicks are ignored with the rest.
-    let measuring = app.state.measure_mode && app.state.pending_marker.is_none();
+    let measuring =
+        app.state.measure_mode && app.state.pending_marker.is_none() && !futurecast_only;
     let crosshair_mode = app.state.dbz_crosshair && !app.state.show_futurecast;
     if crosshair_mode {
         // Android dBZ inspect mode: the map becomes a drag surface for the
@@ -177,7 +181,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             const AMBIENT_HIT_PX: f64 = 18.0;
             let mut ambient_hit: Option<String> = None;
             let mut ambient_best = AMBIENT_HIT_PX;
-            if app.state.show_ambient {
+            if !futurecast_only && app.state.show_ambient {
                 for st in &app.state.ambient_stations {
                     let Some(c) = &st.coords else { continue };
                     let (vx, vy) = view.lonlat_to_view_px(c.lon, c.lat);
@@ -196,7 +200,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 const SYNOPTIC_HIT_PX: f64 = 16.0;
                 let mut synoptic_hit: Option<String> = None;
                 let mut synoptic_best = SYNOPTIC_HIT_PX;
-                if app.state.show_synoptic {
+                if !futurecast_only && app.state.show_synoptic {
                     for st in &app.state.synoptic_stations {
                         if st.source == radar_data::synoptic::StationSource::Metar
                             && !app.state.show_metar
@@ -250,31 +254,37 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             // 3) Select the nearest radar site under the pointer.
                             const SITE_HIT_PX: f64 = 14.0;
                             let mut best: Option<(&radar_core::sites::RadarSite, f64)> = None;
-                            for site in radar_core::sites::SITES {
-                                let (vx, vy) =
-                                    view.lonlat_to_view_px(site.longitude, site.latitude);
-                                let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
-                                if d <= SITE_HIT_PX && best.map_or(true, |(_, bd)| d < bd) {
-                                    best = Some((site, d));
+                            if !futurecast_only {
+                                for site in radar_core::sites::SITES {
+                                    let (vx, vy) =
+                                        view.lonlat_to_view_px(site.longitude, site.latitude);
+                                    let d = ((vx - cx).powi(2) + (vy - cy).powi(2)).sqrt();
+                                    if d <= SITE_HIT_PX && best.map_or(true, |(_, bd)| d < bd) {
+                                        best = Some((site, d));
+                                    }
                                 }
                             }
                             if let Some((site, _)) = best {
+                                app.state.radar_site_label =
+                                    Some((site.id.to_string(), ui.input(|i| i.time) + 3.0));
                                 app.select_site(site.id);
-                            } else if app.state.show_lsrs
+                            } else if !futurecast_only
+                                && app.state.show_lsrs
                                 && let Some(r) =
                                     super::reports::lsr_at(&app.state.lsrs, &view, cx, cy)
                             {
                                 // 4) A storm-report dot (drawn on top, small precise
                                 // target): open its full report.
                                 app.state.lsr_detail = Some(r.id.clone());
-                            } else if app.state.show_totals
+                            } else if !futurecast_only
+                                && app.state.show_totals
                                 && super::totals::totals_at(&app.state.totals, &view, cx, cy)
                                     .is_some()
                             {
                                 // 5) A station-total dot: the marker is the shortcut,
                                 // the window the table.
                                 app.state.totals_open = true;
-                            } else {
+                            } else if !futurecast_only {
                                 // 6) A warning polygon under the click — inside it, or
                                 // on its outline (8 px of reach, so a polygon drawn
                                 // under another one stays clickable where they
@@ -366,13 +376,15 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // No hover card while a station window is open: the card would sit on
     // top of the window (tooltips are above windows) and overlap it.
     let station_window_open = app.state.synoptic_open || app.state.ambient_open;
-    let hover_pos = if response.hovered() && !response.dragged() && !station_window_open {
-        response.hover_pos()
-    } else {
-        None
-    };
+    let hover_pos =
+        if !futurecast_only && response.hovered() && !response.dragged() && !station_window_open {
+            response.hover_pos()
+        } else {
+            None
+        };
     let mut hovered_ambient: Option<String> = None;
     let mut hovered_synoptic: Option<String> = None;
+    let mut hovered_radar_site: Option<String> = None;
     if let Some(p) = hover_pos {
         let (hx, hy) = ((p.x - rect.min.x) as f64, (p.y - rect.min.y) as f64);
         if app.state.show_ambient {
@@ -403,6 +415,18 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 }
             }
         }
+        let mut best_site = 14.0f64;
+        for site in radar_core::sites::SITES {
+            let (vx, vy) = view.lonlat_to_view_px(site.longitude, site.latitude);
+            let d = ((vx - hx).powi(2) + (vy - hy).powi(2)).sqrt();
+            if d <= best_site {
+                best_site = d;
+                hovered_radar_site = Some(site.id.to_string());
+            }
+        }
+    }
+    if app.state.radar_site_hover != hovered_radar_site {
+        app.state.radar_site_hover = hovered_radar_site;
     }
     if app.state.ambient_hover != hovered_ambient {
         app.state.ambient_hover = hovered_ambient.clone();
@@ -499,7 +523,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // the first one is the click target, and clicking the same spot again
     // steps to the next. Only when the map itself is hovered (panel overlays
     // are higher layers, so this goes quiet while the pointer is on them).
-    let map_pointer = if crosshair_mode {
+    let map_pointer = if crosshair_mode || futurecast_only {
         None
     } else {
         response.hover_pos()
@@ -683,29 +707,31 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     let painter = ui.painter_at(tile_resp.rect);
     let view = app.state.view;
 
-    // --- Layer 2: range rings (under radar) --------------------------------
-    // NOTE: radar site dots + city labels are painted late (after radar,
-    // warnings and tracks) so they stay visible on top of radar data.
-    draw_range_rings(&painter, origin, &view, app);
+    if !futurecast_only {
+        // --- Layer 2: range rings (under radar) ----------------------------
+        // NOTE: radar site dots + city labels are painted late (after radar,
+        // warnings and tracks) so they stay visible on top of radar data.
+        draw_range_rings(&painter, origin, &view, app);
 
-    // --- Layer 2.1: GOES satellite ------------------------------------------
-    // Under everything radar: the satellite is cloud context, the radar is
-    // the measurement.
-    draw_goes(&painter, origin, &view, app);
+        // --- Layer 2.1: GOES satellite ------------------------------------------
+        // Under everything radar: the satellite is cloud context, the radar is
+        // the measurement.
+        draw_goes(&painter, origin, &view, app);
 
-    // --- Layer 2.2: MRMS multi-radar mosaic --------------------------------
-    // Under the single-site radar so the local gate detail stays on top; the
-    // mosaic is the surroundings' composite and the context layer.
-    draw_mrms(&painter, origin, &view, app);
-    draw_level3(&painter, origin, &view, app);
-    draw_midlevel(&painter, origin, &view, app);
-    draw_qpe(&painter, origin, &view, app);
-    draw_model_field(&painter, origin, &view, app);
+        // --- Layer 2.2: MRMS multi-radar mosaic --------------------------------
+        // Under the single-site radar so the local gate detail stays on top; the
+        // mosaic is the surroundings' composite and the context layer.
+        draw_mrms(&painter, origin, &view, app);
+        draw_level3(&painter, origin, &view, app);
+        draw_midlevel(&painter, origin, &view, app);
+        draw_qpe(&painter, origin, &view, app);
+        draw_model_field(&painter, origin, &view, app);
 
-    // --- Layer 2.5: SPC outlook *fills* ------------------------------------
-    // Under the radar so echoes stay crisp; the outline pass (Layer 3.5)
-    // re-draws the risk boundaries over the echoes.
-    draw_outlooks(&painter, origin, &view, app, true);
+        // --- Layer 2.5: SPC outlook *fills* --------------------------------
+        // Under the radar so echoes stay crisp; the outline pass (Layer 3.5)
+        // re-draws the risk boundaries over the echoes.
+        draw_outlooks(&painter, origin, &view, app, true);
+    }
 
     // --- Layer 3: radar sweep overlay --------------------------------------
     // Rasterize the current frame's sweep for the selected moment+tilt and
@@ -1064,37 +1090,39 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // --- Layer 3.3: HRRR FutureCast ---------------------------------------
     // When FutureCast is on it replaces the live radar sweep (that is a
-    // forecast loop, not a live layer), but warnings/tracks/labels still
-    // draw above it.
+    // forecast loop, not a live layer). In forecast-only mode every other
+    // map overlay is suppressed.
     draw_futurecast(&painter, origin, &view, app);
 
-    // --- Layer 3.4: the 0 °C level -----------------------------------------
-    draw_melting_layer(&painter, origin, &view, app);
+    if !futurecast_only {
+        // --- Layer 3.4: the 0 °C level -------------------------------------
+        draw_melting_layer(&painter, origin, &view, app);
 
-    // --- Layer 3.5: SPC outlook *outlines* over the radar -----------------
-    // Only the risk boundaries, so they stay legible across rain echoes.
-    draw_outlooks(&painter, origin, &view, app, false);
+        // --- Layer 3.5: SPC outlook *outlines* over the radar -------------
+        // Only the risk boundaries, so they stay legible across rain echoes.
+        draw_outlooks(&painter, origin, &view, app, false);
 
-    // A derived product that is still being computed (SRM follows the motion
-    // sliders) says so, instead of leaving a bare basemap.
-    if app.state.moment == radar_core::Moment::StormRelativeVelocity
-        && app.state.display_volume().is_none()
-    {
-        painter.text(
-            tile_resp.rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "deriving SRM…",
-            egui::FontId::proportional(13.0),
-            egui::Color32::from_gray(160),
-        );
+        // A derived product that is still being computed (SRM follows the
+        // motion sliders) says so, instead of leaving a bare basemap.
+        if app.state.moment == radar_core::Moment::StormRelativeVelocity
+            && app.state.display_volume().is_none()
+        {
+            painter.text(
+                tile_resp.rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "deriving SRM…",
+                egui::FontId::proportional(13.0),
+                egui::Color32::from_gray(160),
+            );
+        }
+
+        // --- Mesoscale discussion areas (broad layer, under warnings) -----
+        super::reports::draw_mcds(&painter, origin, &view, app);
+
+        // --- Layer 4: warning polygons ------------------------------------
+        draw_warnings(&painter, origin, &view, app);
+        draw_archive_warnings(&painter, origin, &view, app);
     }
-
-    // --- Mesoscale discussion areas (broad layer, under the warnings) ----
-    super::reports::draw_mcds(&painter, origin, &view, app);
-
-    // --- Layer 4: warning polygons ----------------------------------------
-    draw_warnings(&painter, origin, &view, app);
-    draw_archive_warnings(&painter, origin, &view, app);
 
     // --- Derived storm tracks (cell arrows + 30-min nowcast) ---------------
     // Recomputing track and rotation fields for every scrub tick was the
@@ -1102,70 +1130,77 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // arrived). Keep the last result while the thumb moves, then refresh the
     // current pair when the finger lifts. The radar raster itself still
     // animates during the scrub.
-    if !app.state.timeline_scrubbing {
-        update_tracks(app);
-        update_marker_etas(app);
-        update_severe_layers(app);
-    }
-    if app.state.show_tracks {
-        draw_tracks(&painter, origin, &view, app);
-    }
-    if app.state.show_rotation {
-        draw_rotation_signatures(&painter, origin, &view, app);
-    }
-    if app.state.show_hail_cores {
-        draw_hail_cores(&painter, origin, &view, app);
-    }
+    if !futurecast_only {
+        if !app.state.timeline_scrubbing {
+            update_tracks(app);
+            update_marker_etas(app);
+            update_severe_layers(app);
+        }
+        if app.state.show_tracks {
+            draw_tracks(&painter, origin, &view, app);
+        }
+        if app.state.show_rotation {
+            draw_rotation_signatures(&painter, origin, &view, app);
+        }
+        if app.state.show_hail_cores {
+            draw_hail_cores(&painter, origin, &view, app);
+        }
 
-    // --- GOES GLM lightning (above radar/warnings/tracks) -------------------
-    if app.state.show_lightning {
-        draw_lightning(&painter, origin, &view, app);
-    }
+        // --- GOES GLM lightning (above radar/warnings/tracks) -------------
+        if app.state.show_lightning {
+            draw_lightning(&painter, origin, &view, app);
+        }
 
-    // --- Radar sites + city labels (above radar/warnings/tracks) ------------
-    // Painted late so echoes never bury the dots or "ID City" names.
-    draw_sites(&painter, origin, &view, app);
+        // --- Radar sites + city labels (above radar/warnings/tracks) ------
+        // Painted late so echoes never bury the dots or "ID City" names.
+        draw_sites(&painter, origin, &view, app, ui.ctx());
 
-    // --- Synoptic (Mesowest) stations ---
-    if app.state.show_synoptic {
-        draw_synoptic_stations(&painter, origin, &view, app);
+        // --- Synoptic (Mesowest) stations ---------------------------------
+        if app.state.show_synoptic {
+            draw_synoptic_stations(&painter, origin, &view, app);
+        }
     }
 
     // --- User-placed pins (above radar + warnings, below measure tool) ---
     draw_markers(&painter, origin, &view, app);
 
-    // --- Ambient Weather: my personal station (above pins, so a "Home"
-    // pin next to the station cannot hide its marker) ---
-    if app.state.show_ambient {
-        draw_ambient_stations(&painter, origin, &view, app);
+    if !futurecast_only {
+        // --- Ambient Weather: my personal station -------------------------
+        if app.state.show_ambient {
+            draw_ambient_stations(&painter, origin, &view, app);
+        }
+
+        // --- AI marks: suspected tornado, hail core, updraft --------------
+        draw_ai_annotations(&painter, origin, &view, app);
+
+        // --- Storm report dots (small precise targets, on top) ------------
+        super::reports::draw_lsrs(&painter, origin, &view, app);
+
+        // --- Station totals: diamonds with their strongest number ---------
+        super::totals::draw_totals(&painter, origin, &view, app);
+
+        // --- Android dBZ touch crosshair ----------------------------------
+        let dbz_finger = if app.state.dbz_crosshair
+            && (response.is_pointer_button_down_on() || response.dragged())
+        {
+            response.interact_pointer_pos()
+        } else {
+            None
+        };
+        draw_dbz_crosshair(&painter, tile_resp.rect, &view, app, dbz_finger);
     }
-
-    // --- AI marks: suspected tornado, hail core, updraft (above pins) ----
-    draw_ai_annotations(&painter, origin, &view, app);
-
-    // --- Storm report dots (small precise targets, on top) ----------------
-    super::reports::draw_lsrs(&painter, origin, &view, app);
-
-    // --- Station totals: diamonds with their strongest number --------------
-    super::totals::draw_totals(&painter, origin, &view, app);
-
-    // --- Android dBZ touch crosshair ---------------------------------------
-    let dbz_finger = if app.state.dbz_crosshair
-        && (response.is_pointer_button_down_on() || response.dragged())
-    {
-        response.interact_pointer_pos()
-    } else {
-        None
-    };
-    draw_dbz_crosshair(&painter, tile_resp.rect, &view, app, dbz_finger);
 
     // --- FutureCast's big valid-time card ----------------------------------
     // The bottom strip is a compact transport control; the exact valid
-    // time/day belongs on the map where it cannot be missed.
-    draw_futurecast_valid_time(&painter, tile_resp.rect, app);
+    // time/day belongs on the map where it cannot be missed. In the
+    // forecast-only view the map is intentionally reduced to the forecast
+    // colors, markers and GPS, so suppress this overlay too.
+    if !futurecast_only {
+        draw_futurecast_valid_time(&painter, tile_resp.rect, app);
+    }
 
     // --- Measure tool line + draggable blue bubble (topmost) ---------------
-    if app.state.measure_mode {
+    if app.state.measure_mode && !futurecast_only {
         draw_measure(&painter, origin, &view, app);
     } else {
         app.state.measure_bubble_rect = None;
@@ -1182,7 +1217,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // --- Hover probe: the value under the pointer --------------------------
     // Compute it before the tooltips: over an actual echo the data readout
     // wins, or a warning tooltip covers the dBZ the user is trying to read.
-    let probe = if !cfg!(target_os = "android")
+    let probe = if !futurecast_only
+        && !cfg!(target_os = "android")
         && app.state.map_probe
         && !crosshair_mode
         && !response.dragged()
@@ -1220,7 +1256,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // Polygon/report tooltips only when the pointer is not on an echo: the
     // probe is what the user is reading there. Moving off the echo (or
     // turning the probe off) restores the warning box.
-    if !over_echo {
+    if !futurecast_only && !over_echo {
         warning_hover_tooltip(ui, &response, app);
         super::reports::lsr_hover_tooltip(ui, &response, app);
         super::reports::mcd_hover_tooltip(ui, &response, app);
@@ -2961,15 +2997,23 @@ fn draw_range_rings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView,
     }
 }
 
-/// Every radar site whose position falls inside the viewport: marker dot +
-/// "ID City" label. The selected site is emphasized.
+/// Every radar site whose position falls inside the viewport: a light-blue
+/// PPI radar-scope icon, with its "ID City" label shown only while hovered or
+/// just tapped. The selected site is emphasized.
 ///
 /// Painted AFTER the radar/warnings/tracks layers so dots and city names
 /// stay visible on top of radar data; each label gets a dark pill behind it
 /// so it reads over bright echoes.
-fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
+fn draw_sites(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+    ctx: &egui::Context,
+) {
     let (w, h) = (view.width() as f64, view.height() as f64);
     let pad = 24.0f64;
+    let now = ctx.input(|i| i.time);
 
     for site in radar_core::sites::SITES {
         let (vx, vy) = view.lonlat_to_view_px(site.longitude, site.latitude);
@@ -2978,24 +3022,36 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
         }
         let selected = site.id == app.state.site_id;
         let pos = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+        let light_blue = egui::Color32::from_rgb(150, 210, 255);
 
-        if selected {
-            // Dark halo first so the blue dot reads over any echo color.
-            painter.circle_filled(pos, 8.5, egui::Color32::from_black_alpha(220));
-            painter.circle_filled(pos, 6.0, egui::Color32::from_rgb(90, 180, 255));
-            painter.circle_stroke(
-                pos,
-                9.0,
-                egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 180, 255)),
-            );
-        } else {
-            painter.circle_filled(pos, 4.5, egui::Color32::from_black_alpha(220));
-            painter.circle_filled(pos, 3.0, egui::Color32::from_white_alpha(235));
-            painter.circle_stroke(
-                pos,
-                4.5,
-                egui::Stroke::new(1.5, egui::Color32::from_black_alpha(200)),
-            );
+        // Illustrative antenna sweep around the selected live site. It is not
+        // a claim about the current beam position; NEXRAD data arrives as a
+        // completed volume, so this only reinforces that the site is scanning.
+        if selected && app.state.mode == crate::state::Mode::Live {
+            let radius = radar_sweep_radius_px(&view, site, app).unwrap_or(140.0);
+            draw_radar_sweep(painter, pos, now, radius);
+            // The sweep is a continuous animation, not a 10 fps slideshow.
+            // Repaint at 60 fps on desktop and 30 fps on Android (where a
+            // full map frame is more expensive and battery matters).
+            let frame_ms = if cfg!(target_os = "android") { 33 } else { 16 };
+            ctx.request_repaint_after(std::time::Duration::from_millis(frame_ms));
+        }
+
+        // A mini PPI (radar scope) makes these read as radar stations even
+        // before the hover label appears. The selected site keeps the larger
+        // animated sweep around it.
+        draw_radar_station_icon(painter, pos, selected, light_blue);
+
+        // Keep the map clean: site names are hidden until the marker is
+        // hovered (desktop) or tapped (a 3-second pin).
+        let hovered = app.state.radar_site_hover.as_deref() == Some(site.id);
+        let tapped = app
+            .state
+            .radar_site_label
+            .as_ref()
+            .is_some_and(|(id, until)| id == site.id && now < *until);
+        if !(hovered || tapped) {
+            continue;
         }
 
         // "KTLX Oklahoma City" — ID + city (state stripped), on a dark pill
@@ -3008,7 +3064,7 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
             egui::FontId::proportional(11.5)
         };
         let fg = if selected {
-            egui::Color32::from_rgb(150, 210, 255)
+            light_blue
         } else {
             egui::Color32::from_white_alpha(235)
         };
@@ -3021,6 +3077,119 @@ fn draw_sites(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: 
             fg,
         );
     }
+}
+
+/// Small plan-position-indicator icon for a radar station: a scope ring, a
+/// bright sweep wedge and a center dot. Black halo keeps it readable over
+/// radar colors and basemap detail.
+fn draw_radar_station_icon(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    selected: bool,
+    color: egui::Color32,
+) {
+    let radius = if selected { 7.0 } else { 5.8 };
+    painter.circle_filled(
+        pos,
+        radius + if selected { 3.5 } else { 3.0 },
+        egui::Color32::from_black_alpha(220),
+    );
+    painter.circle_stroke(pos, radius, egui::Stroke::new(1.3, color));
+
+    let a0 = -1.05f32;
+    let a1 = -0.18f32;
+    let mut wedge = Vec::with_capacity(9);
+    wedge.push(pos);
+    for i in 0..=8 {
+        let a = a0 + (a1 - a0) * (i as f32 / 8.0);
+        wedge.push(pos + egui::vec2(a.cos(), a.sin()) * (radius * 0.92));
+    }
+    painter.add(egui::Shape::convex_polygon(
+        wedge,
+        egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 70),
+        egui::Stroke::NONE,
+    ));
+    let tip = pos + egui::vec2(a1.cos(), a1.sin()) * radius;
+    painter.line_segment([pos, tip], egui::Stroke::new(1.3, color));
+    painter.circle_filled(pos, 1.35, color);
+
+    if selected {
+        painter.circle_stroke(pos, radius + 2.0, egui::Stroke::new(1.0, color));
+    }
+}
+
+/// Outer range-ring radius in screen pixels for the selected radar site.
+fn radar_sweep_radius_px(
+    view: &MapView,
+    site: &radar_core::sites::RadarSite,
+    app: &StormApp,
+) -> Option<f32> {
+    let max_range_km = app
+        .state
+        .current()
+        .map(|f| {
+            f.volume
+                .sweeps
+                .iter()
+                .flat_map(|s| s.moments.iter())
+                .map(|m| (m.range_start_m + m.gate_count as f32 * m.gate_size_m) / 1000.0)
+                .fold(0.0f32, f32::max)
+        })
+        .unwrap_or(0.0);
+    let outer_mi = radar_render::volume3d::ring_radii_mi(max_range_km)
+        .last()
+        .copied()
+        .unwrap_or(250)
+        .max(50);
+    let km = outer_mi as f32 * radar_render::volume3d::KM_PER_MILE;
+    let (lat, lon) =
+        radar_render::gate_latlon(site.latitude, site.longitude, 0.0, 0.0, km * 1000.0);
+    let (cx, cy) = view.lonlat_to_view_px(site.longitude, site.latitude);
+    let (px, py) = view.lonlat_to_view_px(lon, lat);
+    let radius = ((px - cx).hypot(py - cy)) as f32;
+    radius.is_finite().then_some(radius.max(40.0))
+}
+
+/// A slow, translucent azimuth sweep across the selected site's **whole**
+/// range-ring circle. NEXRAD antennas rotate through one elevation then step
+/// to the next; this is illustrative, not the live beam position of the
+/// displayed volume.
+fn draw_radar_sweep(painter: &egui::Painter, pos: egui::Pos2, now: f64, radius: f32) {
+    const PERIOD_SECS: f64 = 20.0;
+    const TRAIL_RAD: f32 = 0.75;
+    const SEGMENTS: usize = 22;
+
+    let beam = ((now.rem_euclid(PERIOD_SECS) / PERIOD_SECS) * std::f64::consts::TAU) as f32;
+    for i in 0..SEGMENTS {
+        let f0 = i as f32 / SEGMENTS as f32;
+        let f1 = (i + 1) as f32 / SEGMENTS as f32;
+        let a0 = beam - TRAIL_RAD * f0;
+        let a1 = beam - TRAIL_RAD * f1;
+        let p0 = pos + egui::vec2(a0.sin() * radius, -a0.cos() * radius);
+        let p1 = pos + egui::vec2(a1.sin() * radius, -a1.cos() * radius);
+        let alpha = (18.0 * (1.0 - f0)).max(2.0) as u8;
+        painter.add(egui::Shape::convex_polygon(
+            vec![pos, p0, p1],
+            egui::Color32::from_rgba_unmultiplied(150, 210, 255, alpha),
+            egui::Stroke::NONE,
+        ));
+    }
+    let tip = pos + egui::vec2(beam.sin() * radius, -beam.cos() * radius);
+    painter.line_segment(
+        [pos, tip],
+        egui::Stroke::new(
+            1.4,
+            egui::Color32::from_rgba_unmultiplied(170, 220, 255, 90),
+        ),
+    );
+    painter.circle_stroke(
+        pos,
+        radius,
+        egui::Stroke::new(
+            0.8,
+            egui::Color32::from_rgba_unmultiplied(150, 210, 255, 24),
+        ),
+    );
 }
 
 /// Compact hover card for one Synoptic station: name, network and the first
@@ -3129,7 +3298,9 @@ fn draw_station_label(
         let (vx, vy) = view.lonlat_to_view_px(m.lon, m.lat);
         let mpos = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
         let mut label = m.display();
-        if let Some(eta) = app.marker_etas.get(i).and_then(|e| e.as_ref()) {
+        if !app.state.show_futurecast
+            && let Some(eta) = app.marker_etas.get(i).and_then(|e| e.as_ref())
+        {
             label.push_str(&format!(" · ~{}", fmt_eta(eta.minutes)));
         }
         let g = painter.layout_no_wrap(label, egui::FontId::proportional(14.0), fg);
@@ -4984,7 +5155,9 @@ fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app
         // Pill-backed label so it reads over any radar color. An incoming
         // cell's ETA rides along when the tracker has one.
         let mut label = m.display();
-        if let Some(eta) = app.marker_etas.get(i).and_then(|e| e.as_ref()) {
+        if !app.state.show_futurecast
+            && let Some(eta) = app.marker_etas.get(i).and_then(|e| e.as_ref())
+        {
             label.push_str(&format!(" · ~{}", fmt_eta(eta.minutes)));
         }
         draw_tag_label(

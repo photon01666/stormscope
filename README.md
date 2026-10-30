@@ -8,7 +8,7 @@
 [![CI](https://github.com/photon01666/stormscope/actions/workflows/ci.yml/badge.svg)](https://github.com/photon01666/stormscope/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 
-![Stormscope live radar map with NWS warnings, storm tracks and station observations](docs/images/stormscope-live.webp)
+![Stormscope live radar map with NWS warnings, storm tracks and station observations](docs/images/screenshot-2026-10-30_05-28-23.png)
 
 *Live radar with NWS warnings, storm tracks and weather-station observations.*
 

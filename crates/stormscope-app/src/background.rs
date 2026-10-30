@@ -2083,15 +2083,17 @@ fn drain_live(
     newest
 }
 
-/// True for every watch, warning or emergency product — tornado, severe
-/// thunderstorm, flash flood, winter, wind, and the rest. Advisories and
-/// statements are not watches/warnings and do not keep the radar feed alive.
+/// True for every watch, warning or emergency product, plus the two winter
+/// advisories Storm Watch treats as actionable (Winter Weather and Ice
+/// Storm). Other advisories and statements do not keep the radar feed alive.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn is_watch_or_warning(w: &radar_core::warnings::Warning) -> bool {
     let event = &w.event;
-    (event.contains("Watch") || event.contains("Warning") || event.contains("Emergency"))
-        && !event.contains("Advisory")
-        && !event.contains("Statement")
+    let watch_warning_emergency =
+        event.contains("Watch") || event.contains("Warning") || event.contains("Emergency");
+    let winter_advisory =
+        event.contains("Winter Weather Advisory") || event.contains("Ice Storm Advisory");
+    (watch_warning_emergency || winter_advisory) && !event.contains("Statement")
 }
 
 /// Re-fetch active NWS alerts around the current site and emit them. Zones
@@ -2319,6 +2321,9 @@ mod tests {
             "Severe Thunderstorm Watch",
             "Flash Flood Warning",
             "Winter Storm Warning",
+            "Blizzard Warning",
+            "Winter Weather Advisory",
+            "Ice Storm Advisory",
             "High Wind Warning",
             "Flash Flood Emergency",
         ] {

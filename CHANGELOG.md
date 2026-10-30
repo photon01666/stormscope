@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.8.4 — 2026-10-30
+
+**Winter Weather and Ice Storm advisories**
+- Added Winter Weather Advisory and Ice Storm Advisory to the Storm Watch
+  background radar gate and to Storm Watch text/voice alerts. They use the
+  **Other warnings** voice category and are not excluded by the advisory
+  filter anymore.
+- Other advisories (for example Wind Advisory) and statements remain
+  excluded.
+
 ## v1.8.3 — 2026-10-30
 
 **Zone-based winter alerts reach Storm Watch**

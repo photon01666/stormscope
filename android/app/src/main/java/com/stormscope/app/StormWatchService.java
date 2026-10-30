@@ -798,9 +798,14 @@ public class StormWatchService extends Service {
     }
 
     private static boolean announceable(String event) {
-        return (event.contains("Warning") || event.contains("Watch")
-                || event.contains("Emergency"))
-                && !event.contains("Advisory")
+        boolean watchWarningEmergency = event.contains("Warning")
+                || event.contains("Watch")
+                || event.contains("Emergency");
+        // These two winter advisories are actionable even though they are
+        // technically advisories (and are commonly zone-based).
+        boolean winterAdvisory = event.contains("Winter Weather Advisory")
+                || event.contains("Ice Storm Advisory");
+        return (watchWarningEmergency || winterAdvisory)
                 && !event.contains("Statement");
     }
 

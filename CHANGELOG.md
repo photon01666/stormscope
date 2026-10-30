@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.8.0 — 2026-10-30
+
+**Map controls wording**
+- Renamed the map-controls heading to **Local Weather Stations**.
+- Renamed the toggle to **Show weather stations on map** to distinguish the
+  observation network from radar sites.
+
 ## v1.7.9 — 2026-10-29
 
 **Startup radar loading card**
@@ -11,8 +18,6 @@
   a slow cellular download now clearly reads as loading instead of a stalled
   app.
 - Removed the old fetching indicator.
-- Map controls now say **Local Weather Stations** and **Show weather stations
-  on map**.
 
 ## v1.7.8 — 2026-10-29
 

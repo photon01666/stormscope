@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.8.7 — 2026-10-30
+
+**FutureCast valid-time card restored**
+- The large date/time card above the Android timeline was being suppressed
+  exactly when FutureCast was active. It is visible again and shows the
+  selected forecast day, local time, timezone and lead time.
+
 ## v1.8.6 — 2026-10-30
 
 **Watches visible by default; zone alerts shaded**

@@ -1200,12 +1200,10 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // --- FutureCast's big valid-time card ----------------------------------
     // The bottom strip is a compact transport control; the exact valid
-    // time/day belongs on the map where it cannot be missed. In the
-    // forecast-only view the map is intentionally reduced to the forecast
-    // colors, markers and GPS, so suppress this overlay too.
-    if !futurecast_only {
-        draw_futurecast_valid_time(&painter, tile_resp.rect, app);
-    }
+    // time/day belongs on the map where it cannot be missed. This is exactly
+    // the forecast-only view, so keep it visible (the function no-ops when
+    // FutureCast is off).
+    draw_futurecast_valid_time(&painter, tile_resp.rect, app);
 
     // --- Measure tool line + draggable blue bubble (topmost) ---------------
     if app.state.measure_mode && !futurecast_only {

@@ -10,6 +10,7 @@ use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use radar_core::sites::haversine_km;
 use radar_core::warnings::Warning;
+use std::collections::HashMap;
 
 const ALERTS_URL: &str = "https://api.weather.gov/alerts/active";
 
@@ -175,6 +176,16 @@ fn parse_feature(feature: &serde_json::Value) -> Option<Warning> {
     if id.is_empty() {
         return None;
     }
+    let polygon = geometry_rings(feature.get("geometry"));
+    let zone_urls: Vec<String> = props
+        .get("affectedZones")
+        .and_then(|v| v.as_array())
+        .map(|urls| {
+            urls.iter()
+                .filter_map(|u| u.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
     Some(Warning {
         id,
         event: s("event"),
@@ -186,7 +197,9 @@ fn parse_feature(feature: &serde_json::Value) -> Option<Warning> {
         description: s("description"),
         instruction: s("instruction"),
         area: s("areaDesc"),
-        polygon: geometry_rings(feature.get("geometry")),
+        zone_only: polygon.is_none() && !zone_urls.is_empty(),
+        polygon,
+        zone_urls,
     })
 }
 
@@ -238,27 +251,99 @@ fn issuing_office(props: &serde_json::Value) -> String {
     String::new()
 }
 
+/// On-demand NWS zone/county geometry for zone-based alerts.
+///
+/// Zone alerts have no storm polygon. Their `affectedZones` URLs point at
+/// the NWS zone features, whose geometry can be fetched and cached for map
+/// shading. This is deliberately on-demand: a nationwide preload would be
+/// thousands of requests.
+pub struct ZoneSource {
+    client: reqwest::blocking::Client,
+    cache: HashMap<String, Option<Vec<Vec<(f64, f64)>>>>,
+}
+
+impl ZoneSource {
+    pub fn new(user_agent: &str) -> Result<Self> {
+        Ok(Self {
+            client: api_client(user_agent)?,
+            cache: HashMap::new(),
+        })
+    }
+
+    /// Fill `polygon` on zone-based warnings from their NWS zone URLs.
+    pub fn enrich(&mut self, warnings: &mut [Warning]) {
+        for warning in warnings {
+            if !warning.zone_only || warning.polygon.is_some() || warning.zone_urls.is_empty() {
+                continue;
+            }
+            let mut rings = Vec::new();
+            for url in &warning.zone_urls {
+                if let Some(found) = self.rings(url) {
+                    rings.extend(found);
+                }
+            }
+            if !rings.is_empty() {
+                warning.polygon = Some(rings);
+            }
+        }
+    }
+
+    fn rings(&mut self, url: &str) -> Option<Vec<Vec<(f64, f64)>>> {
+        if let Some(cached) = self.cache.get(url) {
+            return cached.clone();
+        }
+        let result = self.fetch_rings(url);
+        self.cache.insert(url.to_string(), result.clone());
+        result
+    }
+
+    fn fetch_rings(&self, url: &str) -> Option<Vec<Vec<(f64, f64)>>> {
+        let response = self
+            .client
+            .get(url)
+            .header("Accept", "application/geo+json")
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .ok()?;
+        let feature: serde_json::Value = response.json().ok()?;
+        geometry_rings(feature.get("geometry"))
+    }
+}
+
 /// Extract polygon rings from GeoJSON geometry as (lon, lat) pairs.
-/// Polygons contribute each exterior ring; MultiPolygons contribute each
-/// polygon's exterior ring. Other geometry types yield `None`.
+/// Polygons contribute each exterior ring; MultiPolygons and
+/// GeometryCollections contribute each contained polygon's exterior ring.
 fn geometry_rings(geometry: Option<&serde_json::Value>) -> Option<Vec<Vec<(f64, f64)>>> {
     let geometry = geometry?;
-    let coords = geometry.get("coordinates")?;
     let mut rings = Vec::new();
     match geometry.get("type").and_then(|t| t.as_str())? {
         "Polygon" => {
-            if let Some(ring) = ring_from_json(coords) {
+            if let Some(ring) = geometry.get("coordinates").and_then(ring_from_json) {
                 rings.push(ring);
             }
         }
         "MultiPolygon" => {
-            for polygon in coords.as_array().into_iter().flatten() {
+            for polygon in geometry
+                .get("coordinates")
+                .and_then(|c| c.as_array())
+                .into_iter()
+                .flatten()
+            {
                 if let Some(ring) = ring_from_json(polygon) {
                     rings.push(ring);
                 }
             }
-            if rings.is_empty() {
-                return None;
+        }
+        "GeometryCollection" => {
+            for child in geometry
+                .get("geometries")
+                .and_then(|g| g.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(mut child_rings) = geometry_rings(Some(child)) {
+                    rings.append(&mut child_rings);
+                }
             }
         }
         _ => return None,

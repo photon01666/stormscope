@@ -267,7 +267,13 @@ pub fn merge_alerts(
 ) -> Vec<radar_core::warnings::Warning> {
     let mut out: Vec<radar_core::warnings::Warning> = slow.to_vec();
     for w in fast {
-        if !out.iter().any(|s| s.id == w.id) {
+        if let Some(existing) = out.iter_mut().find(|s| s.id == w.id) {
+            // The fast point fetch is the one enriched with NWS zone
+            // geometry. Keep it over the unshaded nationwide copy.
+            if existing.polygon.is_none() && w.polygon.is_some() {
+                *existing = w.clone();
+            }
+        } else {
             out.push(w.clone());
         }
     }
@@ -1341,7 +1347,7 @@ impl Default for AppState {
             alerts_fast: Vec::new(),
             all_alerts: Vec::new(),
             show_alerts: true,
-            show_watches: false,
+            show_watches: true,
             alerts_popup_open: false,
             alerts_tab: AlertsTab::Station,
             alerts_filter: String::new(),
@@ -2519,6 +2525,8 @@ mod tests {
             instruction: String::new(),
             area: String::new(),
             polygon: None,
+            zone_urls: Vec::new(),
+            zone_only: false,
         };
         let slow = vec![alert("a", "Tornado Watch"), alert("b", "Flood Warning")];
         let fast = vec![

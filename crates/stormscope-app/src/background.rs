@@ -8,7 +8,7 @@
 
 use crate::app::{DataCmd, DataMsg};
 use chrono::{NaiveDate, Utc};
-use radar_data::{AlertSource, DiskCache, OutlookSource, S3Source};
+use radar_data::{AlertSource, DiskCache, OutlookSource, S3Source, ZoneSource};
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -130,7 +130,7 @@ pub fn run(
     cmds: Receiver<DataCmd>,
     out: Sender<DataMsg>,
     archive_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    shared: Arc<Mutex<crate::app::SharedData>>,
+    #[allow(unused_variables)] shared: Arc<Mutex<crate::app::SharedData>>,
 ) {
     let cache = DiskCache::with_default_max(DiskCache::default_root());
     #[cfg(target_os = "android")]
@@ -154,6 +154,7 @@ pub fn run(
         }
     };
     let alerts = AlertSource::new(USER_AGENT).ok();
+    let mut zones = ZoneSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
     let mut synoptic_token: Option<String> = None;
     let mut ambient_keys: Option<(String, String)> = None;
@@ -1553,7 +1554,7 @@ pub fn run(
         }
         if last_alerts_fast.elapsed() >= ALERTS_FAST_REFRESH {
             last_alerts_fast = std::time::Instant::now();
-            refresh_alerts_at_station(&alerts, &current_site, &out);
+            refresh_alerts_at_station(&alerts, &mut zones, &current_site, &out);
         }
         if last_alerts.elapsed() >= ALERTS_REFRESH {
             last_alerts = std::time::Instant::now();
@@ -2139,13 +2140,21 @@ fn is_watch_or_warning(w: &radar_core::warnings::Warning) -> bool {
 /// The minute-cadence check for alerts that apply to the station itself.
 /// Errors are logged at debug: a failed fast poll costs nothing and the slow
 /// sweep will still run.
-fn refresh_alerts_at_station(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg>) {
+fn refresh_alerts_at_station(
+    alerts: &Option<AlertSource>,
+    zones: &mut Option<ZoneSource>,
+    site: &str,
+    out: &Sender<DataMsg>,
+) {
     let Some(a) = alerts else { return };
     let Some(site) = radar_core::sites::site(site) else {
         return;
     };
     match a.active_at_point(site.latitude, site.longitude) {
-        Ok(w) => {
+        Ok(mut w) => {
+            if let Some(zones) = zones.as_mut() {
+                zones.enrich(&mut w);
+            }
             log::debug!("{} alerts apply to {}", w.len(), site.id);
             // Desktop speech must not depend on the UI frame loop (a hidden
             // Wayland workspace may not receive frame callbacks). Android's
@@ -2350,6 +2359,8 @@ mod tests {
             instruction: String::new(),
             area: String::new(),
             polygon: None,
+            zone_urls: Vec::new(),
+            zone_only: false,
         };
         for event in [
             "Tornado Warning",

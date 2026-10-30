@@ -29,8 +29,14 @@ pub struct Warning {
     pub area: String,
     /// Polygon rings as (lon, lat) pairs; None for zone-based alerts.
     /// First ring is the exterior; typically only one ring from LSR/FFW
-    /// polygons.
+    /// polygons. For zone-based alerts this may be filled from the NWS zone
+    /// geometry for map shading; `zone_only` remains true.
     pub polygon: Option<Vec<Vec<(f64, f64)>>>,
+    /// NWS zone/county URLs (`affectedZones`) for a zone-based alert.
+    pub zone_urls: Vec<String>,
+    /// True when NWS supplied no storm polygon and the alert is zone/county
+    /// based. `polygon` may be filled later from zone geometry.
+    pub zone_only: bool,
 }
 
 impl Warning {

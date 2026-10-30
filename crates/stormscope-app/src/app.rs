@@ -727,6 +727,7 @@ impl StormApp {
             }
         });
 
+        #[allow(unused_mut)]
         let mut state = AppState::default();
         #[cfg(target_os = "android")]
         {
@@ -2103,6 +2104,8 @@ impl StormApp {
                 (lon + d, lat + d),
                 (lon - d, lat + d),
             ]]),
+            zone_urls: Vec::new(),
+            zone_only: false,
         };
         self.state.alerts_fast.push(w.clone());
         self.state.alerts.push(w);

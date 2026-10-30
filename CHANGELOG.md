@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.8.6 — 2026-10-30
+
+**Watches visible by default; zone alerts shaded**
+- The map watch layer is now enabled by default, so active watch boxes show
+  without digging into map controls.
+- Zone/county-based alerts now fetch their NWS zone geometry on demand and
+  use it for map shading. Winter Weather Advisories and other zone-only
+  watches/warnings no longer have to be text-only.
+- Zone-based alerts remain listed in the Zones tab and keep their county/zone
+  identity even when shaded.
+- The fast point-alert refresh enriches local zone alerts; nationwide
+  zone-only alerts are enriched when they are fetched for the current point.
+
 ## v1.8.5 — 2026-10-30
 
 **50-mile background radar radius**

@@ -1368,6 +1368,8 @@ mod tests {
             instruction: String::new(),
             area: String::new(),
             polygon: Some(vec![ring.to_vec()]),
+            zone_urls: Vec::new(),
+            zone_only: false,
         }
     }
 

@@ -2748,6 +2748,8 @@ mod tests {
             instruction: "Seek shelter.".into(),
             area: "Lancaster, NE".into(),
             polygon: Some(vec![ring.clone()]),
+            zone_urls: Vec::new(),
+            zone_only: false,
         };
         let feature = radar_core::outlooks::OutlookFeature {
             dn: 4,

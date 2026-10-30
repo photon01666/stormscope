@@ -964,6 +964,8 @@ mod tests {
             instruction: instruction.to_string(),
             area: area.to_string(),
             polygon: None,
+            zone_urls: Vec::new(),
+            zone_only: false,
         }
     }
 

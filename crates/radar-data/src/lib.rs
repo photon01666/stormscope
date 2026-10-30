@@ -42,7 +42,7 @@ pub mod verify;
 pub mod warnings_archive;
 pub mod youtube;
 
-pub use alerts::AlertSource;
+pub use alerts::{AlertSource, ZoneSource};
 pub use ambient::{AmbientSource, AmbientStation};
 pub use cache::DiskCache;
 pub use ensemble::{EnsembleField, EnsembleSeries, EnsembleSource};

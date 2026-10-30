@@ -76,6 +76,8 @@ impl HistoricWarning {
             instruction: String::new(),
             area: self.ugc.clone(),
             polygon: self.polygon.clone(),
+            zone_urls: Vec::new(),
+            zone_only: false,
         }
     }
 

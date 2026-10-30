@@ -564,14 +564,19 @@ pub fn alerts_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     // The browser lists polygon alerts only: a zone/county alert has no
     // geometry, so its row cannot center the map (the click looked broken)
     // and nothing is drawn for it. Counts and rows both use these views.
-    let all_poly: Vec<&Warning> = all.iter().filter(|w| w.polygon.is_some()).collect();
+    let all_poly: Vec<&Warning> = all
+        .iter()
+        .filter(|w| !w.zone_only && w.polygon.is_some())
+        .collect();
     let station_poly: Vec<&Warning> = station
         .iter()
         .copied()
-        .filter(|w| w.polygon.is_some())
+        .filter(|w| !w.zone_only && w.polygon.is_some())
         .collect();
-    let all_watch_poly: Vec<&Warning> = all_poly.iter().copied().filter(|w| is_watch(w)).collect();
-    let all_zones: Vec<&Warning> = all.iter().filter(|w| w.polygon.is_none()).collect();
+    // Watches are a separate layer/tab; include zone-based watches too (they
+    // may be shaded from NWS zone geometry, or remain text-only).
+    let all_watch_poly: Vec<&Warning> = all.iter().filter(|w| is_watch(w)).collect();
+    let all_zones: Vec<&Warning> = all.iter().filter(|w| w.zone_only).collect();
 
     // Archive tab (historical warnings). Rendered from split borrows, so the
     // data and the UI actions travel separately: the window collects one
@@ -1726,6 +1731,8 @@ mod tests {
             instruction: "TAKE COVER NOW.".into(),
             area: "Cleveland, OK".into(),
             polygon,
+            zone_urls: Vec::new(),
+            zone_only: false,
         }
     }
 

@@ -10,6 +10,19 @@
 
 use eframe::egui;
 
+/// Called by `MainActivity.onResume`/`onPause` (a Java `static native`
+/// method). This is the earliest point the native side learns that the
+/// activity is no longer visible, so the data thread can stop the live radar
+/// poller instead of downloading scans in the background.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_stormscope_app_MainActivity_nativeSetForeground(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    foreground: u8,
+) {
+    stormscope_app::android_lifecycle::set_foreground(foreground != 0);
+}
+
 /// GameActivity's native entry point.
 ///
 /// Uses the Rust ABI (not `extern "C"`) as required by `android-activity`.

@@ -653,6 +653,16 @@ pub struct RadarTex {
 pub struct SharedData {
     pub sites: Vec<&'static radar_core::sites::RadarSite>,
     pub tilts: Vec<f32>,
+    /// Android: last GPS fix mirrored for background Storm Watch radar
+    /// gating. The data thread refreshes it from Java while backgrounded.
+    pub gps_fix: Option<(f64, f64)>,
+    /// Android: map markers checked by background Storm Watch radar gating.
+    pub watch_markers: Vec<(f64, f64)>,
+    /// Android: the Storm Watch setting, mirrored so the data thread can gate
+    /// background radar without calling back into the UI thread.
+    pub storm_watch_enabled: bool,
+    /// Android: only live-mode apps keep downloading radar in the background.
+    pub live_mode: bool,
 }
 
 impl StormApp {
@@ -669,21 +679,26 @@ impl StormApp {
         let (tx_ui, rx_data): (Sender<DataMsg>, Receiver<DataMsg>) = std::sync::mpsc::channel();
         let (tx_data, rx_ui): (Sender<DataCmd>, Receiver<DataCmd>) = std::sync::mpsc::channel();
 
-        // Background data thread: fetches, decodes and polls; results are
-        // delivered to the UI over the message channel below.
-        let archive_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cancel = Arc::clone(&archive_cancel);
-        std::thread::Builder::new()
-            .name("data".into())
-            .spawn(move || crate::background::run(rx_ui, tx_ui, cancel))
-            .expect("spawn data thread");
-
         let data = Arc::new(Mutex::new(SharedData {
             sites: radar_core::sites::SITES.iter().collect(),
             tilts: vec![
                 0.5, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.1, 6.4, 8.0, 10.0, 12.0, 19.5,
             ],
+            gps_fix: None,
+            watch_markers: Vec::new(),
+            storm_watch_enabled: false,
+            live_mode: true,
         }));
+
+        // Background data thread: fetches, decodes and polls; results are
+        // delivered to the UI over the message channel below.
+        let archive_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::clone(&archive_cancel);
+        let shared = Arc::clone(&data);
+        std::thread::Builder::new()
+            .name("data".into())
+            .spawn(move || crate::background::run(rx_ui, tx_ui, cancel, shared))
+            .expect("spawn data thread");
 
         // A window's resize band is only a few pixels wide by default; on a
         // HiDPI display it is easy to miss it and have the press fall through
@@ -712,7 +727,14 @@ impl StormApp {
             }
         });
 
-        let state = AppState::default();
+        let mut state = AppState::default();
+        #[cfg(target_os = "android")]
+        {
+            // Seed the toggle before the first frame so a quick home press
+            // can still gate background radar correctly.
+            state.storm_watch_enabled = crate::android_storm_watch::enabled();
+            state.storm_watch_polled_at = f64::NEG_INFINITY;
+        }
         #[cfg(windows)]
         crate::embedded_piper::ensure_extracted();
         #[cfg(not(target_os = "android"))]
@@ -4427,6 +4449,27 @@ impl StormApp {
         if let Some(fix) = self.state.gps_fix {
             voice_points.push(fix);
         }
+        #[cfg(target_os = "android")]
+        {
+            // Storm Watch gates background radar on the GPS fix and every
+            // map marker. The data thread refreshes the GPS point from Java
+            // while backgrounded; markers are static until the app resumes.
+            let mut markers: Vec<(f64, f64)> = self
+                .state
+                .markers
+                .iter()
+                .map(|marker| (marker.lat, marker.lon))
+                .collect();
+            let mut seen = std::collections::HashSet::new();
+            markers.retain(|point| seen.insert((point.0.to_bits(), point.1.to_bits())));
+            markers.truncate(11);
+            if let Ok(mut shared) = self.data.lock() {
+                shared.gps_fix = self.state.gps_fix;
+                shared.watch_markers = markers;
+                shared.storm_watch_enabled = self.state.storm_watch_enabled;
+                shared.live_mode = self.state.mode == crate::state::Mode::Live;
+            }
+        }
         crate::voice::set_filter(crate::voice::VoiceFilter {
             enabled: self.state.voice_alerts,
             tornado: self.state.voice_tornado,
@@ -4479,15 +4522,12 @@ impl StormApp {
                 }
                 self.state.forecast_open = true;
             }
-            // Returning from the background: the live poller may have been
-            // frozen on an old volume. Re-enter live so the newest scan is
-            // fetched immediately instead of waiting for the stream to catch up.
+            // Returning from the background: the data thread stopped the live
+            // poller on pause, so restart it on every resume. RefreshLive keeps
+            // the frames already in memory and only asks for the newest scan;
+            // it does not clear or replay the cached timeline.
             if crate::android_lifecycle::take_resume_refresh()
                 && self.state.mode == crate::state::Mode::Live
-                && self
-                    .state
-                    .newest_start()
-                    .is_none_or(|newest| chrono::Utc::now() - newest > chrono::Duration::minutes(6))
             {
                 let _ = self
                     .tx

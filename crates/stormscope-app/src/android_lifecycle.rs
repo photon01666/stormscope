@@ -8,14 +8,30 @@
 #![cfg(target_os = "android")]
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use android_activity::AndroidApp;
 
 static ANDROID_APP: OnceLock<AndroidApp> = OnceLock::new();
 
+/// Whether the activity is currently visible. The data thread checks this
+/// before draining the live poller; while the app is backgrounded the poller
+/// is dropped so it cannot keep downloading radar scans.
+static FOREGROUND: AtomicBool = AtomicBool::new(true);
+
 /// Remember the GameActivity handle (called from `android_main`).
 pub fn register(app: AndroidApp) {
     let _ = ANDROID_APP.set(app);
+}
+
+/// Called by `MainActivity` from `onPause`/`onResume` through JNI.
+pub fn set_foreground(foreground: bool) {
+    FOREGROUND.store(foreground, Ordering::Relaxed);
+}
+
+/// True while the activity is resumed and visible.
+pub fn is_foreground() -> bool {
+    FOREGROUND.load(Ordering::Relaxed)
 }
 
 /// Does Android allow this app to request package installs?

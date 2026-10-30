@@ -11,6 +11,7 @@ use chrono::{NaiveDate, Utc};
 use radar_data::{AlertSource, DiskCache, OutlookSource, S3Source};
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// User-Agent sent to every NOAA/SPC host (they require a descriptive UA:
@@ -109,11 +110,27 @@ struct ArchiveDay {
     window_start: usize,
 }
 
+/// True when the Android activity is no longer visible. Desktop builds are
+/// always considered foreground. Used to stop UI-originated live/prime work
+/// from leaking into the background; the explicit Storm Watch gate below owns
+/// background radar.
+fn backgrounded() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        !crate::android_lifecycle::is_foreground()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        false
+    }
+}
+
 /// Entry point for the background "data" thread.
 pub fn run(
     cmds: Receiver<DataCmd>,
     out: Sender<DataMsg>,
     archive_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    shared: Arc<Mutex<crate::app::SharedData>>,
 ) {
     let cache = DiskCache::with_default_max(DiskCache::default_root());
     #[cfg(target_os = "android")]
@@ -206,6 +223,19 @@ pub fn run(
     // Alerts + SPC outlook are fetched by the first loop iteration (timers
     // start pre-expired), so startup never blocks on the network.
 
+    // Android background radar gate. Storm Watch stays enabled; the radar
+    // feed only keeps running while a watch or warning covers the GPS fix or
+    // a map marker. The check is repeated while backgrounded so the feed
+    // stops as soon as the last watch/warning expires.
+    #[cfg(target_os = "android")]
+    let mut background_covered = false;
+    #[cfg(target_os = "android")]
+    let mut background_points: Vec<(f64, f64)> = Vec::new();
+    #[cfg(target_os = "android")]
+    let mut background_checked_at = already_elapsed(Duration::from_secs(60));
+    #[cfg(target_os = "android")]
+    let mut background_active = false;
+
     // Dev harness: STORMSCOPE_BOOTSTRAP_ARCHIVE=YYYY-MM-DD[=SITE] pre-loads
     // an archive day at startup so the archive path can be exercised (and
     // demoed) without driving the GUI.
@@ -247,20 +277,31 @@ pub fn run(
                     // the new station's data arrives.
                     let _ = out.send(DataMsg::ClearFrames);
                     current_site = site.clone();
-                    start_live(&source, &site, &mut live, &out);
-                    // Refill from what is already on disk so the bottom
-                    // timeline can play back this station's data instead of
-                    // showing a single frame; `prime_site` also refreshes the
-                    // newest scan if the bucket has moved on.
-                    backfill.clear();
-                    let (now, queued) = prime_site(&source, &site, &out);
-                    backfill = queued;
-                    if let Some(ts) = now {
-                        last_delivered = Some(ts);
+                    if backgrounded() {
+                        // A site selection queued just before the app left the
+                        // foreground must not start downloading. The Storm Watch
+                        // gate starts the feed only if an alert covers a point.
+                        live = None;
+                        backfill.clear();
+                        let _ = out.send(DataMsg::Status(
+                            "site selected; background radar waits for a watch/warning".into(),
+                        ));
+                    } else {
+                        start_live(&source, &site, &mut live, &out);
+                        // Refill from what is already on disk so the bottom
+                        // timeline can play back this station's data instead of
+                        // showing a single frame; `prime_site` also refreshes the
+                        // newest scan if the bucket has moved on.
+                        backfill.clear();
+                        let (now, queued) = prime_site(&source, &site, &out);
+                        backfill = queued;
+                        if let Some(ts) = now {
+                            last_delivered = Some(ts);
+                        }
+                        // Alerts are point-filtered, so they move with the site
+                        // (previously evaluated around a hardcoded Oklahoma point).
+                        refresh_alerts(&alerts, &site, &out);
                     }
-                    // Alerts are point-filtered, so they move with the site
-                    // (previously evaluated around a hardcoded Oklahoma point).
-                    refresh_alerts(&alerts, &site, &out);
                 }
                 DataCmd::LoadArchiveDate(site, date, minute) => {
                     let _ = out.send(DataMsg::Status(match minute {
@@ -520,16 +561,21 @@ pub fn run(
                     watchdog_enabled = true;
                     let _ = out.send(DataMsg::ClearFrames);
                     let _ = out.send(DataMsg::Status("returning to live…".into()));
-                    if live.is_none() {
-                        start_live(&source, &current_site, &mut live, &out);
-                    }
-                    // Refill from the disk cache + the newest scan, so the
-                    // timeline is playable again rather than one frame wide.
-                    backfill.clear();
-                    let (now, queued) = prime_site(&source, &current_site, &out);
-                    backfill = queued;
-                    if let Some(ts) = now {
-                        last_delivered = Some(ts);
+                    if backgrounded() {
+                        live = None;
+                        backfill.clear();
+                    } else {
+                        if live.is_none() {
+                            start_live(&source, &current_site, &mut live, &out);
+                        }
+                        // Refill from the disk cache + the newest scan, so the
+                        // timeline is playable again rather than one frame wide.
+                        backfill.clear();
+                        let (now, queued) = prime_site(&source, &current_site, &out);
+                        backfill = queued;
+                        if let Some(ts) = now {
+                            last_delivered = Some(ts);
+                        }
                     }
                 }
                 DataCmd::RefreshLive(site) => {
@@ -540,10 +586,15 @@ pub fn run(
                     archive = None;
                     watchdog_enabled = true;
                     backfill.clear();
-                    start_live(&source, &current_site, &mut live, &out);
-                    if let Some(ts) = archive_catchup(&source, &current_site, last_delivered, &out)
-                    {
-                        last_delivered = Some(ts);
+                    if backgrounded() {
+                        live = None;
+                    } else {
+                        start_live(&source, &current_site, &mut live, &out);
+                        if let Some(ts) =
+                            archive_catchup(&source, &current_site, last_delivered, &out)
+                        {
+                            last_delivered = Some(ts);
+                        }
                     }
                 }
                 DataCmd::RefreshAlerts => {
@@ -1313,6 +1364,102 @@ pub fn run(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
+        // Android: Storm Watch keeps the radar feed alive in the background
+        // only while a watch or warning covers the GPS fix or a map marker.
+        // When the last one expires, stop the poller and stop downloading;
+        // the foreground app is unaffected.
+        #[cfg(target_os = "android")]
+        if !crate::android_lifecycle::is_foreground() {
+            let (markers, saved_gps, watch_enabled, live_mode) = shared
+                .lock()
+                .map(|shared| {
+                    (
+                        shared.watch_markers.clone(),
+                        shared.gps_fix,
+                        shared.storm_watch_enabled,
+                        shared.live_mode,
+                    )
+                })
+                .unwrap_or_default();
+            // Read Java's latest fix while backgrounded so movement in or out
+            // of a watch/warning is handled without a UI frame. Fall back to
+            // the last point mirrored by the UI if JNI is unavailable.
+            let gps = crate::android_location::read_fix().or(saved_gps);
+            let mut points = Vec::with_capacity(markers.len() + usize::from(gps.is_some()));
+            if let Some(fix) = gps {
+                points.push(fix);
+            }
+            points.extend(markers);
+            let mut seen = std::collections::HashSet::new();
+            points.retain(|point| seen.insert((point.0.to_bits(), point.1.to_bits())));
+            points.truncate(12);
+            let point_count = points.len();
+            let points_changed = points != background_points;
+            let due = background_checked_at.elapsed() >= Duration::from_secs(60);
+            if !watch_enabled || !live_mode || points.is_empty() {
+                background_covered = false;
+            } else if points_changed || due {
+                let mut covered = false;
+                let mut checked_any = false;
+                if let Some(alerts) = alerts.as_ref() {
+                    for (lat, lon) in &points {
+                        match alerts.active_at_point(*lat, *lon) {
+                            Ok(warnings) => {
+                                checked_any = true;
+                                if warnings.iter().any(is_watch_or_warning) {
+                                    covered = true;
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                log::debug!("background watch check at {lat:.3},{lon:.3}: {e:#}")
+                            }
+                        }
+                    }
+                }
+                // If every point request failed, keep the previous answer
+                // instead of cutting the feed on a transient network error.
+                if checked_any {
+                    background_covered = covered;
+                }
+                background_points = points;
+                background_checked_at = std::time::Instant::now();
+            }
+            if background_covered {
+                if !background_active {
+                    background_active = true;
+                    log::info!(
+                        "background radar active: watch/warning covers {} point(s)",
+                        point_count
+                    );
+                }
+                if live.is_none() {
+                    start_live(&source, &current_site, &mut live, &out);
+                    // Surface the newest scan immediately; the poller then
+                    // follows subsequent chunks as they arrive.
+                    if let Some(ts) = archive_catchup(&source, &current_site, last_delivered, &out)
+                    {
+                        last_delivered = Some(ts);
+                    }
+                }
+                if let Some(ts) = drain_live(&mut live, &out) {
+                    last_delivered = Some(ts);
+                }
+                continue;
+            }
+            if background_active || live.is_some() {
+                background_active = false;
+                log::info!("background radar paused: no watch/warning covers the GPS or markers");
+                if live.is_some() {
+                    live = None;
+                }
+                let _ = out.send(DataMsg::Status(
+                    "background radar paused (no watch or warning)".into(),
+                ));
+            }
+            continue;
+        }
+
         // Warning-archive backfill (opt-in, newest-first, rate-limited):
         // at most one small day-file per interval; days already cached are
         // skipped forever, and the daily budget bounds the total.
@@ -1936,6 +2083,17 @@ fn drain_live(
     newest
 }
 
+/// True for every watch, warning or emergency product — tornado, severe
+/// thunderstorm, flash flood, winter, wind, and the rest. Advisories and
+/// statements are not watches/warnings and do not keep the radar feed alive.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn is_watch_or_warning(w: &radar_core::warnings::Warning) -> bool {
+    let event = &w.event;
+    (event.contains("Watch") || event.contains("Warning") || event.contains("Emergency"))
+        && !event.contains("Advisory")
+        && !event.contains("Statement")
+}
+
 /// Re-fetch active NWS alerts around the current site and emit them. Zones
 /// are looked up from the site catalog instead of a hardcoded point (the old
 /// default evaluated alerts around Norman, OK no matter where the user was).
@@ -2135,6 +2293,41 @@ fn refresh_outlook(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Background radar follows every category that Storm Watch offers:
+    /// tornado/severe warnings, watches, and all other warnings. Advisories
+    /// and statements deliberately do not trigger it.
+    #[test]
+    fn background_radar_covers_every_watch_and_warning_family() {
+        let warning = |event: &str| radar_core::warnings::Warning {
+            id: event.into(),
+            event: event.into(),
+            severity: "Severe".into(),
+            urgency: "Expected".into(),
+            expires: Utc::now(),
+            office: "OUN".into(),
+            headline: String::new(),
+            description: String::new(),
+            instruction: String::new(),
+            area: String::new(),
+            polygon: None,
+        };
+        for event in [
+            "Tornado Warning",
+            "Tornado Watch",
+            "Severe Thunderstorm Warning",
+            "Severe Thunderstorm Watch",
+            "Flash Flood Warning",
+            "Winter Storm Warning",
+            "High Wind Warning",
+            "Flash Flood Emergency",
+        ] {
+            assert!(is_watch_or_warning(&warning(event)), "{event}");
+        }
+        for event in ["Wind Advisory", "Special Weather Statement"] {
+            assert!(!is_watch_or_warning(&warning(event)), "{event}");
+        }
+    }
 
     /// Regression: a Central calendar day starts at midnight CENTRAL, not at
     /// midnight UTC. `Utc.from_utc_datetime(date.and_hms(0,0,0))` is the

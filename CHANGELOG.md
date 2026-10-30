@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.8.2 — 2026-10-30
+
+**Android background radar follows Storm Watch**
+- Storm Watch remains always-on when enabled. It now also controls the live
+  radar feed while the app is backgrounded: radar keeps downloading as new
+  scans arrive only while a watch or warning covers the GPS fix or any map
+  marker.
+- This covers tornado warnings, severe thunderstorm warnings, watches, and
+  all other warnings/emergencies. Advisories and statements do not trigger
+  background radar.
+- When the last covering watch/warning expires, the live poller stops so the
+  phone stops downloading radar. The foreground app is unaffected.
+- On resume the live poller restarts and checks only for the newest scan. The
+  frames already in memory are kept, so a quick app switch does not replay or
+  reload the cached timeline.
+
 ## v1.8.1 — 2026-10-30
 
 **Live AI sees the full weather picture**

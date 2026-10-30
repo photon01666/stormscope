@@ -96,6 +96,13 @@ public class MainActivity extends GameActivity {
     /** One-shot audio error for the Rust session thread. */
     private static volatile String sLiveError;
 
+    /**
+     * Tells the Rust data thread whether the activity is visible. While this
+     * is false the live radar poller is stopped, so a backgrounded app does
+     * not keep downloading scans (or growing the timeline).
+     */
+    private static native void nativeSetForeground(boolean foreground);
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -118,6 +125,7 @@ public class MainActivity extends GameActivity {
     protected void onResume() {
         super.onResume();
         sForeground = true;
+        nativeSetForeground(true);
         // The first onResume is the launch itself. Later ones mean the app was
         // paused in the background; Rust uses this to catch the live radar up.
         if (sHasResumed) {
@@ -134,6 +142,7 @@ public class MainActivity extends GameActivity {
     @Override
     protected void onPause() {
         sForeground = false;
+        nativeSetForeground(false);
         // Free the microphone as soon as the app leaves the foreground; the
         // Gemini Live WebSocket can stay connected for a short background
         // spell, and onResume restarts capture.

@@ -3645,7 +3645,9 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                 }
                 ui.label(
                     egui::RichText::new(
-                        "Persistent notification; new alerts within 50 miles of the last GPS fix.",
+                        "Persistent notification; new alerts within 50 miles of the last GPS fix. \
+                         While backgrounded, live radar downloads only while a watch or warning \
+                         covers your GPS fix or a map marker.",
                     )
                     .weak()
                     .small(),

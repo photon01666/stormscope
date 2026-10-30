@@ -98,7 +98,7 @@ fn apply_fix(app: &mut StormApp, lat: f64, lon: f64) {
 
 /// Read `MainActivity.stormscopeLocation()` — a `double[]` of lat/lon, or null
 /// until a fix arrives.
-fn read_fix() -> Option<(f64, f64)> {
+pub(crate) fn read_fix() -> Option<(f64, f64)> {
     let app = ANDROID_APP.get()?;
     let vm_ptr = app.vm_as_ptr() as usize;
     let activity_ptr = app.activity_as_ptr() as usize;

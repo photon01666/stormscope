@@ -2382,62 +2382,61 @@ mod tests {
         }
     }
 
-    /// Regression: a Central calendar day starts at midnight CENTRAL, not at
-    /// midnight UTC. `Utc.from_utc_datetime(date.and_hms(0,0,0))` is the
-    /// tempting-but-wrong construction — it lands on 6 PM of the *previous*
-    /// day in Chicago and made the listing query the previous UTC day, so the
-    /// newest scans (after ~7 PM Central, which live under the *next* UTC
-    /// date prefix) were invisible and the app sat ~2 h stale.
+    /// Regression: a local calendar day starts at midnight in the device
+    /// timezone, not at midnight UTC. Building UTC midnight directly queried
+    /// the wrong S3 date prefix west of UTC, making the newest scans
+    /// invisible.
     #[test]
-    fn central_day_window_covers_the_central_day() {
+    fn local_day_window_covers_the_local_day() {
         use chrono::TimeZone;
 
-        // CDT (UTC-5): a Central day spans 05:00Z..05:00Z.
         let date = NaiveDate::from_ymd_opt(2026, 10, 13).unwrap();
+        let tz = crate::timefmt::central();
+        let expected_start = tz
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc);
+        let expected_end = tz
+            .from_local_datetime(&date.succ_opt().unwrap().and_hms_opt(0, 0, 0).unwrap())
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc);
         let (start, end) = central_day_window(date);
-        assert_eq!(
-            start,
-            Utc.from_utc_datetime(&date.and_hms_opt(5, 0, 0).unwrap())
-        );
-        assert_eq!(
-            end,
-            Utc.from_utc_datetime(&date.succ_opt().unwrap().and_hms_opt(5, 0, 0).unwrap())
-        );
-        // The two UTC prefixes the window can touch: the date itself and the
-        // next day. The old bug returned the *previous* day here.
-        let last_instant = end - chrono::Duration::seconds(1);
-        assert_eq!(start.date_naive(), date);
-        assert_eq!(last_instant.date_naive(), date.succ_opt().unwrap());
+        assert_eq!(start, expected_start);
+        assert_eq!(end, expected_end);
+        assert_eq!(end - start, chrono::Duration::days(1));
 
-        // CST (UTC-6): winter days span 06:00Z..06:00Z.
+        // A winter date must use the same local-midnight rule.
         let winter = NaiveDate::from_ymd_opt(2026, 12, 10).unwrap();
-        let (wstart, wend) = central_day_window(winter);
-        assert_eq!(
-            wstart,
-            Utc.from_utc_datetime(&winter.and_hms_opt(6, 0, 0).unwrap())
-        );
-        assert_eq!(
-            wend,
-            Utc.from_utc_datetime(&winter.succ_opt().unwrap().and_hms_opt(6, 0, 0).unwrap())
-        );
+        let expected_winter_start = tz
+            .from_local_datetime(&winter.and_hms_opt(0, 0, 0).unwrap())
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc);
+        let (wstart, _) = central_day_window(winter);
+        assert_eq!(wstart, expected_winter_start);
     }
 
-    /// Time-of-day targeting: the window covers the requested (Central)
-    /// minute, wraps across midnight, and clamps at the day's edges.
+    /// Time-of-day targeting: the window covers the requested local minute,
+    /// wraps across midnight, and clamps at the day's edges.
     #[test]
     fn archive_window_covers_the_requested_time_of_day() {
         use chrono::TimeZone;
-        // 18 scans, Central hours 00:00..17:00. Central is UTC-5 (CDT), so
-        // UTC hour = h + 5 on the same date.
+        // 18 scans at local hours 00:00..17:00, independent of the CI
+        // machine's timezone.
         let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
-        let mut vols: Vec<radar_data::ArchiveVolumeRef> = (0..18)
+        let tz = crate::timefmt::central();
+        let mut vols: Vec<radar_data::ArchiveVolumeRef> = (0..18u32)
             .map(|h| radar_data::ArchiveVolumeRef {
                 site: "KTWX".into(),
                 date,
-                key: format!("2026/10/14/KTWX/KTWX20261014_{:02}0000_V06", h + 5),
-                volume_start: chrono::Utc
-                    .with_ymd_and_hms(2026, 10, 14, (h as u32) + 5, 0, 0)
-                    .unwrap(),
+                key: format!("2026/10/14/KTWX/KTWX20261014_{:02}0000_V06", h),
+                volume_start: tz
+                    .with_ymd_and_hms(2026, 10, 14, h, 0, 0)
+                    .earliest()
+                    .unwrap()
+                    .with_timezone(&Utc),
                 size_bytes: 0,
             })
             .collect();

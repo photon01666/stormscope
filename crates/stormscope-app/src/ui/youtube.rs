@@ -7,6 +7,153 @@ use std::collections::HashSet;
 
 const REFRESH_SECS: u64 = 30 * 60;
 
+/// The Forecast window's Videos tab. Shares the feed state, thumbnails and
+/// player with the standalone Forecast videos window.
+pub(super) fn forecast_videos_tab(
+    ui: &mut egui::Ui,
+    app: &mut StormApp,
+    ctx: &egui::Context,
+    scale: f32,
+) {
+    let stale = app
+        .state
+        .youtube_fetched_at
+        .is_none_or(|at| at.elapsed().as_secs() >= REFRESH_SECS);
+    let retry = app.state.youtube_error.is_some()
+        && app
+            .state
+            .youtube_last_attempt
+            .is_none_or(|at| at.elapsed().as_secs() >= 60);
+    if !app.state.youtube_pending && (stale || retry) {
+        app.state.youtube_pending = true;
+        app.state.youtube_last_attempt = Some(std::time::Instant::now());
+        let _ = app.tx.send(crate::app::DataCmd::LoadYouTubeFeed);
+    }
+
+    ui.horizontal_wrapped(|ui| {
+        if app.state.youtube_pending {
+            ui.spinner();
+            if app.state.youtube_videos.is_empty() {
+                ui.label("Loading forecasters…");
+            }
+        }
+        if let Some(at) = app.state.youtube_fetched_at {
+            ui.label(
+                egui::RichText::new(format!("updated {}", ago(at.elapsed().as_secs())))
+                    .weak()
+                    .small(),
+            );
+        }
+        if !app.state.youtube_videos.is_empty() {
+            let shown = app.state.youtube_videos.len();
+            ui.label(
+                egui::RichText::new(format!("{shown} videos · 3 newest per channel"))
+                    .weak()
+                    .small(),
+            );
+        }
+    });
+    if let Some(error) = &app.state.youtube_error {
+        ui.label(
+            egui::RichText::new(format!("Feed unavailable: {error}"))
+                .weak()
+                .small(),
+        );
+    }
+    if let Some(error) = &app.state.youtube_player_error {
+        ui.label(
+            egui::RichText::new(format!("Video player: {error}"))
+                .color(egui::Color32::from_rgb(255, 160, 120))
+                .small(),
+        );
+    }
+    ui.add_space(4.0);
+    if app.state.youtube_videos.is_empty() && !app.state.youtube_pending {
+        ui.label(egui::RichText::new("No videos loaded yet.").weak());
+        return;
+    }
+
+    let videos = app.state.youtube_videos.clone();
+    let mut play_request: Option<(String, String)> = None;
+    egui::ScrollArea::vertical()
+        .id_salt("forecast-videos-scroll-tab")
+        .auto_shrink([false, false])
+        .max_height(ui.available_height())
+        .show(ui, |ui| {
+            let mut groups: std::collections::BTreeMap<String, Vec<_>> =
+                std::collections::BTreeMap::new();
+            for video in &videos {
+                groups
+                    .entry(video.channel.clone())
+                    .or_default()
+                    .push(video.clone());
+            }
+            let mut any = false;
+            for channel in CHANNELS {
+                let Some(channel_videos) = groups.remove(channel.name) else {
+                    continue;
+                };
+                any = true;
+                ui.add_space(if any { 8.0 } else { 0.0 });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(channel.name).strong());
+                    ui.label(
+                        egui::RichText::new(format!("{} newest", channel_videos.len().min(3)))
+                            .weak()
+                            .small(),
+                    );
+                });
+                for video in channel_videos.iter().take(3) {
+                    let texture = thumbnail_texture(app, ctx, video);
+                    if video_row(ui, video, texture.as_ref(), scale) {
+                        play_request = Some((video.id.clone(), video.title.clone()));
+                    }
+                }
+            }
+            for (name, channel_videos) in groups {
+                any = true;
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(name).strong());
+                    ui.label(
+                        egui::RichText::new(format!("{} newest", channel_videos.len().min(3)))
+                            .weak()
+                            .small(),
+                    );
+                });
+                for video in channel_videos.iter().take(3) {
+                    let texture = thumbnail_texture(app, ctx, video);
+                    if video_row(ui, video, texture.as_ref(), scale) {
+                        play_request = Some((video.id.clone(), video.title.clone()));
+                    }
+                }
+            }
+            if !any && !app.state.youtube_pending {
+                ui.label(
+                    egui::RichText::new("The feed did not contain any playable videos.").weak(),
+                );
+            }
+        });
+
+    if !videos.is_empty() {
+        let keep: HashSet<&str> = videos.iter().map(|video| video.id.as_str()).collect();
+        app.youtube_tex.retain(|(id, _)| {
+            if keep.contains(id.as_str()) {
+                true
+            } else {
+                ctx.forget_image(&texture_name(id));
+                false
+            }
+        });
+    }
+    if let Some((id, title)) = play_request {
+        match crate::player::open(app, &id, &title) {
+            Ok(()) => app.state.youtube_player_error = None,
+            Err(error) => app.state.youtube_player_error = Some(error),
+        }
+    }
+}
+
 pub fn youtube_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if !app.state.youtube_open {
         return;

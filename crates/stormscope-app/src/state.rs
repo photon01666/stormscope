@@ -35,6 +35,11 @@ pub const MIN_RING_FRAMES: usize = 8;
 #[cfg(target_os = "android")]
 pub const MIN_RING_FRAMES: usize = 3;
 
+/// How long a live-timeline scrub hold lasts after the last touch. While a
+/// hold is active, newly arriving live scans do not yank the playhead back to
+/// the newest frame; once the user has been idle this long, it snaps back.
+pub const TIMELINE_HOLD_SECS: u64 = 30;
+
 /// Where a sounding came from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SoundingKind {
@@ -476,6 +481,14 @@ pub struct AppState {
     /// rasterize at reduced resolution instead of doing a full raster for
     /// every pointer event.
     pub timeline_scrubbing: bool,
+    /// Live-mode scrub hold: when the user last touched the radar timeline.
+    /// While set, new live scans must not move the playhead forward; it is
+    /// cleared after [`TIMELINE_HOLD_SECS`] of no touches, when the app
+    /// resumes, or when the user returns to live/archive mode.
+    pub timeline_scrub_last_touch: Option<std::time::Instant>,
+    /// The pointer is currently held down on the scrub strip. A stationary
+    /// finger still counts as touching, so the idle timer must not fire.
+    pub timeline_scrub_pointer_down: bool,
     /// The Last 2hr confirmation modal is open.
     pub confirm_last_two_hours: bool,
     pub fps: f32,
@@ -617,6 +630,8 @@ pub struct AppState {
     /// the forecast above).
     pub observation: Option<radar_core::forecast::Observation>,
     pub forecast_open: bool,
+    /// The forecast window's top tab: forecast details or weather videos.
+    pub forecast_videos_tab: bool,
     /// Armed by the window's "select on map" control: the next map click
     /// becomes the forecast point.
     pub forecast_pick_mode: bool,
@@ -1314,6 +1329,8 @@ impl Default for AppState {
             loop_state: LoopState::Paused,
             resume_loop_after_drag: false,
             timeline_scrubbing: false,
+            timeline_scrub_last_touch: None,
+            timeline_scrub_pointer_down: false,
             confirm_last_two_hours: false,
             fps: if cfg!(target_os = "android") {
                 4.0
@@ -1382,6 +1399,7 @@ impl Default for AppState {
             mcd_hover_at: 0.0,
             mcd_detail: None,
             forecast_open: false,
+            forecast_videos_tab: false,
             forecast_pick_mode: false,
             forecast_reopen_after_pick: false,
             forecast_point: None,
@@ -2292,9 +2310,16 @@ impl AppState {
         if self.ring.iter().any(|f| f.volume_start == start) {
             return; // duplicate
         }
+        // A live scrub hold pins the frame the user picked just like archive
+        // mode does. Without this, the next poll's scan would snap them back
+        // to the newest frame before the idle timer expires.
+        let holding_live = self.mode == Mode::Live && self.timeline_scrub_last_touch.is_some();
         let pos = self.ring.partition_point(|f| f.volume_start < start);
         let bytes = volume_bytes(&volume);
-        if self.mode != Mode::Live && !self.ring.is_empty() && pos <= self.playhead {
+        if (self.mode != Mode::Live || holding_live)
+            && !self.ring.is_empty()
+            && pos <= self.playhead
+        {
             // Older scans landing before the current frame must not move the
             // view off it.
             self.playhead += 1;
@@ -2322,7 +2347,7 @@ impl AppState {
             self.ring_bytes = self.ring_bytes.saturating_sub(old.bytes);
             self.playhead = self.playhead.saturating_sub(1);
         }
-        if self.mode == Mode::Live {
+        if self.mode == Mode::Live && !holding_live {
             self.playhead = self.ring.len().saturating_sub(1);
         } else {
             self.playhead = self.playhead.min(self.ring.len().saturating_sub(1));
@@ -2348,6 +2373,74 @@ impl AppState {
         self.playhead = self.playhead.saturating_sub(1);
     }
 
+    /// Select a radar frame from the bottom timeline. In Live mode, picking
+    /// an older frame starts a hold so newly arriving scans do not immediately
+    /// replace it. Playback is paused for a historical selection so the loop
+    /// cannot advance away from the frame the user is inspecting.
+    pub fn scrub_timeline_to(&mut self, index: usize) {
+        if self.ring.is_empty() {
+            return;
+        }
+        let index = index.min(self.ring.len() - 1);
+        self.playhead = index;
+        if self.mode != Mode::Live {
+            self.timeline_scrub_last_touch = None;
+            return;
+        }
+        let newest = self.ring.len() - 1;
+        if index < newest {
+            self.timeline_scrub_last_touch = Some(std::time::Instant::now());
+            if self.loop_state == LoopState::Playing {
+                self.loop_state = LoopState::Paused;
+            }
+        } else {
+            // Touching the newest frame means "follow live" again.
+            self.timeline_scrub_last_touch = None;
+        }
+    }
+
+    /// Renew the live scrub hold while the pointer remains on the strip,
+    /// including a stationary finger held down between drag events.
+    pub fn keep_timeline_scrub_active(&mut self) {
+        if self.timeline_scrub_last_touch.is_some() {
+            self.timeline_scrub_last_touch = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Time left before an active live scrub hold snaps back. `None` means no
+    /// hold is active.
+    pub fn timeline_hold_remaining(&self) -> Option<std::time::Duration> {
+        self.timeline_scrub_last_touch.map(|at| {
+            std::time::Duration::from_secs(TIMELINE_HOLD_SECS).saturating_sub(at.elapsed())
+        })
+    }
+
+    /// End a live scrub hold and, when still in Live mode, return the playhead
+    /// to the newest frame. Safe to call when no hold is active.
+    pub fn end_timeline_hold(&mut self) {
+        self.timeline_scrub_last_touch = None;
+        self.timeline_scrub_pointer_down = false;
+        if self.mode == Mode::Live {
+            self.playhead = self.ring.len().saturating_sub(1);
+        }
+    }
+
+    fn expire_timeline_hold(&mut self) {
+        if self.mode != Mode::Live {
+            self.timeline_scrub_last_touch = None;
+            return;
+        }
+        if self.timeline_scrub_pointer_down {
+            return;
+        }
+        if self
+            .timeline_scrub_last_touch
+            .is_some_and(|at| at.elapsed().as_secs() >= TIMELINE_HOLD_SECS)
+        {
+            self.end_timeline_hold();
+        }
+    }
+
     /// Step the FutureCast scrubber by `delta` frames, clamping at the ends.
     /// A manual step pauses playback so the arrow key result is not
     /// immediately overwritten by the auto-loop.
@@ -2370,6 +2463,7 @@ impl AppState {
     /// Advance the playhead on a timer when playing. Called each frame with
     /// the elapsed time since last tick.
     pub fn tick(&mut self, dt: std::time::Duration) {
+        self.expire_timeline_hold();
         if self.loop_state != LoopState::Playing || self.ring.len() < 2 {
             return;
         }
@@ -2551,6 +2645,66 @@ mod tests {
         s.push_volume(vol("KTWX", at(10))); // older scan backfills in
         assert_eq!(s.ring.len(), 4);
         assert_eq!(s.current().map(|f| f.volume_start), Some(at(30)));
+    }
+
+    /// A live scrub hold must survive new scans and backfills, then snap to
+    /// the newest frame once the idle timeout expires.
+    #[test]
+    fn live_scrub_hold_survives_scans_then_snaps_after_idle() {
+        use std::time::{Duration, Instant};
+
+        let mut s = state();
+        s.push_volume(vol("KTWX", at(10)));
+        s.push_volume(vol("KTWX", at(20)));
+        s.push_volume(vol("KTWX", at(30)));
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(30)));
+
+        s.loop_state = LoopState::Playing;
+        s.scrub_timeline_to(0);
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(10)));
+        assert_eq!(s.loop_state, LoopState::Paused);
+        assert!(s.timeline_scrub_last_touch.is_some());
+
+        // A newer scan and an older backfill both arrive before the idle
+        // timeout: the user's frame must not move.
+        s.push_volume(vol("KTWX", at(40)));
+        s.push_volume(vol("KTWX", at(5)));
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(10)));
+
+        s.timeline_scrub_last_touch = Some(Instant::now() - Duration::from_secs(31));
+        s.tick(Duration::ZERO);
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(40)));
+        assert!(s.timeline_scrub_last_touch.is_none());
+    }
+
+    /// Archive scrubbing is intentional and must never be snapped forward.
+    #[test]
+    fn archive_scrubbing_is_never_timed_out() {
+        let mut s = state();
+        s.mode = Mode::Archive;
+        s.push_volume(vol("KTWX", at(10)));
+        s.push_volume(vol("KTWX", at(20)));
+        s.push_volume(vol("KTWX", at(30)));
+        s.scrub_timeline_to(0);
+        s.push_volume(vol("KTWX", at(40)));
+        s.tick(std::time::Duration::from_secs(120));
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(10)));
+        assert!(s.timeline_scrub_last_touch.is_none());
+    }
+
+    /// Returning to the newest frame (or leaving the app) clears the hold, so
+    /// subsequent live scans follow again.
+    #[test]
+    fn ending_a_live_scrub_hold_returns_to_the_newest_frame() {
+        let mut s = state();
+        s.push_volume(vol("KTWX", at(10)));
+        s.push_volume(vol("KTWX", at(20)));
+        s.push_volume(vol("KTWX", at(30)));
+        s.scrub_timeline_to(0);
+        s.end_timeline_hold();
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(30)));
+        s.push_volume(vol("KTWX", at(40)));
+        assert_eq!(s.current().map(|f| f.volume_start), Some(at(40)));
     }
 
     /// The ring must respect the memory budget: with a tiny budget the oldest

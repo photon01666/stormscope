@@ -28,10 +28,72 @@ pub(super) fn forecast_needs_refresh(
     loaded_age_secs.is_none_or(|age| age >= FORECAST_REFRESH_SECS)
 }
 
+/// Phone-only page swipe inside the forecast window: left → Videos, right →
+/// Forecast. Quick horizontal flicks only, so scrolling remains vertical.
+#[cfg(target_os = "android")]
+fn swipe_forecast_tabs(ctx: &egui::Context, area: egui::Rect, videos: &mut bool, scale: f32) {
+    let id = egui::Id::new("stormscope.forecast.page_swipe");
+    let (pressed, down, pos, latest, now) = ctx.input(|i| {
+        (
+            i.pointer.any_pressed(),
+            i.pointer.any_down(),
+            i.pointer.interact_pos(),
+            i.pointer.latest_pos(),
+            i.time,
+        )
+    });
+    if pressed && let Some(p) = pos {
+        if area.contains(p) {
+            let held = ctx
+                .data(|data| data.get_temp::<(egui::Pos2, f64)>(id))
+                .is_some();
+            if !held {
+                ctx.data_mut(|data| data.insert_temp(id, (p, now)));
+            }
+        }
+    }
+    if !down {
+        let start = ctx.data_mut(|data| data.remove_temp::<(egui::Pos2, f64)>(id));
+        if let Some((start, started)) = start {
+            let end = latest.or(pos).unwrap_or(start);
+            let dx = end.x - start.x;
+            let dy = end.y - start.y;
+            if now - started <= 0.9 && dy.abs() <= 90.0 * scale && dx.abs() >= 80.0 * scale {
+                *videos = dx < 0.0;
+                ctx.request_repaint();
+            }
+        }
+    }
+}
+
 /// The window (no-op while closed).
 pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
+    let details_id = egui::Id::new("stormscope.forecast.conditions.details");
+    let details_first_id = details_id.with("reset-on-open");
+    let window_first_id = egui::Id::new("stormscope.forecast.reset-on-open");
     if !app.state.forecast_open {
+        // A later open gets a fresh Forecast page and collapsed Details.
+        ctx.data_mut(|data| {
+            data.remove_temp::<u8>(details_first_id);
+            data.remove_temp::<bool>(window_first_id);
+        });
         return;
+    }
+    let window_first = ctx
+        .data(|data| data.get_temp::<bool>(window_first_id))
+        .is_none();
+    if window_first {
+        ctx.data_mut(|data| data.insert_temp(window_first_id, true));
+        app.state.forecast_videos_tab = false;
+    }
+    // Keep this pending until the Details header is actually drawn; while
+    // current conditions are still loading the old persisted open state must
+    // not get a chance to show.
+    let details_first = ctx
+        .data(|data| data.get_temp::<u8>(details_first_id))
+        .is_none();
+    if details_first {
+        ctx.data_mut(|data| data.insert_temp(details_first_id, 1u8));
     }
     // Refetch when the station changed, when the point was repicked, or when
     // what is on screen has aged past the cadence — and keep a slow repaint
@@ -42,8 +104,16 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     request_forecast_if_stale(app);
 
     let fill = cfg!(target_os = "android");
-    let scale = super::big_text_scale(app);
+    // The phone forecast was inheriting the large AI-settings type scale.
+    // Keep it readable but give the forecast rows more room on screen.
+    let scale = if cfg!(target_os = "android") {
+        (super::big_text_scale(app) * 0.84).clamp(1.05, 1.28)
+    } else {
+        super::big_text_scale(app)
+    };
     let screen = ctx.content_rect().size();
+    #[cfg(target_os = "android")]
+    swipe_forecast_tabs(ctx, area, &mut app.state.forecast_videos_tab, scale);
     let size = super::popup_size(ctx, scale, 580.0, 520.0);
     let max_h = super::popup_max_height(ctx, scale);
     // A phone is narrower than the 420 pt desktop minimum: clamping keeps the
@@ -95,6 +165,28 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
         }
         super::apply_text_scale(ui, scale);
 
+        // Top tabs: forecast details / weather videos. Swipe left or right
+        // anywhere in the window to switch, like the Map controls pages.
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(!app.state.forecast_videos_tab, "Forecast")
+                .clicked()
+            {
+                app.state.forecast_videos_tab = false;
+            }
+            if ui
+                .selectable_label(app.state.forecast_videos_tab, "Videos")
+                .clicked()
+            {
+                app.state.forecast_videos_tab = true;
+            }
+        });
+        ui.separator();
+        if app.state.forecast_videos_tab {
+            super::youtube::forecast_videos_tab(ui, app, ctx, scale);
+            return;
+        }
+
         // Which point this forecast is for.
         ui.horizontal_wrapped(|ui| {
             let following_station = app.state.forecast_point.is_none();
@@ -127,24 +219,6 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
                         .small(),
                 );
             }
-            if ui
-                .button("Forecast videos")
-                .on_hover_text(
-                    "The three newest uploads from each weather forecaster, playable in the app",
-                )
-                .clicked()
-            {
-                app.state.youtube_open = true;
-            }
-            if ui
-                .small_button("Refresh now")
-                .on_hover_text("Fetch the latest forecast and observation")
-                .clicked()
-            {
-                app.state.forecast_requested = None;
-                app.state.forecast_fetched_at = None;
-                refetch = true;
-            }
         });
         if app.state.forecast_pick_mode {
             ui.label(
@@ -157,7 +231,7 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
 
         // --- Current conditions -------------------------------------
         match app.state.observation.as_ref() {
-            Some(o) => current_conditions_ui(ui, o, app.state.uv_index),
+            Some(o) => current_conditions_ui(ui, o, app.state.uv_index, details_first),
             None => {
                 ui.label(
                     egui::RichText::new("Current conditions: loading…")
@@ -181,11 +255,18 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
             }
             Some(fc) => {
                 let mut meta = Vec::new();
-                if !fc.place.is_empty() {
-                    ui.heading(&fc.place);
+                let title = if fc.place.is_empty() {
+                    "Forecast"
                 } else {
-                    ui.heading("Forecast");
-                }
+                    fc.place.as_str()
+                };
+                ui.label(egui::RichText::new(title).strong().size(
+                    if cfg!(target_os = "android") {
+                        21.0
+                    } else {
+                        26.0
+                    },
+                ));
                 if !fc.office.is_empty() {
                     meta.push(format!("NWS grid {}", fc.office));
                 }
@@ -264,7 +345,11 @@ pub fn forecast_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
                                 // Bigger forecast titles: measured and drawn
                                 // with this same font so the fit check cannot
                                 // disagree with what ends up on screen.
-                                button_font.size = (button_font.size * 1.2).min(30.0);
+                                button_font.size = if cfg!(target_os = "android") {
+                                    (button_font.size * 1.05).min(22.0)
+                                } else {
+                                    (button_font.size * 1.2).min(30.0)
+                                };
                                 let fits = ui.ctx().fonts_mut(|f| {
                                     f.layout_no_wrap(
                                         title_full.clone(),
@@ -779,6 +864,7 @@ fn current_conditions_ui(
     ui: &mut egui::Ui,
     o: &radar_core::forecast::Observation,
     uv_index: Option<f32>,
+    details_first: bool,
 ) {
     fn f(c: Option<f32>) -> Option<f32> {
         c.map(|v| v * 9.0 / 5.0 + 32.0)
@@ -810,14 +896,37 @@ fn current_conditions_ui(
     ui.horizontal_wrapped(|ui| {
         match temp {
             Some(t) => {
-                ui.label(egui::RichText::new(format!("{t:.0}°F")).size(34.0).strong());
+                ui.label(
+                    egui::RichText::new(format!("{t:.0}°F"))
+                        .size(if cfg!(target_os = "android") {
+                            26.0
+                        } else {
+                            34.0
+                        })
+                        .strong(),
+                );
             }
             None => {
-                ui.label(egui::RichText::new("—°F").size(34.0).strong().weak());
+                ui.label(
+                    egui::RichText::new("—°F")
+                        .size(if cfg!(target_os = "android") {
+                            26.0
+                        } else {
+                            34.0
+                        })
+                        .strong()
+                        .weak(),
+                );
             }
         }
         if !o.text.is_empty() {
-            ui.label(egui::RichText::new(&o.text).size(20.0));
+            ui.label(
+                egui::RichText::new(&o.text).size(if cfg!(target_os = "android") {
+                    16.0
+                } else {
+                    20.0
+                }),
+            );
         }
     });
     ui.add_space(2.0);
@@ -830,15 +939,33 @@ fn current_conditions_ui(
         .map(|p| ui.animate_value_with_time(egui::Id::new("cc-alt"), p / 3386.389, 0.6));
     let uv_shown = uv_index.map(|uv| ui.animate_value_with_time(egui::Id::new("cc-uv"), uv, 0.6));
 
-    const DETAIL: f32 = 18.0;
-    const LABEL: f32 = 15.0;
+    let details_id = egui::Id::new("stormscope.forecast.conditions.details");
+    egui::CollapsingHeader::new("Details")
+        .id_salt(details_id)
+        .default_open(false)
+        .open(if details_first { Some(false) } else { None })
+        .show(ui, |ui| {
+    let detail_size = if cfg!(target_os = "android") {
+        14.0
+    } else {
+        18.0
+    };
+    let label_size = if cfg!(target_os = "android") {
+        12.0
+    } else {
+        15.0
+    };
     egui::Grid::new("stormscope.forecast.current-conditions")
         .num_columns(2)
-        .spacing([16.0, 6.0])
+        .spacing(if cfg!(target_os = "android") {
+            [10.0, 4.0]
+        } else {
+            [16.0, 6.0]
+        })
         .show(ui, |ui| {
             let mut row = |label: &str, value: String| {
-                ui.label(egui::RichText::new(label).weak().size(LABEL));
-                ui.label(egui::RichText::new(value).strong().size(DETAIL));
+                ui.label(egui::RichText::new(label).weak().size(label_size));
+                ui.label(egui::RichText::new(value).strong().size(detail_size));
                 ui.end_row();
             };
             if let Some(d) = f(o.dewpoint_c) {
@@ -948,6 +1075,12 @@ fn current_conditions_ui(
             .wrap(),
         );
     }
+        });
+    // Mark the one-time collapse as done; it must not be re-applied on every
+    // frame or the header can never be opened by the user.
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(details_id.with("reset-on-open"), 2u8);
+    });
 }
 
 #[cfg(test)]

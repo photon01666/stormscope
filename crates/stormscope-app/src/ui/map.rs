@@ -820,6 +820,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         && playing
                         && frame_changed
                         && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(180);
+                    // Keep the radar updating while the map is being panned,
+                    // not only after the finger lifts. A half-res raster every
+                    // ~100 ms is cheap enough to keep the pointer responsive.
+                    let drag_raster = response.dragged()
+                        && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(40);
                     // Scrubbing should still animate the radar, but full-res
                     // rasters for every pointer event made the thumb lag.
                     // Raster at ~30 fps on a coarse grid, then sharpen when
@@ -832,6 +837,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     // the basemap and pointer must stay at full frame rate.
                     let raster_scale: f32 = if drag_animation_raster || scrub_raster {
                         0.35
+                    } else if drag_raster {
+                        0.65
                     } else {
                         1.0
                     };
@@ -866,6 +873,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         let settle_ms = if response.dragged() { 0 } else { 100 };
                         let settling = drag_animation_raster
                             || scrub_raster
+                            || drag_raster
                             || (!response.dragged()
                                 && !app.state.timeline_scrubbing
                                 && app.radar_last_raster.elapsed()

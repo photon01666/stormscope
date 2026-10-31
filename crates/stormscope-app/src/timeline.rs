@@ -84,10 +84,20 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
             );
             ui.separator();
         }
-        if let Some(f) = app.state.current() {
-            ui.label(crate::timefmt::fmt_central(&f.volume_start));
+        let time = app
+            .state
+            .current()
+            .map(|f| crate::timefmt::fmt_central(&f.volume_start))
+            .unwrap_or_else(|| "no frames".to_string());
+        if cfg!(target_os = "android") {
+            // The phone's selected scan time is the primary readout on this
+            // row. Right-align it in the remaining width without forcing a
+            // new wrapped row.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(time).size(26.0).strong()).truncate());
+            });
         } else {
-            ui.label("no frames");
+            ui.label(time);
         }
     });
 
@@ -138,18 +148,35 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         painter.rect_filled(bar, 1.0, color);
     }
 
-    // Tap or drag a finger/pointer along the strip to scrub the ring.
+    // Tap or drag a finger/pointer along the strip to scrub the ring. A
+    // stationary finger held down also renews the live hold; that is what
+    // makes the 30-second snap-back timer restart on every touch instead of
+    // expiring while the user is still examining the timeline.
     app.state.timeline_scrubbing = response.dragged();
+    let was_down = app.state.timeline_scrub_pointer_down;
+    let down = response.is_pointer_button_down_on();
+    app.state.timeline_scrub_pointer_down = down;
+    if down || was_down {
+        // Renew while held, and start the countdown from the release frame
+        // rather than from the last movement.
+        app.state.keep_timeline_scrub_active();
+    }
     if response.clicked() || response.dragged() {
         if let Some(pos) = response.interact_pointer_pos() {
             let idx = ((pos.x - rect.left()) / slot).floor();
             let next = (idx as usize).min(n - 1);
-            if next != app.state.playhead {
-                app.state.playhead = next;
+            let changed = next != app.state.playhead;
+            app.state.scrub_timeline_to(next);
+            if changed {
                 #[cfg(target_os = "android")]
                 crate::android_ime::haptic_tick();
             }
         }
+    }
+    // egui is event-driven: without a wake-up at the deadline the hold would
+    // not expire until the user happened to touch the screen again.
+    if let Some(remaining) = app.state.timeline_hold_remaining() {
+        ui.ctx().request_repaint_after(remaining);
     }
     if let Some(pos) = response.hover_pos() {
         let idx =

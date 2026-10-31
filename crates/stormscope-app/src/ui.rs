@@ -42,7 +42,7 @@ const SIDEBAR_ANIM_SECS: f32 = 0.18;
 /// forecast): the default 14 pt body is too small to read on a phone.
 pub(super) fn big_text_scale(app: &StormApp) -> f32 {
     if cfg!(target_os = "android") {
-        (app.sidebar_scale * 1.3).clamp(1.25, 1.6)
+        (app.sidebar_scale * 1.45).clamp(1.4, 1.75)
     } else {
         app.sidebar_scale.max(1.0)
     }
@@ -201,6 +201,15 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     if ui.ctx().input(|i| i.key_pressed(egui::Key::BrowserBack)) {
         if app.state.fullscreen {
             set_fullscreen(ui.ctx(), app);
+        } else if app.state.map_controls_open {
+            // Back first returns from SPC outlook to Display, then closes.
+            if app.state.map_controls_tab == crate::state::MapControlsTab::Outlook {
+                app.state.map_controls_tab = crate::state::MapControlsTab::Display;
+            } else {
+                app.state.map_controls_open = false;
+            }
+        } else if app.state.view3d_controls_open {
+            app.state.view3d_controls_open = false;
         } else if app.state.synoptic_settings_open {
             app.state.synoptic_settings_open = false;
         } else if app.state.ambient_settings_open {
@@ -226,6 +235,8 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.vad_open = false;
         } else if app.state.sounding_open {
             app.state.sounding_open = false;
+        } else if app.state.forecast_open && app.state.forecast_videos_tab {
+            app.state.forecast_videos_tab = false;
         } else if app.state.forecast_open {
             app.state.forecast_open = false;
         } else if app.state.totals_open {
@@ -267,8 +278,10 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     }
 
     // Android: the app window is full-screen and the system status bar is
-    // drawn on top of it (black, ~24-26 dp). Reserve just that much: the old
-    // fixed 64 pt left an ~88 px dead grey band below the bar in landscape.
+    // drawn on top of it. Without a status panel above the map, the phone's
+    // taller portrait status bar overlapped the sidebar header, clipping the
+    // title and Close button. Reserve the full portrait safe height; landscape
+    // keeps the smaller inset so it does not leave a dead band.
     #[cfg(target_os = "android")]
     egui::Panel::top("android_top_inset").show(ui, |ui| {
         let content = ui.ctx().content_rect();
@@ -276,13 +289,8 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
         let inset = ui
             .ctx()
             .input(|i| i.safe_area_insets().0.top)
-            .max(if portrait { 30.0 } else { 26.0 });
+            .max(if portrait { 58.0 } else { 26.0 });
         ui.add_space(inset);
-    });
-
-    // Top status bar.
-    egui::Panel::top("status").show(ui, |ui| {
-        status_bar(ui, app);
     });
 
     // Bottom timeline scrubber.
@@ -366,7 +374,7 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     crate::ui::update_dialog(ui.ctx(), app);
 
     // Per-pane control windows (opened from each pane's bottom-right chip).
-    map_controls_window(ui.ctx(), app);
+    map_controls_window(ui.ctx(), app, pane_area);
     view3d_controls_window(ui.ctx(), app);
 
     // Product explainer (the (i) beside the Product selector).
@@ -532,26 +540,36 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             app.map_rect_at = Some(full);
             #[cfg(target_os = "android")]
             let controls = {
-                // Phone stack, bottom to top: Settings, Controls, GPS.
-                let settings = settings_chip(ui, bottom_right(full, scale), app, scale);
-                let controls = pane_chip_bottom(
+                // Bottom-left: Settings (AI sits above it). Bottom-right,
+                // bottom to top: Controls, GPS.
+                let side = 62.0 * scale;
+                let _settings = settings_chip(
                     ui,
-                    egui::pos2(settings.rect.max.x, settings.rect.min.y - 6.0 * scale),
-                    "Controls",
+                    egui::pos2(full.min.x + 8.0 * scale + side, bottom_right(full, scale).y),
+                    app,
                     scale,
-                )
-                .on_hover_text("Map display controls (Min dBZ, opacity)");
+                );
+                let controls = controls_chip(
+                    ui,
+                    bottom_right(full, scale),
+                    scale,
+                    "Map display controls (Min dBZ, opacity)",
+                );
                 gps_chip(
                     ui,
-                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 60.0 * scale),
+                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 10.0 * scale),
                     app,
                     scale,
                 );
                 controls
             };
             #[cfg(not(target_os = "android"))]
-            let controls = pane_chip_bottom(ui, bottom_right(full, scale), "Controls", scale)
-                .on_hover_text("Map display controls (Min dBZ, opacity)");
+            let controls = controls_chip(
+                ui,
+                bottom_right(full, scale),
+                scale,
+                "Map display controls (Min dBZ, opacity)",
+            );
             if controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
@@ -582,8 +600,12 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             if split.clicked() {
                 app.state.pane_max = PaneMax::None;
             }
-            let controls = pane_chip_bottom(ui, bottom_right(full, scale), "Controls", scale)
-                .on_hover_text("3D display controls (echo, opacity, height, tilt, altitude)");
+            let controls = controls_chip(
+                ui,
+                bottom_right(full, scale),
+                scale,
+                "3D display controls (echo, opacity, height, tilt, altitude)",
+            );
             if controls.clicked() {
                 app.state.view3d_controls_open = !app.state.view3d_controls_open;
             }
@@ -605,25 +627,34 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             }
             #[cfg(target_os = "android")]
             let controls = {
-                let settings = settings_chip(ui, bottom_right(full, scale), app, scale);
-                let controls = pane_chip_bottom(
+                let side = 62.0 * scale;
+                let _settings = settings_chip(
                     ui,
-                    egui::pos2(settings.rect.max.x, settings.rect.min.y - 6.0 * scale),
-                    "Controls",
+                    egui::pos2(full.min.x + 8.0 * scale + side, bottom_right(full, scale).y),
+                    app,
                     scale,
-                )
-                .on_hover_text("Map display controls (Min dBZ, opacity)");
+                );
+                let controls = controls_chip(
+                    ui,
+                    bottom_right(full, scale),
+                    scale,
+                    "Map display controls (Min dBZ, opacity)",
+                );
                 gps_chip(
                     ui,
-                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 60.0 * scale),
+                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 10.0 * scale),
                     app,
                     scale,
                 );
                 controls
             };
             #[cfg(not(target_os = "android"))]
-            let controls = pane_chip_bottom(ui, bottom_right(full, scale), "Controls", scale)
-                .on_hover_text("Map display controls (Min dBZ, opacity)");
+            let controls = controls_chip(
+                ui,
+                bottom_right(full, scale),
+                scale,
+                "Map display controls (Min dBZ, opacity)",
+            );
             if controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
@@ -732,28 +763,43 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             app.view3d_rect_at = Some(v3_rect);
             #[cfg(target_os = "android")]
             let map_controls = {
-                let settings = settings_chip(ui, bottom_right(map_rect, scale), app, scale);
-                let controls = pane_chip_bottom(
+                let side = 62.0 * scale;
+                let _settings = settings_chip(
                     ui,
-                    egui::pos2(settings.rect.max.x, settings.rect.min.y - 6.0 * scale),
-                    "Controls",
+                    egui::pos2(
+                        map_rect.min.x + 8.0 * scale + side,
+                        bottom_right(map_rect, scale).y,
+                    ),
+                    app,
                     scale,
-                )
-                .on_hover_text("Map display controls (Min dBZ, opacity)");
+                );
+                let controls = controls_chip(
+                    ui,
+                    bottom_right(map_rect, scale),
+                    scale,
+                    "Map display controls (Min dBZ, opacity)",
+                );
                 gps_chip(
                     ui,
-                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 60.0 * scale),
+                    egui::pos2(controls.rect.max.x, controls.rect.min.y - 10.0 * scale),
                     app,
                     scale,
                 );
                 controls
             };
             #[cfg(not(target_os = "android"))]
-            let map_controls =
-                pane_chip_bottom(ui, bottom_right(map_rect, scale), "Controls", scale)
-                    .on_hover_text("Map display controls (Min dBZ, opacity)");
-            let v3_controls = pane_chip_bottom(ui, bottom_right(v3_rect, scale), "Controls", scale)
-                .on_hover_text("3D display controls (echo, opacity, height, tilt, altitude)");
+            let map_controls = controls_chip(
+                ui,
+                bottom_right(map_rect, scale),
+                scale,
+                "Map display controls (Min dBZ, opacity)",
+            );
+            let v3_controls = controls_chip(
+                ui,
+                bottom_right(v3_rect, scale),
+                scale,
+                "3D display controls (echo, opacity, height, tilt, altitude)",
+            );
             if map_controls.clicked() {
                 app.state.map_controls_open = !app.state.map_controls_open;
             }
@@ -773,19 +819,125 @@ fn bottom_right(rect: egui::Rect, scale: f32) -> egui::Pos2 {
 /// has no hover, so the auto-hide sidebar needs an explicit opener next to the
 /// map's own Controls chip.
 #[cfg(target_os = "android")]
+#[derive(Clone, Copy)]
+enum MapChipIcon {
+    Gear,
+    Sliders,
+}
+
+/// Big icon-only map control used by the phone stack.
+#[cfg(target_os = "android")]
+fn pane_icon_chip_bottom(
+    ui: &mut egui::Ui,
+    right_bottom: egui::Pos2,
+    icon: MapChipIcon,
+    label: &str,
+    scale: f32,
+) -> egui::Response {
+    let side = 62.0 * scale;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(right_bottom.x - side, right_bottom.y - side),
+        egui::vec2(side, side),
+    );
+    let response = ui
+        .interact(
+            rect,
+            egui::Id::new((
+                "stormscope.map_icon",
+                label,
+                right_bottom.x.to_bits(),
+                right_bottom.y.to_bits(),
+            )),
+            egui::Sense::click(),
+        )
+        .on_hover_text(label);
+    let pressed = response.is_pointer_button_down_on();
+    ui.painter().rect_filled(
+        rect,
+        16.0 * scale,
+        egui::Color32::from_black_alpha(if response.hovered() || pressed {
+            255
+        } else {
+            242
+        }),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        16.0 * scale,
+        egui::Stroke::new(
+            1.2 * scale,
+            egui::Color32::from_white_alpha(if response.hovered() { 120 } else { 65 }),
+        ),
+        egui::StrokeKind::Inside,
+    );
+    let c = rect.center();
+    let ink = egui::Color32::from_gray(236);
+    let stroke = egui::Stroke::new(2.6 * scale, ink);
+    match icon {
+        MapChipIcon::Gear => {
+            let r = 10.5 * scale;
+            ui.painter().circle_stroke(c, r, stroke);
+            for tooth in 0..8 {
+                let a = tooth as f32 * std::f32::consts::TAU / 8.0;
+                let d = egui::vec2(a.cos(), a.sin());
+                ui.painter().line_segment(
+                    [c + d * (r + 2.0 * scale), c + d * (r + 6.5 * scale)],
+                    egui::Stroke::new(3.4 * scale, ink),
+                );
+            }
+            ui.painter().circle_filled(c, 3.2 * scale, ink);
+        }
+        MapChipIcon::Sliders => {
+            for (i, xoff) in [-7.0_f32, 4.0, -2.0].into_iter().enumerate() {
+                let y = c.y + (i as f32 - 1.0) * 10.0 * scale;
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(c.x - 15.0 * scale, y),
+                        egui::pos2(c.x + 15.0 * scale, y),
+                    ],
+                    egui::Stroke::new(2.4 * scale, ink),
+                );
+                ui.painter()
+                    .circle_filled(egui::pos2(c.x + xoff * scale, y), 3.6 * scale, ink);
+            }
+        }
+    }
+    response
+}
+
+#[cfg(target_os = "android")]
 fn settings_chip(
     ui: &mut egui::Ui,
     right_bottom: egui::Pos2,
     app: &mut StormApp,
     scale: f32,
 ) -> egui::Response {
-    let chip = pane_chip_bottom(ui, right_bottom, "Settings", scale)
+    let chip = pane_icon_chip_bottom(ui, right_bottom, MapChipIcon::Gear, "Settings", scale)
         .on_hover_text("Open or hide the controls sidebar");
     if chip.clicked() {
-        // Toggle: tapping again (or the ✕ in the header) closes it.
+        // Toggle: tapping again (or the close button in the header) closes it.
         app.state.sidebar_pinned = !app.state.sidebar_pinned;
     }
     chip
+}
+
+/// The map/3D "Controls" chip: a big sliders icon on phones, the original
+/// text chip on desktop.
+fn controls_chip(
+    ui: &mut egui::Ui,
+    right_bottom: egui::Pos2,
+    scale: f32,
+    hover: &str,
+) -> egui::Response {
+    #[cfg(target_os = "android")]
+    {
+        pane_icon_chip_bottom(ui, right_bottom, MapChipIcon::Sliders, "Controls", scale)
+            .on_hover_text(hover)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        pane_chip_bottom(ui, right_bottom, "Controls", scale).on_hover_text(hover)
+    }
 }
 
 /// Like [`pane_chip`], but pinned by its bottom-right corner.
@@ -827,7 +979,8 @@ fn pane_chip_bottom_centered(
 /// while a fix is outstanding.
 #[cfg(target_os = "android")]
 fn gps_chip(ui: &mut egui::Ui, right_bottom: egui::Pos2, app: &mut StormApp, scale: f32) {
-    let size = egui::vec2(44.0, 44.0) * scale;
+    // Match the 62 pt Settings/Controls icon targets exactly.
+    let size = egui::vec2(62.0, 62.0) * scale;
     let rect = egui::Rect::from_min_size(
         egui::pos2(right_bottom.x - size.x, right_bottom.y - size.y),
         size,
@@ -853,14 +1006,14 @@ fn gps_chip(ui: &mut egui::Ui, right_bottom: egui::Pos2, app: &mut StormApp, sca
         egui::Color32::from_gray(228)
     };
     let c = rect.center();
-    let r = 8.0 * scale;
-    let stroke = egui::Stroke::new(2.0 * scale, color);
+    let r = 11.0 * scale;
+    let stroke = egui::Stroke::new(2.4 * scale, color);
     ui.painter().circle_stroke(c, r, stroke);
-    ui.painter().circle_filled(c, 2.0 * scale, color);
+    ui.painter().circle_filled(c, 2.8 * scale, color);
     for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
         let d = egui::vec2(dx, dy);
         ui.painter().line_segment(
-            [c + d * (r + 3.0 * scale), c + d * (r + 8.0 * scale)],
+            [c + d * (r + 3.0 * scale), c + d * (r + 9.0 * scale)],
             stroke,
         );
     }
@@ -884,9 +1037,28 @@ fn gps_chip(ui: &mut egui::Ui, right_bottom: egui::Pos2, app: &mut StormApp, sca
 
 /// The AI meteorologist opener, bottom-left of whichever 2D map is on screen.
 /// A round button that pulses while the meteorologist is thinking or speaking.
+/// Hidden until an AI API key is configured; Settings still exposes the AI
+/// configuration so a key can be added later.
 fn ai_chip(ui: &mut egui::Ui, rect: egui::Rect, app: &mut StormApp, scale: f32) {
+    if app.state.ai_api_key.trim().is_empty() {
+        return;
+    }
     let diameter = 58.0 * scale;
-    let bottom_left = egui::pos2(rect.min.x + 8.0 * scale, rect.max.y - 8.0 * scale);
+    // On Android the Settings gear owns the bottom-left corner; put the AI
+    // circle directly above it. Desktops keep the AI button at the bottom.
+    let lift = if cfg!(target_os = "android") {
+        62.0 * scale + 10.0 * scale
+    } else {
+        0.0
+    };
+    let x = rect.min.x
+        + 8.0 * scale
+        + if cfg!(target_os = "android") {
+            2.0 * scale
+        } else {
+            0.0
+        };
+    let bottom_left = egui::pos2(x, rect.max.y - 8.0 * scale - lift);
     let center = egui::pos2(
         bottom_left.x + diameter * 0.5,
         bottom_left.y - diameter * 0.5,
@@ -1273,12 +1445,60 @@ fn product_help_window(ctx: &egui::Context, app: &mut StormApp) {
     }
 }
 
+/// Phone-only page swipe across the whole Map controls window. A quick
+/// horizontal flick anywhere switches Display ↔ SPC outlook. The elapsed-time
+/// guard keeps slow horizontal slider edits from changing pages.
+#[cfg(target_os = "android")]
+fn swipe_map_controls_tabs(
+    ctx: &egui::Context,
+    window: egui::Rect,
+    tab: &mut crate::state::MapControlsTab,
+    scale: f32,
+) {
+    use crate::state::MapControlsTab;
+    let id = egui::Id::new("stormscope.map_controls.page_swipe");
+    let (pressed, down, pos, latest, now) = ctx.input(|i| {
+        (
+            i.pointer.any_pressed(),
+            i.pointer.any_down(),
+            i.pointer.interact_pos(),
+            i.pointer.latest_pos(),
+            i.time,
+        )
+    });
+    if pressed && let Some(p) = pos {
+        if window.contains(p) {
+            let held = ctx
+                .data(|data| data.get_temp::<(egui::Pos2, f64)>(id))
+                .is_some();
+            if !held {
+                ctx.data_mut(|data| data.insert_temp(id, (p, now)));
+            }
+        }
+    }
+    if !down {
+        let start = ctx.data_mut(|data| data.remove_temp::<(egui::Pos2, f64)>(id));
+        if let Some((start, started)) = start {
+            let end = latest.or(pos).unwrap_or(start);
+            let dx = end.x - start.x;
+            let dy = end.y - start.y;
+            if now - started <= 0.9 && dy.abs() <= 90.0 * scale && dx.abs() >= 80.0 * scale {
+                *tab = if dx < 0.0 {
+                    MapControlsTab::Outlook
+                } else {
+                    MapControlsTab::Display
+                };
+            }
+        }
+    }
+}
+
 /// The 2D map's display controls (its bottom-right "Controls" chip).
 ///
 /// Desktop uses two columns so every option stays visible in one window; the
 /// phone keeps a single scrollable column because its width cannot carry two
 /// readable controls side by side.
-fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
+fn map_controls_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
     if !app.state.map_controls_open {
         return;
     }
@@ -1291,13 +1511,18 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     let ui_scale = if desktop {
         (scale * 0.82).max(1.0)
     } else {
-        scale
+        (scale * 1.3).max(1.3)
     };
+    // Phone: use almost the whole map pane, leaving the status/timeline bars
+    // visible. This is intentionally not an immersive fullscreen window.
+    let phone_fill = area.shrink2(egui::vec2(8.0, 8.0));
+    #[cfg(target_os = "android")]
+    swipe_map_controls_tabs(ctx, phone_fill, &mut app.state.map_controls_tab, scale);
     let size = if desktop {
         let screen_h = ctx.content_rect().height();
         egui::vec2(280.0 * scale, (screen_h - 24.0).max(420.0))
     } else {
-        egui::vec2(300.0 * scale, 420.0 * scale)
+        phone_fill.size()
     };
     let mut open = true;
     let mut window = egui::Window::new("Map controls")
@@ -1309,6 +1534,9 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp) {
     if cfg!(target_os = "android") {
         window = window
             .title_bar(false)
+            .fixed_rect(phone_fill)
+            .movable(false)
+            .constrain_to(phone_fill)
             .min_size(egui::vec2(size.x, 40.0 * scale))
             .max_size(size);
     } else {
@@ -2581,6 +2809,12 @@ pub(super) fn apply_text_scale(ui: &mut egui::Ui, scale: f32) {
     }
     style.spacing.item_spacing *= scale;
     style.spacing.button_padding *= scale;
+    #[cfg(target_os = "android")]
+    {
+        // Touch settings need real finger-sized rows, not just larger text.
+        style.spacing.interact_size.x = (style.spacing.interact_size.x * scale).max(44.0);
+        style.spacing.interact_size.y = (style.spacing.interact_size.y * scale).max(40.0);
+    }
     style.spacing.indent *= scale;
     style.spacing.slider_width *= scale;
     style.spacing.combo_width *= scale;
@@ -2652,7 +2886,7 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     // to read and tap. Keep the base scale for popups, but enlarge the drawer
     // itself on Android.
     let ui_scale = if cfg!(target_os = "android") {
-        (scale * 1.22).max(1.22)
+        (scale * 1.5).max(1.5)
     } else {
         scale
     };
@@ -2786,46 +3020,6 @@ fn edge_hint(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect, scale:
     }
 }
 
-fn status_bar(ui: &mut egui::Ui, app: &mut StormApp) {
-    ui.horizontal_wrapped(|ui| {
-        ui.strong(if cfg!(target_os = "android") {
-            "Stormscope (android)"
-        } else {
-            "Stormscope"
-        });
-        ui.separator();
-        ui.label(format!("site {}", app.state.site_id));
-        ui.label(format!("{}", app.state.moment.label()));
-        if !cfg!(target_os = "android") {
-            ui.label(format!("{:.1}°", app.state.tilt_deg));
-        }
-        if let Some(n) = app.state.newest_start() {
-            ui.label(format!("scan {}", crate::timefmt::fmt_central(&n)));
-        }
-        if !cfg!(target_os = "android") {
-            if let Some(lat) = app.state.latency() {
-                ui.label(format!("+{}m", lat.num_minutes()));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(app.state.status_text.clone());
-                ui.label(
-                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                        .weak()
-                        .small(),
-                );
-            });
-        } else {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                        .weak()
-                        .small(),
-                );
-            });
-        }
-    });
-}
-
 /// The fixed sidebar header. It lives outside the scroll area so the title and
 /// the Close button never clip at the top, even when the controls below are
 /// scrolled.
@@ -2847,7 +3041,7 @@ fn sidebar_header(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.label(egui::RichText::new("Controls").strong().size(title_size));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let close = if cfg!(target_os = "android") {
-                ui.add(egui::Button::new("Close").min_size(egui::vec2(64.0, 32.0)))
+                ui.add(egui::Button::new("Close").min_size(egui::vec2(88.0, 48.0)))
             } else {
                 ui.add(egui::Button::new("Close").min_size(egui::vec2(52.0, 24.0)))
             };
@@ -2863,6 +3057,20 @@ fn sidebar_header(ui: &mut egui::Ui, app: &mut StormApp) {
             }
         });
     });
+    // The old top status bar's useful identity line lives here now: site,
+    // product/tilt, and version. Scan age, latency, alert count and status
+    // text are deliberately not repeated anywhere.
+    ui.label(
+        egui::RichText::new(format!(
+            "site {} · {} {:.1}° · v{}",
+            app.state.site_id,
+            app.state.moment.label(),
+            app.state.tilt_deg,
+            env!("CARGO_PKG_VERSION")
+        ))
+        .weak()
+        .small(),
+    );
     if !app.state.sidebar_pinned {
         ui.label(
             egui::RichText::new(if cfg!(target_os = "android") {
@@ -3404,21 +3612,6 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
     {
         ui.label(egui::RichText::new("Data").strong());
         ui.add_space(4.0);
-        if ui
-            .button("Archive…")
-            .on_hover_text(
-                "Browse the past: pick a day and a time of day, page through \
-                 the day's scans, and loop them",
-            )
-            .clicked()
-        {
-            // Settings is a drawer, not a stack: open the requested window
-            // and close the drawer so the map/window is visible.
-            app.state.archive_popup_open = true;
-            app.state.ai_settings_open = false;
-            app.state.sidebar_pinned = false;
-            app.state.sidebar_dismissed = true;
-        }
         ui.label(
             egui::RichText::new(match app.state.mode {
                 Mode::Live => "now: live",
@@ -3759,6 +3952,24 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
     );
     ui.separator();
     ui.add_space(8.0);
+    ui.label(egui::RichText::new("Archive").strong());
+    ui.add_space(4.0);
+    if ui
+        .button("Browse archive…")
+        .on_hover_text(
+            "Browse the past: pick a day and a time of day, page through \
+             the day's scans, and loop them",
+        )
+        .clicked()
+    {
+        // Settings is a drawer, not a stack: open the requested window and
+        // close the drawer so the map/window is visible.
+        app.state.archive_popup_open = true;
+        app.state.ai_settings_open = false;
+        app.state.sidebar_pinned = false;
+        app.state.sidebar_dismissed = true;
+    }
+    ui.add_space(8.0);
     ui.separator();
     ui.label(
         egui::RichText::new("Map tiles © OpenStreetMap contributors")
@@ -3822,7 +4033,7 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         ui.add_space(6.0);
 
         // Day (the same shared archive day as the alerts Archive tab).
-        ui.label("Day (Central)");
+        ui.label("Day (local)");
         ui.horizontal(|ui| {
             if ui.button("◀").clicked() {
                 app.state.archive_date = app
@@ -3856,7 +4067,7 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
 
         // Time of day.
         ui.add_space(4.0);
-        ui.label("Time of day (Central)");
+        ui.label("Time of day (local)");
         ui.add(
             egui::Slider::new(&mut app.state.archive_minute, 0..=1435)
                 .step_by(5.0)
@@ -3906,7 +4117,7 @@ fn archive_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
         if let (Some(first), Some(last)) = (app.state.ring.front(), app.state.ring.back()) {
             let tz = crate::timefmt::central();
             ui.label(format!(
-                "loaded {} scans · {} → {} (Central)",
+                "loaded {} scans · {} → {} (local time)",
                 app.state.ring.len(),
                 first.volume_start.with_timezone(tz).format("%H:%M"),
                 last.volume_start.with_timezone(tz).format("%H:%M"),

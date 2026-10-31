@@ -714,6 +714,16 @@ impl StormApp {
             visuals.extreme_bg_color = egui::Color32::from_gray(6);
             visuals.widgets.noninteractive.bg_fill = egui::Color32::from_gray(18);
             visuals.widgets.noninteractive.weak_bg_fill = egui::Color32::from_gray(18);
+            // Every button-like widget, on every platform, gets the same
+            // slightly rounded edges instead of the stock sharp/oversized
+            // corners. Buttons that explicitly pass their own radius (map
+            // chips) keep that intentional shape.
+            let button_radius = egui::CornerRadius::same(6);
+            visuals.widgets.noninteractive.corner_radius = button_radius;
+            visuals.widgets.inactive.corner_radius = button_radius;
+            visuals.widgets.hovered.corner_radius = button_radius;
+            visuals.widgets.active.corner_radius = button_radius;
+            visuals.widgets.open.corner_radius = button_radius;
             style.visuals = visuals;
             // Android: a window's ✕ is sized from the Heading font's row
             // height — 18 pt is a ~24 dp target, far too small for a finger.
@@ -839,6 +849,7 @@ impl StormApp {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.state.mode = crate::state::Mode::Live;
         self.state.loop_state = crate::state::LoopState::Paused;
+        self.state.end_timeline_hold();
         self.state.archive_jump = None;
         self.state.alerts_popup_open = false;
         let _ = self
@@ -1566,6 +1577,8 @@ impl StormApp {
                     self.state.ring.clear();
                     self.state.ring_bytes = 0;
                     self.state.playhead = 0;
+                    self.state.timeline_scrub_last_touch = None;
+                    self.state.timeline_scrub_pointer_down = false;
                     self.radar_tex = None;
                     self.radar_pending = None;
                     self.rotation_cache = None;
@@ -4535,12 +4548,17 @@ impl StormApp {
             // poller on pause, so restart it on every resume. RefreshLive keeps
             // the frames already in memory and only asks for the newest scan;
             // it does not clear or replay the cached timeline.
-            if crate::android_lifecycle::take_resume_refresh()
-                && self.state.mode == crate::state::Mode::Live
-            {
-                let _ = self
-                    .tx
-                    .send(DataCmd::RefreshLive(self.state.site_id.clone()));
+            if crate::android_lifecycle::take_resume_refresh() {
+                // Returning to the app counts as leaving the scrub bar. This
+                // also covers closing the app during the 30-second hold:
+                // reopening lands on the newest scan instead of restoring an
+                // old frame.
+                self.state.end_timeline_hold();
+                if self.state.mode == crate::state::Mode::Live {
+                    let _ = self
+                        .tx
+                        .send(DataCmd::RefreshLive(self.state.site_id.clone()));
+                }
             }
             // Background update check: once a day, ask GitHub for a newer
             // release and surface it as a centred modal when one exists.

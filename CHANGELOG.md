@@ -31,9 +31,11 @@
 - Station totals (rain/snow) is now an app-wide layer: turning off "Station
   totals on map" in Settings hides the diamonds in every pane, not only pane 1.
 - The bottom scrub bar and Play/Pause now drive every pane: each pane follows
-  the selected scan *time* (not a frame index), so all maps show the same
-  moment. "Last 2hr" loads its window for every pane, and a pane created while
-  pane 1 already has a long history seeds the same window automatically.
+  the selected scan *time* (not a frame index), and the scrub/play state is
+  shared so secondary maps repaint at the same cadence instead of lagging
+  behind. "Last 2hr" loads its window for every pane, anchored to the same
+  newest scan, and a pane created while pane 1 already has a long history
+  seeds the same window automatically.
 - The primary map now paints the newest cached scan immediately while the S3
   listing runs, so a slow or throttled listing no longer leaves it stuck
   behind the loading card.
@@ -62,4 +64,7 @@
 - Map Controls fill the map area, support swiping between Display and the SPC
   outlook, and Back returns to Display before closing.
 - Forecast gains Forecast/Videos tabs with swipe navigation, compact current
-  conditions, Details collapsed by default, and no manual refres
+  conditions, Details collapsed by default, and no manual refresh button.
+- Archive moved to the bottom of Settings.
+- Fixed the Android sidebar header/Close button clipping after the status bar
+  removal.

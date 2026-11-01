@@ -4261,16 +4261,18 @@ fn last_two_hours_confirm(ctx: &egui::Context, app: &mut StormApp) {
         dismissed = true;
     }
     if accepted {
+        // Anchor every pane's window to the same newest scan, not each
+        // pane's own newest (sites finish scans at different minutes), so the
+        // scrubbed timestamps line up as closely as the archive allows.
+        let anchor = app.state.newest_start();
         let _ = app.tx.send(crate::app::DataCmd::LoadLastTwoHours(
             app.state.site_id.clone(),
-            app.state.newest_start(),
+            anchor,
         ));
-        // The bottom timeline drives every pane, so every pane needs the
-        // same two-hour window. Each data thread loads its own site.
         for pane in app.pane_apps.iter_mut().flatten() {
             let _ = pane.tx.send(crate::app::DataCmd::LoadLastTwoHours(
                 pane.state.site_id.clone(),
-                pane.state.newest_start(),
+                anchor,
             ));
         }
         dismissed = true;

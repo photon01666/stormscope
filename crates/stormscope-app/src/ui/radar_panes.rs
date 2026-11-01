@@ -276,7 +276,7 @@ fn draw_secondary_pane(
         {
             let _ = pane_app.tx.send(crate::app::DataCmd::LoadLastTwoHours(
                 pane_app.state.site_id.clone(),
-                None,
+                app.state.newest_start(),
             ));
         }
     }
@@ -298,6 +298,12 @@ fn draw_secondary_pane(
     {
         pane.state.playhead = index;
     }
+    // The scrub flag drives the raster cadence (30 fps while dragging the
+    // timeline). Without it the secondary maps repaint at the idle 10 fps and
+    // visibly lag behind pane 1 during a scrub. Play state rides along so a
+    // running loop repaints at the same rhythm.
+    pane.state.timeline_scrubbing = app.state.timeline_scrubbing;
+    pane.state.loop_state = app.state.loop_state;
     // Pane 1 may already hold a two-hour window (the user asked for it, or
     // the live feed has been running). A pane with only the newest scan
     // cannot follow the scrub bar into that history, so seed it with the
@@ -322,9 +328,10 @@ fn draw_secondary_pane(
         .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(300));
     if needs_history && seed_due {
         pane.state.window_requested_at = Some(std::time::Instant::now());
+        let anchor = app.state.newest_start();
         let _ = pane.tx.send(crate::app::DataCmd::LoadLastTwoHours(
             pane.state.site_id.clone(),
-            None,
+            anchor,
         ));
     }
     // User pins and the device GPS fix are app-level landmarks: show the same

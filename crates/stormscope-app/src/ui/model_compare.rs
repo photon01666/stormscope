@@ -106,12 +106,22 @@ pub fn model_compare_window(ctx: &egui::Context, app: &mut StormApp, area: egui:
     let desktop_h = (430.0 * scale).min(max_h);
     let mut open = app.state.model_compare_open;
     let mut refresh = false;
-    let mut window = egui::Window::new("Model comparison")
+    let window = egui::Window::new("Model comparison")
         .id(egui::Id::new("stormscope.model_compare.compact"))
-        .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .max_width((screen.x - 16.0).max(240.0))
         .resizable(false);
+    // Full-pane Android windows are positioned by their top-left corner via
+    // `fixed_rect`; a centre pivot would move their centre to that corner and
+    // push most of the window off-screen.
+    #[cfg(target_os = "android")]
+    let mut window = if fill {
+        window.pivot(egui::Align2::LEFT_TOP)
+    } else {
+        window.pivot(egui::Align2::CENTER_CENTER)
+    };
+    #[cfg(not(target_os = "android"))]
+    let mut window = window.pivot(egui::Align2::CENTER_CENTER);
     #[cfg(target_os = "android")]
     if fill {
         window = window.title_bar(false);

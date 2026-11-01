@@ -34,8 +34,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // panning (`drag_delta()` is always zero on a hover-only widget).
     let (rect, response) =
         ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-    // Long-press the map to toggle the chrome-free fullscreen mode.
-    crate::ui::long_press_toggle_fullscreen(ui.ctx(), app, &response);
+    // Long-press the map to toggle the chrome-free fullscreen mode. A
+    // secondary pane must not toggle the primary app's fullscreen chrome.
+    if !app.is_secondary {
+        crate::ui::long_press_toggle_fullscreen(ui.ctx(), app, &response);
+    }
     app.state.view.width_px = rect.width();
     app.state.view.height_px = rect.height();
     let view = app.state.view;
@@ -343,20 +346,33 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                         // forecaster discussion. ALL mode accepts a
                                         // click on any product's outline, and the
                                         // tapped product becomes the legend/detail.
-                                        if let Some((o, f)) = outlook_hit(app, &view, lon, lat) {
-                                            let (ty, dn) = (o.ty, f.dn);
-                                            app.state.outlook = Some(o.clone());
-                                            app.state.outlook_type = ty;
-                                            app.state.outlook_hover = None;
-                                            app.state.outlook_detail_open = true;
-                                            app.state.outlook_detail_dn = Some(dn);
-                                            let day = app.state.outlook_day;
-                                            if app.state.outlook_discussion_requested != Some(day) {
-                                                app.state.outlook_discussion_requested = Some(day);
-                                                let _ = app.tx.send(
-                                                    crate::app::DataCmd::LoadOutlookDiscussion(day),
-                                                );
+                                        // The outline labels are targets too: a tap
+                                        // straight on the text works even where the
+                                        // thin line is hard to hit.
+                                        let label_hit = app
+                                            .state
+                                            .outlook_label_hits
+                                            .iter()
+                                            .find(|h| h.rect.contains(click))
+                                            .copied();
+                                        if let Some(hit) = label_hit {
+                                            if let Some(o) = app
+                                                .state
+                                                .outlooks
+                                                .iter()
+                                                .find(|o| {
+                                                    o.ty == hit.ty && o.day == app.state.outlook_day
+                                                })
+                                                .cloned()
+                                            {
+                                                open_outlook_detail(app, &o, hit.dn);
                                             }
+                                        } else if let Some((o, f)) =
+                                            outlook_hit(app, &view, lon, lat)
+                                        {
+                                            let o = o.clone();
+                                            let dn = f.dn;
+                                            open_outlook_detail(app, &o, dn);
                                         }
                                     }
                                 }
@@ -672,24 +688,43 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // warning is the more specific reading of the same spot). The risk areas
     // cover most of the map, so the emphasis, the tooltip and the click all
     // key off the border.
-    let outlook_hover = if app.state.alerts_map_stack.is_empty()
+    let outlook_hover_hit = if app.state.alerts_map_stack.is_empty()
         && app.state.lsr_hover.is_none()
         && app.state.totals_hover.is_none()
         && app.state.mcd_hover.is_none()
         && app.state.show_outlook
     {
         response.hover_pos().and_then(|p| {
+            // A label names its own boundary, so hovering the text lights
+            // that outline even where the thin line is a few pixels away.
+            if let Some(hit) = app
+                .state
+                .outlook_label_hits
+                .iter()
+                .find(|h| h.rect.contains(p))
+            {
+                return app
+                    .state
+                    .outlooks
+                    .iter()
+                    .find(|o| o.ty == hit.ty && o.day == app.state.outlook_day)
+                    .and_then(|o| o.features.iter().find(|f| f.dn == hit.dn).map(|f| (o, f)));
+            }
             let (cx, cy) = viewport_pos(rect, p);
             let (lon, lat) = view.view_px_to_lonlat(cx, cy);
-            app.state.outlook.as_ref().and_then(|o| {
-                outlook_border_at(o, &view, lon, lat, OUTLOOK_BORDER_PX).map(|f| f.dn)
-            })
+            // Same lookup the click uses. Checking only `state.outlook` here
+            // meant a border of any *other* loaded product (ALL mode, or a
+            // probability product behind the categorical one) never lit up
+            // until a click promoted it into `state.outlook`.
+            outlook_hit(app, &view, lon, lat)
         })
     } else {
         None
     };
-    if outlook_hover != app.state.outlook_hover {
-        app.state.outlook_hover = outlook_hover;
+    let outlook_hover = outlook_hover_hit.map(|(o, f)| (o.ty, f.dn));
+    if outlook_hover != app.state.outlook_hover_ty.zip(app.state.outlook_hover) {
+        app.state.outlook_hover = outlook_hover.map(|(_, dn)| dn);
+        app.state.outlook_hover_ty = outlook_hover.map(|(ty, _)| ty);
         app.state.outlook_hover_at = ui.input(|i| i.time);
     }
     if app.state.outlook_hover.is_some() && !response.dragged() {
@@ -730,7 +765,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         // --- Layer 2.5: SPC outlook *fills* --------------------------------
         // Under the radar so echoes stay crisp; the outline pass (Layer 3.5)
         // re-draws the risk boundaries over the echoes.
-        draw_outlooks(&painter, origin, &view, app, true);
+        let _ = draw_outlooks(&painter, origin, &view, app, true);
     }
 
     // --- Layer 3: radar sweep overlay --------------------------------------
@@ -1116,7 +1151,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
 
         // --- Layer 3.5: SPC outlook *outlines* over the radar -------------
         // Only the risk boundaries, so they stay legible across rain echoes.
-        draw_outlooks(&painter, origin, &view, app, false);
+        app.state.outlook_label_hits = draw_outlooks(&painter, origin, &view, app, false);
 
         // A derived product that is still being computed (SRM follows the
         // motion sliders) says so, instead of leaving a bare basemap.
@@ -1221,8 +1256,16 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     }
 
     // --- Top-center badge row: scan mode, scan age, alerts ---------------
-    if !app.state.fullscreen {
-        draw_top_badges(ui, &painter, tile_resp.rect, app);
+    // Secondary panes and the multi-pane layout draw this once from the app
+    // rail instead, so it never belongs to a particular pane. Fullscreen
+    // hides the whole row, but a long-resume catch-up still gets its strip:
+    // that is the one thing that explains a stale frame.
+    if !app.is_secondary && app.state.radar_panes <= 1 {
+        if app.state.fullscreen {
+            draw_resume_catchup_in_fullscreen(ui, tile_resp.rect, app);
+        } else {
+            draw_top_badges(ui, &painter, tile_resp.rect, app);
+        }
     }
 
     // Brief "what is this" tooltips after resting for a second: warnings
@@ -1528,7 +1571,7 @@ fn draw_probe_plate(
 }
 
 /// Move the view center so the map content follows a drag of (dx, dy) px.
-fn pan_view(dst: &mut MapView, cur: MapView, dx: f64, dy: f64) {
+pub(super) fn pan_view(dst: &mut MapView, cur: MapView, dx: f64, dy: f64) {
     // Dragging right moves content right -> center moves left in world px.
     let (cx, cy) = radar_render::lonlat_to_merc_px(cur.center_lon, cur.center_lat, cur.zoom);
     let (lon, lat) = radar_render::merc_px_to_lonlat(cx - dx, cy - dy, cur.zoom);
@@ -1538,7 +1581,7 @@ fn pan_view(dst: &mut MapView, cur: MapView, dx: f64, dy: f64) {
 
 /// Zoom to `new_zoom` keeping the geo point under `anchor` (viewport px)
 /// stationary.
-fn zoom_view(dst: &mut MapView, cur: MapView, new_zoom: f64, anchor: (f64, f64)) {
+pub(super) fn zoom_view(dst: &mut MapView, cur: MapView, new_zoom: f64, anchor: (f64, f64)) {
     let new_zoom = new_zoom.clamp(MIN_ZOOM, MAX_ZOOM);
     // Geo point currently under the anchor...
     let (lon, lat) = cur.view_px_to_lonlat(anchor.0, anchor.1);
@@ -3517,9 +3560,9 @@ fn draw_outlooks(
     view: &MapView,
     app: &StormApp,
     fills: bool,
-) {
+) -> Vec<crate::state::OutlookLabelHit> {
     if !app.state.show_outlook {
-        return;
+        return Vec::new();
     }
     // Every product loaded for the current day. The fallback keeps a
     // pre-existing single `outlook` drawing while the four-product set is
@@ -3534,9 +3577,13 @@ fn draw_outlooks(
         .filter(|o| o.day == app.state.outlook_day)
         .collect();
     if products.is_empty() {
-        return; // a newer day/product is on its way; don't draw a stale one
+        return Vec::new(); // a newer day/product is on its way; don't draw a stale one
     }
     let fill_alpha = (app.state.outlook_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    // Label/outline sizing follows the same HiDPI scale the rest of the map
+    // uses, so labels stay proportional on a 4K desktop and a phone.
+    let scale = app.sidebar_scale.max(1.0);
+    let mut label_candidates: Vec<OutlookLabel> = Vec::new();
 
     for o in products {
         // ALL draws every product together; picking one type narrows the
@@ -3545,7 +3592,6 @@ fn draw_outlooks(
             continue;
         }
         let categorical = o.ty == radar_core::outlooks::OutlookType::Categorical;
-        let selected = o.ty == app.state.outlook_type;
         for f in o.sorted_features() {
             let stroke = egui::Color32::from_rgb(f.stroke[0], f.stroke[1], f.stroke[2]);
             for poly in &f.polygons {
@@ -3561,9 +3607,12 @@ fn draw_outlooks(
                         painter.add(egui::Shape::mesh(mesh));
                     }
                 } else {
-                    // Only the selected product's features react to hover
-                    // (the same DN appears in every product's band set).
-                    let hovered = selected && app.state.outlook_hover == Some(f.dn);
+                    // The same DN appears in every product's band set, so the
+                    // hover has to match on product as well as DN — otherwise
+                    // all four products glow at once (or none did, when the
+                    // hovered product wasn't the selected one).
+                    let hovered = app.state.outlook_hover_ty == Some(o.ty)
+                        && app.state.outlook_hover == Some(f.dn);
                     let width = if hovered {
                         3.5
                     } else if categorical {
@@ -3579,9 +3628,349 @@ fn draw_outlooks(
                             ));
                         }
                     }
+                    // Text label for the area, in SPC's own colour (the same
+                    // `stroke` that outlines it), and drawn *on* that outline
+                    // so it is unambiguous which boundary it names. Collected
+                    // here and placed after the loop, because nested bands all
+                    // want the same spot and have to be fanned apart.
+                    let outer = rings.iter().filter(|r| r.len() >= 3).max_by(|a, b| {
+                        ring_area(a)
+                            .partial_cmp(&ring_area(b))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    if let Some(outer) = outer {
+                        let candidates = ring_label_candidates(outer);
+                        if !candidates.is_empty() {
+                            label_candidates.push(OutlookLabel {
+                                candidates,
+                                text: outlook_label_text(f, o.ty),
+                                color: label_text_color(f.stroke),
+                                dn: f.dn,
+                                categorical,
+                                ty: o.ty,
+                            });
+                        }
+                    }
                 }
             }
         }
+    }
+
+    // Place the labels last, so each one can be nudged clear of the ones
+    // already down. Nested bands all want the same centre — a 15% WIND area
+    // and the 5% HAIL area inside it share a centroid — and overprinted
+    // text is unreadable. The most severe category goes down first: it is
+    // the one that most deserves the prime, unobstructed spot.
+    place_outlook_labels(painter, label_candidates, label_font_px(scale))
+}
+
+/// One outlook risk area's map label, awaiting placement.
+///
+/// The label is drawn *on* its own outline rather than floating in the middle
+/// of the shape: with nested bands and ALL mode every label otherwise lands on
+/// the same centroid and it is impossible to tell which outline a number
+/// belongs to. ASCII contour maps solve this the same way — the line breaks
+/// behind the text and re-emerges on either side.
+struct OutlookLabel {
+    /// Points along the area's largest outline, in screen space, ordered
+    /// around the ring starting at its topmost vertex.
+    candidates: Vec<egui::Pos2>,
+    text: String,
+    color: egui::Color32,
+    dn: u16,
+    categorical: bool,
+    ty: radar_core::outlooks::OutlookType,
+}
+
+/// Preferred bearing for a band's label, in screen space (y grows down).
+///
+/// Each product gets its own quadrant and severity nudges it further around,
+/// so nested bands spread into a readable fan without any dependence on what
+/// else is currently on screen.
+fn outlook_label_bearing(ty: radar_core::outlooks::OutlookType, dn: u16) -> egui::Vec2 {
+    use radar_core::outlooks::OutlookType as T;
+    let base = match ty {
+        T::Categorical => 225.0, // upper left
+        T::Tornado => 315.0,     // upper right
+        T::Wind => 45.0,         // lower right
+        T::Hail => 135.0,        // lower left
+    };
+    let deg = base + dn as f32 * 4.0;
+    let r = deg.to_radians();
+    egui::vec2(r.cos(), r.sin())
+}
+
+/// Average of a sampled ring, used as the origin for the bearing test.
+fn label_centroid(points: &[egui::Pos2]) -> egui::Pos2 {
+    let n = points.len().max(1) as f32;
+    let sum = points
+        .iter()
+        .fold(egui::Vec2::ZERO, |acc, p| acc + p.to_vec2());
+    (sum / n).to_pos2()
+}
+
+/// Candidate points ordered by how well they match the band's fixed bearing.
+///
+/// The order is a function of the polygon alone, so it does not change when
+/// the map is panned (a translation leaves every offset from the centroid
+/// identical) or zoomed (only the length scales). That is what keeps labels
+/// from jumping between positions while dragging.
+fn outlook_label_anchor_order(
+    candidates: &[egui::Pos2],
+    ty: radar_core::outlooks::OutlookType,
+    dn: u16,
+) -> Vec<egui::Pos2> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let dir = outlook_label_bearing(ty, dn);
+    let centroid = label_centroid(candidates);
+    let mut order: Vec<(f32, egui::Pos2)> = candidates
+        .iter()
+        .map(|&p| {
+            let d = p - centroid;
+            let len = d.length().max(0.001);
+            (d.dot(dir) / len, p)
+        })
+        .collect();
+    order.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    order.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Draw each label on its own risk-area outline.
+///
+/// Categorical bands go down first (the risk levels are the headline reading),
+/// then the probability bands by severity.
+///
+/// Each label is anchored to a fixed bearing around its own area — assigned by
+/// product and severity — rather than to wherever it happens to fit. The
+/// earlier "furthest from the labels already placed" rule depended on which
+/// labels were on screen, so every pan reshuffled the whole set and the text
+/// appeared to jump around the map. A fixed bearing depends only on the
+/// polygon, so panning and zooming cannot move it: translation leaves every
+/// direction from the centroid unchanged, and zoom only scales it.
+fn place_outlook_labels(
+    painter: &egui::Painter,
+    mut labels: Vec<OutlookLabel>,
+    font_px: f32,
+) -> Vec<crate::state::OutlookLabelHit> {
+    labels.sort_by_key(|l| (!l.categorical, std::cmp::Reverse(l.dn)));
+    let font = egui::FontId::proportional(font_px);
+    let clip = painter.clip_rect();
+    let mut taken: Vec<egui::Rect> = Vec::new();
+    let mut hits: Vec<crate::state::OutlookLabelHit> = Vec::new();
+    for label in labels {
+        let galley = painter.layout_no_wrap(label.text.clone(), font.clone(), label.color);
+        if galley.is_empty() {
+            continue;
+        }
+        // Padding around the glyphs: the plate breaks the line cleanly and
+        // stops two labels touching.
+        let size = galley.size() + egui::vec2(8.0, 5.0);
+        if label.candidates.is_empty() {
+            continue;
+        }
+        let order = outlook_label_anchor_order(&label.candidates, label.ty, label.dn);
+        let Some((&anchor, rest)) = order.split_first() else {
+            continue;
+        };
+        let mut rect = egui::Rect::from_center_size(anchor, size);
+        // Resolve a collision from the fixed candidate order, never from what
+        // is currently on screen. The anchor and the fallback are functions of
+        // the polygon alone, so panning or zooming cannot reshuffle them.
+        if taken.iter().any(|t| t.intersects(rect.expand(2.0))) {
+            let Some(&next) = rest.iter().find(|&&at| {
+                let candidate = egui::Rect::from_center_size(at, size);
+                !taken.iter().any(|t| t.intersects(candidate.expand(2.0)))
+            }) else {
+                continue;
+            };
+            rect = egui::Rect::from_center_size(next, size);
+        }
+        // Reserve the spot even when it is off-screen: a label entering the
+        // viewport must not push an already-visible neighbour somewhere else.
+        taken.push(rect);
+        if !clip.contains_rect(rect) {
+            continue; // off-screen labels are noise
+        }
+        // A dark plate in the band's own colour: the outline stops at the
+        // plate and continues past it, which is what ties the text to this
+        // particular boundary.
+        painter.rect_filled(rect, 3.5, egui::Color32::from_black_alpha(215));
+        painter.rect_stroke(
+            rect,
+            3.5,
+            egui::Stroke::new(0.9, label.color.gamma_multiply(0.55)),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(rect.min + egui::vec2(4.0, 2.5), galley, label.color);
+        hits.push(crate::state::OutlookLabelHit {
+            rect,
+            ty: label.ty,
+            dn: label.dn,
+        });
+    }
+    hits
+}
+
+/// Points spaced along a screen-space ring, for on-outline label placement.
+///
+/// Walks the ring from its topmost vertex so labels sit at the top of their
+/// band when nothing is in the way, and caps the count so a very detailed
+/// SPC polygon doesn't cost anything noticeable per frame.
+fn ring_label_candidates(ring: &[egui::Pos2]) -> Vec<egui::Pos2> {
+    let n = ring.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    // Start at the topmost vertex: the natural reading spot for a label.
+    let start = ring
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            a.1.y
+                .partial_cmp(&b.1.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map_or(0, |(i, _)| i);
+    // Sample at a fixed *fraction* of the perimeter, not a fixed pixel
+    // spacing. A zoom is a uniform scale about the view centre, so the same
+    // fraction lands on the same spot of the outline at every zoom; pixel
+    // spacing re-sampled the ring differently as it grew, which is what made
+    // the labels hop along the border while zooming. A constant count also
+    // keeps the cost flat for very detailed SPC polygons.
+    const STEPS: usize = 64;
+    let mut walked = Vec::with_capacity(n + 1);
+    walked.push(0.0f32);
+    let mut total = 0.0f32;
+    for k in 0..n {
+        let a = ring[(start + k) % n];
+        let b = ring[(start + k + 1) % n];
+        total += (b - a).length();
+        walked.push(total);
+    }
+    if total <= 1e-4 {
+        return Vec::new();
+    }
+    // Exactly STEPS points, at i/STEPS of the way around. The count and the
+    // fractions are fixed, so scaling the ring only scales the result.
+    let mut out = Vec::with_capacity(STEPS);
+    let mut seg = 0usize;
+    for i in 0..STEPS {
+        let target = total * i as f32 / STEPS as f32;
+        while seg + 1 < walked.len() && walked[seg + 1] < target {
+            seg += 1;
+        }
+        let seg_len = walked[seg + 1] - walked[seg];
+        let t = if seg_len > 1e-6 {
+            (target - walked[seg]) / seg_len
+        } else {
+            0.0
+        };
+        let a = ring[(start + seg) % n];
+        let b = ring[(start + seg + 1) % n];
+        out.push(a + (b - a) * t);
+    }
+    out
+}
+
+/// Text label for one outlook risk area.
+///
+/// Categorical areas carry SPC's own short code ("MRGL", "SLGT", "ENH",
+/// "MDT", "HIGH"); probability areas carry the chance plus the hazard, which
+/// is how SPC writes them on its own maps ("10% TOR", "15% WIND"). The short
+/// hazard tag is what keeps ALL mode readable, where the categorical and
+/// probability outlines are drawn on top of one another and a bare "10%" would
+/// not say a chance of *what*.
+fn outlook_label_text(
+    f: &radar_core::outlooks::OutlookFeature,
+    ty: radar_core::outlooks::OutlookType,
+) -> String {
+    // SPC's conditional-intensity areas are labelled "CIG1" in the raw data,
+    // which says nothing about the hazard. Name both, the same way the
+    // probability bands do.
+    if f.label.trim().to_ascii_uppercase().starts_with("CIG") {
+        let hazard = ty.short();
+        return if hazard.is_empty() {
+            f.label.trim().to_uppercase()
+        } else {
+            format!("{} {}", f.label.trim().to_uppercase(), hazard)
+        };
+    }
+    if ty.is_probability() {
+        let hazard = ty.short();
+        if hazard.is_empty() {
+            f.probability_text()
+        } else {
+            format!("{} {}", f.probability_text(), hazard)
+        }
+    } else if f.label.trim().is_empty() {
+        f.name.clone()
+    } else {
+        f.label.trim().to_uppercase()
+    }
+}
+
+/// Text/plate colour for an outline label.
+///
+/// SPC ships a few features with a pure-black `stroke` (the conditional
+/// intensity areas), which on the dark label plate is invisible — the plate
+/// alone showed up as a black box. Lighten anything too dark to read while
+/// keeping the hue, so the label still matches its outline.
+fn label_text_color(rgb: [u8; 3]) -> egui::Color32 {
+    let lum = 0.2126 * rgb[0] as f32 + 0.7152 * rgb[1] as f32 + 0.0722 * rgb[2] as f32;
+    // Below this the text disappears against the near-black plate.
+    let t = if lum < 60.0 {
+        0.72
+    } else if lum < 110.0 {
+        0.5
+    } else if lum < 160.0 {
+        0.22
+    } else {
+        0.0
+    };
+    let mix = |c: u8| {
+        (c as f32 + (255.0 - c as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    egui::Color32::from_rgb(mix(rgb[0]), mix(rgb[1]), mix(rgb[2]))
+}
+
+/// Shoelace area of a screen-space ring (absolute value).
+fn ring_area(ring: &[egui::Pos2]) -> f32 {
+    if ring.len() < 3 {
+        return 0.0;
+    }
+    let mut sum = 0.0;
+    for i in 0..ring.len() {
+        let a = ring[i];
+        let b = ring[(i + 1) % ring.len()];
+        sum += a.x * b.y - b.x * a.y;
+    }
+    (sum * 0.5).abs()
+}
+
+/// Label font size for an outlook risk area, in points.
+fn label_font_px(scale: f32) -> f32 {
+    // Slightly below the map's own text: the plate has to sit on a thin
+    // boundary without swallowing it, and several bands are nested closely.
+    (10.5 * scale).clamp(10.0, 17.0)
+}
+
+/// Open the SPC outlook discussion for an area the user clicked, promoting
+/// that product to the legend/detail view.
+fn open_outlook_detail(app: &mut StormApp, o: &radar_core::outlooks::Outlook, dn: u16) {
+    app.state.outlook = Some(o.clone());
+    app.state.outlook_type = o.ty;
+    app.state.outlook_hover = None;
+    app.state.outlook_hover_ty = None;
+    app.state.outlook_detail_open = true;
+    app.state.outlook_detail_dn = Some(dn);
+    let day = app.state.outlook_day;
+    if app.state.outlook_discussion_requested != Some(day) {
+        app.state.outlook_discussion_requested = Some(day);
+        let _ = app.tx.send(crate::app::DataCmd::LoadOutlookDiscussion(day));
     }
 }
 
@@ -4241,6 +4630,118 @@ fn draw_dashed(
     }
 }
 
+/// Draw the resume strip when one is due, returning the vertical space it
+/// consumed (0 when there is nothing to show). Also enforces the timeout so
+/// a lost [`crate::app::DataMsg::LiveCatchupDone`] cannot leave the strip up forever.
+fn resume_catchup_strip_height(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    app: &mut StormApp,
+) -> f32 {
+    let Some(catchup) = app.state.resume_catchup else {
+        return 0.0;
+    };
+    if catchup.since.elapsed() > std::time::Duration::from_secs(75) {
+        app.state.end_resume_catchup();
+        return 0.0;
+    }
+    draw_resume_catchup_strip(ui, painter, rect, app)
+}
+
+/// Fullscreen variant: the badge rail is hidden there, but a long-resume
+/// catch-up still needs to say why the frame is stale. The strip is pinned
+/// below the status-bar inset so it stays tappable-free but readable.
+pub(super) fn draw_resume_catchup_in_fullscreen(
+    ui: &egui::Ui,
+    full: egui::Rect,
+    app: &mut StormApp,
+) {
+    let safe_top = ui.ctx().input(|i| i.safe_area_insets().0.top);
+    let strip_rect =
+        egui::Rect::from_min_max(egui::pos2(full.min.x, full.min.y + safe_top), full.max);
+    let painter = ui.painter_at(full);
+    let _ = resume_catchup_strip_height(ui, &painter, strip_rect, app);
+}
+
+/// Full-width strip announcing the post-background catch-up download.
+///
+/// It is shown only while [`crate::state::AppState::resume_catchup`] is set — i.e. after a
+/// long Android background spell — and never for downloads started while the
+/// app is in use. It sits in the same top strip as the mode/age pills, so it
+/// announces the download without covering the middle of the radar; the
+/// badges move down by its height while it is up.
+fn draw_resume_catchup_strip(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    app: &StormApp,
+) -> f32 {
+    let scale = app.sidebar_scale.clamp(1.0, 1.2);
+    let now = ui.ctx().input(|i| i.time) as f32;
+    // A slow pulse on the border (the arc spins faster) reads as "working"
+    // without looking like an alarm.
+    let pulse = 0.6 + 0.4 * (now * 3.0).sin();
+    let amber = egui::Color32::from_rgb(255, 205, 96);
+    let h = 44.0 * scale;
+    let bg = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 4.0, rect.min.y + 8.0),
+        egui::vec2((rect.width() - 8.0).max(1.0), h),
+    );
+    painter.rect_filled(bg, 9.0, egui::Color32::from_black_alpha(240));
+    painter.rect_stroke(
+        bg,
+        9.0,
+        egui::Stroke::new(1.8, amber.gamma_multiply(0.5 + 0.5 * pulse)),
+        egui::StrokeKind::Outside,
+    );
+
+    // Spinner: a rotating 280-degree arc in the strip's accent colour.
+    let center = egui::pos2(bg.min.x + 26.0 * scale, bg.center().y);
+    let radius = 9.5 * scale;
+    let start = now * 5.0;
+    let steps = 22;
+    let arc: Vec<egui::Pos2> = (0..=steps)
+        .map(|i| {
+            let a = start + i as f32 / steps as f32 * std::f32::consts::TAU * 0.78;
+            egui::pos2(center.x + radius * a.cos(), center.y + radius * a.sin())
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        arc,
+        egui::Stroke::new(2.6 * scale, amber),
+    ));
+
+    // Shrink to fit narrow phones instead of running under the border, so
+    // the strip stays fully legible on the Pixel 9A.
+    let max_w = (bg.width() - 64.0 * scale).max(80.0);
+    let mut font_px = 16.5 * scale;
+    let galley = loop {
+        let galley = painter.layout_no_wrap(
+            "Downloading the latest radar frame…".to_owned(),
+            egui::FontId::proportional(font_px),
+            egui::Color32::WHITE,
+        );
+        if galley.size().x <= max_w || font_px <= 11.0 * scale {
+            break galley;
+        }
+        font_px -= 0.5 * scale;
+    };
+    painter.galley(
+        egui::pos2(
+            center.x + radius + 14.0 * scale,
+            bg.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        egui::Color32::WHITE,
+    );
+
+    // Keep the arc spinning and the timeout below ticking.
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(50));
+    h + 6.0
+}
+
 /// Top-center badges: the scan-mode badge (precip vs clear-air, with VCP)
 /// plus the exact age of the newest radar data. Clear-air returns are
 /// legitimately thin and speckled — the mode badge answers "why does the
@@ -4253,12 +4754,22 @@ fn draw_dashed(
 /// selected station has a watch or warning in force nearby, the badge
 /// flashes in that alert's family color (dimmed for watches), so an issued
 /// watch/warning is visible without opening anything.
-fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app: &mut StormApp) {
+pub(super) fn draw_top_badges(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    app: &mut StormApp,
+) {
     use radar_core::vcp::ScanMode;
     // The age readout ticks every second, so keep a 1 Hz repaint coming even
     // when the loop is paused and nothing else animates.
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_secs(1));
+
+    // Long Android resume: a full-width strip across the badge row announces
+    // the catch-up download. Only resumes set it, so live polling and archive
+    // loads started in-app never paint anything.
+    let banner_h = resume_catchup_strip_height(ui, painter, rect, app);
 
     let mut badges: Vec<TopBadge> = Vec::new();
     if app.state.current().is_some() {
@@ -4402,7 +4913,7 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
         })
         .collect();
     let gap = 8.0;
-    let top = rect.min.y + 8.0;
+    let top = rect.min.y + 8.0 + banner_h;
     // Lay the pills out into rows that fit, then centre each row. Force the
     // Forecast pill to start a fresh row on Android so Forecast and
     // FutureCast always share one row.
@@ -4554,7 +5065,7 @@ fn draw_top_badges(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, app
                 }
                 BadgeKind::Futurecast => {
                     let show = !app.state.show_futurecast;
-                    app.state.show_futurecast = show;
+                    app.set_futurecast(show);
                     if show {
                         app.state.loop_state = crate::state::LoopState::Paused;
                         app.state.futurecast_playing = true;
@@ -4906,7 +5417,18 @@ fn outlook_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormAp
     if ui.input(|i| i.time) - app.state.outlook_hover_at < 1.0 {
         return;
     }
-    let Some(o) = app.state.outlook.as_ref() else {
+    // Resolve the product the hover actually came from, not just the one
+    // currently promoted into `state.outlook`.
+    let ty = app.state.outlook_hover_ty;
+    let candidates = if app.state.outlooks.is_empty() {
+        app.state.outlook.iter().collect::<Vec<_>>()
+    } else {
+        app.state.outlooks.iter().collect::<Vec<_>>()
+    };
+    let Some(o) = candidates
+        .iter()
+        .find(|o| ty.is_none_or(|t| o.ty == t) && o.features.iter().any(|f| f.dn == dn))
+    else {
         return;
     };
     let Some(f) = o.features.iter().find(|f| f.dn == dn) else {
@@ -5464,6 +5986,161 @@ fn marker_popup(ui: &egui::Ui, app: &mut StormApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Labels ride the outline they name, so the line is visibly tied to the
+    /// text. Every candidate has to be a point on the ring, not inside it.
+    #[test]
+    fn outlook_label_candidates_sit_on_the_outline() {
+        let ring: Vec<egui::Pos2> = vec![
+            egui::pos2(10.0, 10.0),
+            egui::pos2(110.0, 10.0),
+            egui::pos2(110.0, 110.0),
+            egui::pos2(10.0, 110.0),
+        ];
+        let candidates = ring_label_candidates(&ring);
+        assert!(candidates.len() >= 4, "expected points around the ring");
+        // Every candidate lies on one of the four edges.
+        for p in &candidates {
+            let on_edge = (p.x - 10.0).abs() < 0.01
+                || (p.x - 110.0).abs() < 0.01
+                || (p.y - 10.0).abs() < 0.01
+                || (p.y - 110.0).abs() < 0.01;
+            assert!(on_edge, "candidate {p:?} is not on the outline");
+        }
+    }
+
+    /// Candidate generation starts at the top of the ring, so a label lands
+    /// somewhere readable when nothing is in the way.
+    #[test]
+    fn outlook_label_candidates_start_at_the_top() {
+        let ring: Vec<egui::Pos2> = vec![
+            egui::pos2(10.0, 10.0),
+            egui::pos2(110.0, 10.0),
+            egui::pos2(110.0, 110.0),
+            egui::pos2(10.0, 110.0),
+        ];
+        let first = ring_label_candidates(&ring)[0];
+        assert!((first.y - 10.0).abs() < 0.01, "first candidate {first:?}");
+    }
+
+    /// The anchor must not move when the map is panned: dragging translates
+    /// every point by the same amount, so the chosen vertex has to follow.
+    #[test]
+    fn outlook_label_anchor_is_stable_under_pan() {
+        use radar_core::outlooks::OutlookType as T;
+        let ring: Vec<egui::Pos2> = vec![
+            egui::pos2(40.0, 40.0),
+            egui::pos2(170.0, 55.0),
+            egui::pos2(140.0, 150.0),
+            egui::pos2(60.0, 130.0),
+        ];
+        let before = ring_label_candidates(&ring);
+        let a = outlook_label_anchor_order(&before, T::Tornado, 5)[0];
+        let pan = egui::vec2(313.0, -87.0);
+        let moved: Vec<egui::Pos2> = before.iter().map(|p| *p + pan).collect();
+        let b = outlook_label_anchor_order(&moved, T::Tornado, 5)[0];
+        assert!(
+            (b - (a + pan)).length() < 0.01,
+            "anchor moved relative to the map: {a:?} -> {b:?}"
+        );
+    }
+
+    /// Zooming is a uniform scale, so the sampled outline and the chosen
+    /// anchor must scale with it. Before this was pinned to a fixed pixel
+    /// spacing, which re-sampled the ring on every zoom and made the labels
+    /// hop along the border.
+    #[test]
+    fn outlook_label_candidates_are_stable_under_zoom() {
+        use radar_core::outlooks::OutlookType as T;
+        let ring: Vec<egui::Pos2> = vec![
+            egui::pos2(40.0, 40.0),
+            egui::pos2(170.0, 55.0),
+            egui::pos2(140.0, 150.0),
+            egui::pos2(60.0, 130.0),
+        ];
+        let before = ring_label_candidates(&ring);
+        let a = outlook_label_anchor_order(&before, T::Tornado, 5)[0];
+        let zoom = 2.5;
+        let scaled: Vec<egui::Pos2> = ring
+            .iter()
+            .map(|p| egui::pos2(p.x * zoom, p.y * zoom))
+            .collect();
+        let after = ring_label_candidates(&scaled);
+        assert_eq!(before.len(), after.len(), "sample count changed with zoom");
+        for (p, q) in before.iter().zip(&after) {
+            let expected = egui::pos2(p.x * zoom, p.y * zoom);
+            assert!(
+                (*q - expected).length() < 0.01,
+                "candidate moved on the outline: {p:?} -> {q:?}"
+            );
+        }
+        let b = outlook_label_anchor_order(&after, T::Tornado, 5)[0];
+        let expected = egui::pos2(a.x * zoom, a.y * zoom);
+        assert!(
+            (b - expected).length() < 0.05,
+            "label anchor jumped when zooming: {a:?} -> {b:?}"
+        );
+    }
+
+    /// Different products take different sides of the same area, so nested
+    /// bands do not stack on one bearing.
+    #[test]
+    fn outlook_label_bearings_differ_by_product() {
+        use radar_core::outlooks::OutlookType as T;
+        let north = outlook_label_bearing(T::Categorical, 4).y;
+        let south = outlook_label_bearing(T::Wind, 5).y;
+        assert!(north < 0.0 && south > 0.0);
+        let west = outlook_label_bearing(T::Categorical, 4).x;
+        let east = outlook_label_bearing(T::Tornado, 5).x;
+        assert!(west < 0.0 && east > 0.0);
+    }
+
+    /// Degenerate geometry yields no label rather than a panic.
+    #[test]
+    fn outlook_label_candidates_skip_degenerate_rings() {
+        assert!(ring_label_candidates(&[]).is_empty());
+        assert!(ring_label_candidates(&[egui::pos2(1.0, 1.0), egui::pos2(2.0, 2.0)]).is_empty());
+    }
+
+    /// Probability labels name their hazard, so ALL mode (where categorical
+    /// and probability outlines are drawn together) can tell a 10% tornado
+    /// chance from a 10% hail chance.
+    #[test]
+    fn outlook_labels_name_the_hazard() {
+        use radar_core::outlooks::{OutlookFeature, OutlookType as T};
+        let base = |label: &str| OutlookFeature {
+            dn: 4,
+            label: label.into(),
+            name: String::new(),
+            stroke: [0, 0, 0],
+            fill: [0, 0, 0],
+            polygons: Vec::new(),
+        };
+        let cat = base("SLGT");
+        assert_eq!(outlook_label_text(&cat, T::Categorical), "SLGT");
+        let prob = base("0.10");
+        assert_eq!(outlook_label_text(&prob, T::Tornado), "10% TOR");
+        assert_eq!(outlook_label_text(&prob, T::Wind), "10% WIND");
+        assert_eq!(outlook_label_text(&prob, T::Hail), "10% HAIL");
+        // Conditional-intensity areas ship a bare "CIG1"; name the hazard too.
+        let cig = base("CIG1");
+        assert_eq!(outlook_label_text(&cig, T::Tornado), "CIG1 TOR");
+        assert_eq!(outlook_label_text(&cig, T::Wind), "CIG1 WIND");
+    }
+
+    /// SPC ships the CIG areas with a pure-black stroke. The label text must
+    /// be lightened or it vanishes into the dark plate, leaving a black box.
+    #[test]
+    fn outlook_label_colour_stays_legible() {
+        let black = label_text_color([0, 0, 0]);
+        assert!(
+            black.r() > 120 && black.g() > 120 && black.b() > 120,
+            "black label colour was not lightened: {black:?}"
+        );
+        // A bright SPC colour passes through untouched.
+        let yellow = label_text_color([0xDD, 0xAA, 0x00]);
+        assert_eq!(yellow, egui::Color32::from_rgb(0xDD, 0xAA, 0x00));
+    }
 
     /// The map's hover probe reads the gate the pixel is in, reports the beam
     /// height and the geometry, and finds the column maximum for

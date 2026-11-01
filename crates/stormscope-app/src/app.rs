@@ -7,6 +7,10 @@ use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+/// Android: a background spell at least this long is announced with the
+/// prominent resume catch-up strip. Shorter app switches catch up silently.
+const RESUME_CATCHUP_NOTICE_MS: i64 = 120_000;
+
 /// Force the native window frame dark, independent of the Windows app theme.
 ///
 /// The app is always dark, so a light titlebar and the Windows 11 border look
@@ -72,6 +76,18 @@ pub enum AiRequestKind {
 /// Messages from background data threads -> UI.
 pub enum DataMsg {
     Volume(Arc<radar_core::Volume>),
+    /// Newest volume for one secondary 2D radar pane.
+    PaneVolume {
+        slot: usize,
+        site: String,
+        volume: Arc<radar_core::Volume>,
+    },
+    /// Secondary-pane fetch failed.
+    PaneVolumeError {
+        slot: usize,
+        site: String,
+        error: String,
+    },
     /// Alerts near the selected site (drawn on the map).
     Alerts(Vec<radar_core::warnings::Warning>),
     /// Alerts that apply exactly to the selected station (fast lane).
@@ -159,6 +175,10 @@ pub enum DataMsg {
     Error(String),
     /// Drop every ring frame (mode switch / archive window change).
     ClearFrames,
+    /// The post-resume live catch-up finished: a new scan was decoded, or
+    /// the feed was already current. Clears the resume catch-up strip even
+    /// when nothing new needed downloading.
+    LiveCatchupDone,
     /// Warning-archive backfill status (crawler progress).
     ArchiveCrawl(radar_data::warnings_archive::CrawlStatus),
     /// Bulk radar load progress (counts only; the UI shows a pill while a
@@ -299,6 +319,11 @@ pub enum DataCmd {
     /// from what the app is watching (a silent desync dropped every volume).
     EnterLive(String),
     RefreshLive(String),
+    /// Fetch the newest volume for a secondary 2D pane slot.
+    LoadPaneVolume {
+        slot: usize,
+        site: String,
+    },
     /// Derive storm-relative velocity for one motion setting (the SRM
     /// product's inputs change with the sliders, so this can't be attached
     /// at decode like VIL/TOPS/MEHS).
@@ -474,6 +499,14 @@ pub struct StormApp {
     /// changes — never every frame. Reused across re-rasters via
     /// `TextureHandle::set` (one GPU texture, not one per frame).
     pub radar_tex: Option<RadarTex>,
+    /// Per-secondary-pane radar textures, indexed by pane slot.
+    pub pane_radar_tex: Vec<Option<PaneRadarTex>>,
+    /// Per-pane scratch buffers for secondary radar rasters.
+    pub pane_radar_buf: Vec<Vec<u8>>,
+    /// Last raster time per secondary pane, to throttle drags.
+    pub pane_last_raster: Vec<std::time::Instant>,
+    /// Drag origin for a secondary pane: (slot, start view, press position).
+    pub pane_drag_start: Option<(usize, radar_render::MapView, egui::Pos2)>,
     /// Cached per-gate screen geometry for the current sweep layout + zoom.
     /// Gate geolocation is ~half the raster cost and depends only on the
     /// layout, site, and zoom — so pans, moment switches, Min dBZ tweaks and
@@ -619,6 +652,12 @@ pub struct StormApp {
     pub map_drag_start: Option<(radar_render::MapView, egui::Pos2)>,
     /// Automatic per-scan Live AI Tracking state, rolling memory and feed.
     pub live_ai: crate::live_ai::LiveAi,
+    /// True for a secondary full-featured radar pane. Secondary apps never
+    /// draw app-wide windows or run primary-only startup side effects.
+    pub is_secondary: bool,
+    /// Full independent radar apps for secondary panes (desktop up to three,
+    /// Android one). Each owns its own data thread, ring, map and warnings.
+    pub pane_apps: Vec<Option<Box<StormApp>>>,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -634,6 +673,15 @@ pub struct MarkerEta {
 
 /// One cached radar overlay raster plus the view it was produced for, so a
 /// drag can keep it georeferenced by translation instead of rubber-banding.
+pub struct PaneRadarTex {
+    pub handle: egui::TextureHandle,
+    pub sig: u64,
+    pub site: String,
+    pub ox: f64,
+    pub oy: f64,
+    pub zoom: f64,
+}
+
 pub struct RadarTex {
     pub handle: egui::TextureHandle,
     /// Full raster signature (frame content + view + scale).
@@ -697,7 +745,16 @@ impl StormApp {
         let shared = Arc::clone(&data);
         std::thread::Builder::new()
             .name("data".into())
-            .spawn(move || crate::background::run(rx_ui, tx_ui, cancel, shared))
+            .spawn(move || {
+                crate::background::run(
+                    rx_ui,
+                    tx_ui,
+                    cancel,
+                    shared,
+                    false,
+                    radar_core::DEFAULT_SITE.to_string(),
+                )
+            })
             .expect("spawn data thread");
 
         // A window's resize band is only a few pixels wide by default; on a
@@ -767,6 +824,14 @@ impl StormApp {
             render_state: cc.wgpu_render_state.clone(),
             tiles,
             radar_tex: None,
+            pane_radar_tex: vec![None, None, None],
+            pane_radar_buf: vec![Vec::new(), Vec::new(), Vec::new()],
+            pane_last_raster: vec![
+                std::time::Instant::now() - std::time::Duration::from_secs(5),
+                std::time::Instant::now() - std::time::Duration::from_secs(5),
+                std::time::Instant::now() - std::time::Duration::from_secs(5),
+            ],
+            pane_drag_start: None,
             radar_geom: None,
             radar_buf: Vec::new(),
             radar_last_raster: std::time::Instant::now(),
@@ -829,6 +894,8 @@ impl StormApp {
             ai_data_from_live: false,
             map_drag_start: None,
             live_ai: crate::live_ai::LiveAi::default(),
+            is_secondary: false,
+            pane_apps: Vec::new(),
         };
         // The data thread boots on the hard-coded default; if the user saved
         // a different startup site, switch it immediately.
@@ -836,6 +903,161 @@ impl StormApp {
             let _ = app.tx.send(DataCmd::SetSite(app.state.site_id.clone()));
         }
         app
+    }
+
+    /// Build a complete independent radar app for a secondary pane. It owns
+    /// its own data thread, ring, alerts and map caches; only app-wide
+    /// windows, voice setup, fonts and the native video child are skipped.
+    pub fn new_secondary(
+        ctx: &egui::Context,
+        render_state: Option<egui_wgpu::RenderState>,
+        site_id: &str,
+    ) -> Self {
+        let (tx_ui, rx_data): (Sender<DataMsg>, Receiver<DataMsg>) = std::sync::mpsc::channel();
+        let (tx_data, rx_ui): (Sender<DataCmd>, Receiver<DataCmd>) = std::sync::mpsc::channel();
+        let data = Arc::new(Mutex::new(SharedData {
+            sites: radar_core::sites::SITES.iter().collect(),
+            tilts: vec![
+                0.5, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.1, 6.4, 8.0, 10.0, 12.0, 19.5,
+            ],
+            gps_fix: None,
+            watch_markers: Vec::new(),
+            storm_watch_enabled: false,
+            live_mode: true,
+        }));
+        let archive_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::clone(&archive_cancel);
+        let shared = Arc::clone(&data);
+        let thread_site = site_id.to_string();
+        std::thread::Builder::new()
+            .name(format!("pane-data-{site_id}"))
+            .spawn(move || crate::background::run(rx_ui, tx_ui, cancel, shared, true, thread_site))
+            .expect("spawn secondary data thread");
+
+        let mut state = AppState::default();
+        state.site_id = site_id.to_string();
+        state.view = crate::state::view_for_site(site_id);
+        state.view.width_px = 1280.0;
+        state.view.height_px = 800.0;
+        state.ring_budget_bytes = if cfg!(target_os = "android") {
+            600 * 1024 * 1024
+        } else {
+            900 * 1024 * 1024
+        };
+        state.startup_radar_visible = true;
+        state.radar_panes = 1;
+
+        let cache_root = radar_data::DiskCache::default_root();
+        let tiles = radar_render::TileLayer::new(cache_root.join("tiles"));
+        let app = Self {
+            state,
+            tx: tx_data,
+            rx: rx_data,
+            archive_cancel,
+            data,
+            render_state,
+            tiles,
+            radar_tex: None,
+            pane_radar_tex: vec![None, None, None],
+            pane_radar_buf: vec![Vec::new(), Vec::new(), Vec::new()],
+            pane_last_raster: vec![
+                std::time::Instant::now() - std::time::Duration::from_secs(5),
+                std::time::Instant::now() - std::time::Duration::from_secs(5),
+                std::time::Instant::now() - std::time::Duration::from_secs(5),
+            ],
+            pane_drag_start: None,
+            radar_geom: None,
+            radar_buf: Vec::new(),
+            radar_last_raster: std::time::Instant::now(),
+            radar_pending: None,
+            radar_view_change_at: std::time::Instant::now(),
+            radar_last_view_sig: 0,
+            tracks_cache: None,
+            srm_requested_at: None,
+            mrms_tex: Vec::new(),
+            qpe_tex: Vec::new(),
+            model_field_tex: Vec::new(),
+            goes_tex: Vec::new(),
+            level3_tex: Vec::new(),
+            midlevel_tex: Vec::new(),
+            futurecast_tex: Vec::new(),
+            youtube_tex: Vec::new(),
+            #[cfg(not(target_os = "android"))]
+            video_embed: None,
+            youtube_video_rect: None,
+            view3d_section_key: None,
+            prev_tracks: Vec::new(),
+            marker_etas: Vec::new(),
+            rotation_cache: None,
+            hail_cache: None,
+            vad_cache: None,
+            qc_cache: None,
+            view3d: None,
+            map_rect_at: None,
+            view3d_rect_at: None,
+            view3d_interact_at: std::time::Instant::now() - std::time::Duration::from_secs(60),
+            top_badge_hovered: None,
+            map_alert_cycle: None,
+            frame_count: 0,
+            frame_sum_ms: 0.0,
+            frame_max_ms: 0.0,
+            frame_gap_max_ms: 0.0,
+            frame_stat_at: std::time::Instant::now(),
+            last_frame_at: None,
+            radar_raster_count: 0,
+            view3d_count_seen: 0,
+            radar_raster_times: std::collections::VecDeque::new(),
+            radar_churn_warn_at: std::time::Instant::now(),
+            last_native_ppp: None,
+            confirm_clear: None,
+            tex_stats_at: std::time::Instant::now(),
+            last_trim: std::time::Instant::now(),
+            sidebar_open: false,
+            sidebar_scale: 1.0,
+            ai_fresh_queue: None,
+            ai_fresh_started: None,
+            ai_fresh_deadline: None,
+            #[cfg(target_os = "android")]
+            live: None,
+            #[cfg(target_os = "android")]
+            live_rx: None,
+            #[cfg(target_os = "android")]
+            live_pending_tool: None,
+            #[cfg(not(target_os = "android"))]
+            live_pending_tool: None,
+            ai_data_from_live: false,
+            map_drag_start: None,
+            live_ai: crate::live_ai::LiveAi::default(),
+            is_secondary: true,
+            pane_apps: Vec::new(),
+        };
+        if site_id != radar_core::DEFAULT_SITE {
+            let _ = app.tx.send(DataCmd::SetSite(site_id.to_string()));
+        }
+        // Touch the context once so the secondary map uses the same egui
+        // context revision and style as the primary app.
+        let _ = ctx;
+        app
+    }
+
+    /// Turn FutureCast on/off. FutureCast owns the whole central map, so
+    /// entering it temporarily collapses a multi-pane layout; leaving it
+    /// restores the pane count the user had before.
+    pub fn set_futurecast(&mut self, show: bool) {
+        if self.state.show_futurecast == show {
+            return;
+        }
+        self.state.show_futurecast = show;
+        if show {
+            if self.state.radar_panes > 1 {
+                self.state.futurecast_pane_restore = Some(self.state.radar_panes);
+                self.state.radar_panes = 1;
+                self.pane_apps.clear();
+            }
+        } else if let Some(count) = self.state.futurecast_pane_restore.take() {
+            self.state.radar_panes = count.clamp(1, crate::state::max_radar_panes());
+            self.state.ensure_radar_panes();
+        }
     }
 
     /// Leave archive/replay and return to live radar: the mode flips,
@@ -855,6 +1077,34 @@ impl StormApp {
         let _ = self
             .tx
             .send(crate::app::DataCmd::EnterLive(self.state.site_id.clone()));
+    }
+
+    /// Keep the active secondary 2D panes supplied with their newest scan.
+    /// Each pane is a latest-scan snapshot; the main pane owns the timeline.
+    pub fn refresh_secondary_panes(&mut self) {
+        self.state.ensure_radar_panes();
+        for slot in 0..self.state.radar_panes.saturating_sub(1) {
+            let Some(pane) = self.state.secondary_radar_panes.get_mut(slot) else {
+                continue;
+            };
+            if pane.site_id.is_empty() {
+                continue;
+            }
+            let stale = pane
+                .fetched_at
+                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(120));
+            let backoff = pane
+                .requested_at
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60));
+            if stale && !backoff {
+                pane.requested_at = Some(std::time::Instant::now());
+                pane.error = None;
+                let _ = self.tx.send(DataCmd::LoadPaneVolume {
+                    slot,
+                    site: pane.site_id.clone(),
+                });
+            }
+        }
     }
 
     /// Rescan the on-disk cache for the selected station. Cheap (one
@@ -1182,12 +1432,37 @@ impl StormApp {
     }
 
     /// Drain messages from the background thread.
-    fn pump(&mut self) {
+    pub(crate) fn pump(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
+                DataMsg::PaneVolume { slot, site, volume } => {
+                    if let Some(pane) = self.state.secondary_radar_panes.get_mut(slot)
+                        && pane.site_id == site
+                    {
+                        pane.volume = Some(volume);
+                        pane.fetched_at = Some(std::time::Instant::now());
+                        pane.requested_at = None;
+                        pane.error = None;
+                    }
+                }
+                DataMsg::PaneVolumeError { slot, site, error } => {
+                    if let Some(pane) = self.state.secondary_radar_panes.get_mut(slot)
+                        && pane.site_id == site
+                    {
+                        // Back off for a minute instead of retrying every
+                        // frame while an upstream is unavailable.
+                        pane.requested_at = Some(std::time::Instant::now());
+                        pane.error = Some(error);
+                    }
+                }
                 DataMsg::Volume(v) => {
                     let site = v.meta.site_id.clone();
-                    self.state.push_volume(v);
+                    let start = v.meta.volume_start;
+                    if self.state.push_volume(v) {
+                        // The resume strip is waiting for a scan newer than
+                        // the one that was on screen when the app came back.
+                        self.state.note_resume_volume(start);
+                    }
                     // A LOOK that needed a closer radar waits for its first
                     // volume, then runs against that volume.
                     if self.state.ai_pending_site.as_deref() == Some(site.as_str()) {
@@ -1579,6 +1854,8 @@ impl StormApp {
                     self.state.playhead = 0;
                     self.state.timeline_scrub_last_touch = None;
                     self.state.timeline_scrub_pointer_down = false;
+                    // A site/mode switch supersedes the resume catch-up.
+                    self.state.end_resume_catchup();
                     self.radar_tex = None;
                     self.radar_pending = None;
                     self.rotation_cache = None;
@@ -1609,6 +1886,11 @@ impl StormApp {
                 }
                 DataMsg::ArchiveCrawl(status) => {
                     self.state.archive_crawl = Some(status);
+                }
+                DataMsg::LiveCatchupDone => {
+                    // The resume catch-up has finished, even if there was
+                    // nothing new to fetch: the strip must not outlive it.
+                    self.state.end_resume_catchup();
                 }
                 DataMsg::LoadProgress {
                     label,
@@ -4549,12 +4831,24 @@ impl StormApp {
             // the frames already in memory and only asks for the newest scan;
             // it does not clear or replay the cached timeline.
             if crate::android_lifecycle::take_resume_refresh() {
+                let background_ms = crate::android_lifecycle::take_resume_background_ms();
                 // Returning to the app counts as leaving the scrub bar. This
                 // also covers closing the app during the 30-second hold:
                 // reopening lands on the newest scan instead of restoring an
                 // old frame.
                 self.state.end_timeline_hold();
+                // A real absence gets the prominent catch-up strip; a quick
+                // app switch restarts the feed silently. A cold start is
+                // already explained by the startup card, and FutureCast is
+                // not showing live radar, so neither gets the strip.
+                self.state.end_resume_catchup();
                 if self.state.mode == crate::state::Mode::Live {
+                    if background_ms >= RESUME_CATCHUP_NOTICE_MS
+                        && self.state.startup_radar_visible
+                        && !self.state.show_futurecast
+                    {
+                        self.state.begin_resume_catchup();
+                    }
                     let _ = self
                         .tx
                         .send(DataCmd::RefreshLive(self.state.site_id.clone()));

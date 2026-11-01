@@ -71,6 +71,18 @@ impl OutlookType {
         }
     }
 
+    /// Short hazard tag for a map label: SPC writes these on its own
+    /// probability maps ("10% TOR", "15% WIND"), and in ALL mode every
+    /// product is drawn at once, so a bare percentage would be unreadable.
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::Categorical => "",
+            Self::Tornado => "TOR",
+            Self::Wind => "WIND",
+            Self::Hail => "HAIL",
+        }
+    }
+
     pub fn is_probability(self) -> bool {
         self != Self::Categorical
     }

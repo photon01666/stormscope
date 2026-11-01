@@ -31,7 +31,7 @@ pub const ARCHIVE_BUCKET: &str = "unidata-nexrad-level2";
 pub const REALTIME_BUCKET: &str = "unidata-nexrad-level2-chunks";
 
 /// Poll interval for the live chunk bucket. Chunks land every ~4-12 s.
-const REALTIME_POLL: Duration = Duration::from_secs(5);
+const REALTIME_POLL: Duration = Duration::from_secs(30);
 
 /// Handle to a running realtime poller. Dropping it (or calling
 /// [`RealtimePoller::stop`]) cancels the poller thread at its next loop

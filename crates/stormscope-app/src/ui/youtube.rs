@@ -186,11 +186,20 @@ pub fn youtube_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect)
     let mut close = false;
     let mut play_request: Option<(String, String)> = None;
 
-    let mut window = egui::Window::new("Forecast videos")
+    let window = egui::Window::new("Forecast videos")
         .id(egui::Id::new("stormscope.youtube.feed"))
-        .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .max_width((screen.x - 16.0).max(260.0));
+    // `fixed_rect` anchors the top-left; keep the centre pivot for desktop
+    // floating windows only.
+    #[cfg(target_os = "android")]
+    let mut window = if fill {
+        window.pivot(egui::Align2::LEFT_TOP)
+    } else {
+        window.pivot(egui::Align2::CENTER_CENTER)
+    };
+    #[cfg(not(target_os = "android"))]
+    let mut window = window.pivot(egui::Align2::CENTER_CENTER);
     #[cfg(target_os = "android")]
     if fill {
         window = window.title_bar(false);

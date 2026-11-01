@@ -13,6 +13,7 @@ mod hrrr;
 mod map;
 mod midlevel;
 mod model_compare;
+mod radar_panes;
 mod reports;
 mod sounding;
 mod synoptic;
@@ -201,6 +202,17 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     if ui.ctx().input(|i| i.key_pressed(egui::Key::BrowserBack)) {
         if app.state.fullscreen {
             set_fullscreen(ui.ctx(), app);
+        } else if app
+            .pane_apps
+            .iter()
+            .flatten()
+            .any(|pane| pane.state.map_controls_open)
+        {
+            // A secondary pane owns its own Controls state; Back must close
+            // it before falling through to the app-level sidebar/windows.
+            for pane in app.pane_apps.iter_mut().flatten() {
+                pane.state.map_controls_open = false;
+            }
         } else if app.state.map_controls_open {
             // Back first returns from SPC outlook to Display, then closes.
             if app.state.map_controls_tab == crate::state::MapControlsTab::Outlook {
@@ -260,6 +272,14 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     if app.state.fullscreen {
         if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
             set_fullscreen(ui.ctx(), app);
+        }
+        // Dual/quad fullscreen: both radar panes stay visible, but every
+        // app-level control, badge and timeline disappears.
+        if app.state.radar_panes > 1 {
+            egui::CentralPanel::default().show(ui, |ui| {
+                radar_panes::show_fullscreen(ui, app);
+            });
+            return;
         }
         // Android fullscreen keeps the timeline scrubber: a long-press gives
         // the map the whole screen, but the user still needs to scrub the
@@ -374,7 +394,24 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     crate::ui::update_dialog(ui.ctx(), app);
 
     // Per-pane control windows (opened from each pane's bottom-right chip).
-    map_controls_window(ui.ctx(), app, pane_area);
+    // Secondary windows are drawn here, at the same app-level stage as pane
+    // 1's window, so they use exactly the same template/rect instead of being
+    // clipped by the pane that spawned them.
+    map_controls_window(ui.ctx(), app, pane_area, 0, app.state.radar_panes > 1);
+    for slot in 0..app.state.radar_panes.saturating_sub(1) {
+        if let Some(mut pane_app) = app.pane_apps.get_mut(slot).and_then(Option::take) {
+            map_controls_window(
+                ui.ctx(),
+                pane_app.as_mut(),
+                pane_area,
+                slot + 1,
+                app.state.radar_panes > 1,
+            );
+            if let Some(slot_app) = app.pane_apps.get_mut(slot) {
+                *slot_app = Some(pane_app);
+            }
+        }
+    }
     view3d_controls_window(ui.ctx(), app);
 
     // Product explainer (the (i) beside the Product selector).
@@ -411,7 +448,15 @@ fn startup_loading_overlay(ctx: &egui::Context, app: &mut StormApp) {
         return;
     }
     // Do not cover a window the user has explicitly opened.
-    if app.state.ai_open || app.state.forecast_open {
+    if app.state.ai_open
+        || app.state.forecast_open
+        || app.state.map_controls_open
+        || app
+            .pane_apps
+            .iter()
+            .flatten()
+            .any(|pane| pane.state.map_controls_open)
+    {
         return;
     }
 
@@ -521,6 +566,25 @@ fn forecast_pick_hint(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rec
     }
 }
 
+/// Analysis windows a secondary radar pane can open from its map Controls.
+/// They use the pane app's own state/data, and the same full-window treatment
+/// as the primary app.
+pub(crate) fn secondary_analysis_windows(
+    ctx: &egui::Context,
+    app: &mut StormApp,
+    area: egui::Rect,
+) {
+    sounding::sounding_window(ctx, app, area);
+    hrrr::hrrr_window(ctx, app, area);
+    ensemble::ensemble_window(ctx, app, area);
+    model_compare::model_compare_window(ctx, app, area);
+    midlevel::midlevel_window(ctx, app, area);
+    vad::vad_window(ctx, app, area);
+    totals::totals_window(ctx, app, area);
+    verify::verification_window(ctx, app, area);
+    trends::storm_trends_window(ctx, app, area);
+}
+
 /// The central area: 2D map alone, or side-by-side with the 3D volume pane.
 ///
 /// Panes carry small chips in their top-right corner ("Max" / "Split" /
@@ -532,6 +596,10 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
     let scale = app.sidebar_scale.max(1.0);
     let chip_y = |rect: egui::Rect| rect.min.y + 8.0 * scale;
 
+    if !app.state.view3d_open && radar_panes::show(ui, app) {
+        return;
+    }
+
     match (app.state.view3d_open, app.state.pane_max) {
         // 3D closed: the map. The 3D pane is opened from the sidebar's
         // "3D radar pane" checkbox; no map chip competes with the map.
@@ -542,7 +610,7 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             let controls = {
                 // Bottom-left: Settings (AI sits above it). Bottom-right,
                 // bottom to top: Controls, GPS.
-                let side = 62.0 * scale;
+                let side = map_chip_side(scale);
                 let _settings = settings_chip(
                     ui,
                     egui::pos2(full.min.x + 8.0 * scale + side, bottom_right(full, scale).y),
@@ -627,7 +695,7 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             }
             #[cfg(target_os = "android")]
             let controls = {
-                let side = 62.0 * scale;
+                let side = map_chip_side(scale);
                 let _settings = settings_chip(
                     ui,
                     egui::pos2(full.min.x + 8.0 * scale + side, bottom_right(full, scale).y),
@@ -763,7 +831,7 @@ fn central_panes(ui: &mut egui::Ui, app: &mut StormApp) {
             app.view3d_rect_at = Some(v3_rect);
             #[cfg(target_os = "android")]
             let map_controls = {
-                let side = 62.0 * scale;
+                let side = map_chip_side(scale);
                 let _settings = settings_chip(
                     ui,
                     egui::pos2(
@@ -815,6 +883,14 @@ fn bottom_right(rect: egui::Rect, scale: f32) -> egui::Pos2 {
     egui::pos2(rect.max.x - 8.0 * scale, rect.max.y - 8.0 * scale)
 }
 
+/// Side length of the phone/tablet icon chips. High-res tablets report a much
+/// larger sidebar scale than phones; without a cap the Settings / Controls /
+/// GPS targets become enormous. 1.1× the 62 pt phone target keeps them large
+/// enough for touch while staying compact on a Pixel Tablet.
+pub(crate) fn map_chip_side(scale: f32) -> f32 {
+    62.0 * scale.min(1.1)
+}
+
 /// Android: a visible "Settings" chip that opens the controls sidebar. Touch
 /// has no hover, so the auto-hide sidebar needs an explicit opener next to the
 /// map's own Controls chip.
@@ -834,7 +910,8 @@ fn pane_icon_chip_bottom(
     label: &str,
     scale: f32,
 ) -> egui::Response {
-    let side = 62.0 * scale;
+    let side = map_chip_side(scale);
+    let scale = side / 62.0;
     let rect = egui::Rect::from_min_size(
         egui::pos2(right_bottom.x - side, right_bottom.y - side),
         egui::vec2(side, side),
@@ -979,12 +1056,13 @@ fn pane_chip_bottom_centered(
 /// while a fix is outstanding.
 #[cfg(target_os = "android")]
 fn gps_chip(ui: &mut egui::Ui, right_bottom: egui::Pos2, app: &mut StormApp, scale: f32) {
-    // Match the 62 pt Settings/Controls icon targets exactly.
-    let size = egui::vec2(62.0, 62.0) * scale;
+    // Match the capped Settings/Controls icon target exactly.
+    let size = egui::vec2(map_chip_side(scale), map_chip_side(scale));
     let rect = egui::Rect::from_min_size(
         egui::pos2(right_bottom.x - size.x, right_bottom.y - size.y),
         size,
     );
+    let scale = map_chip_side(scale) / 62.0;
     let resp = ui
         .interact(
             rect,
@@ -1043,21 +1121,27 @@ fn ai_chip(ui: &mut egui::Ui, rect: egui::Rect, app: &mut StormApp, scale: f32) 
     if app.state.ai_api_key.trim().is_empty() {
         return;
     }
-    let diameter = 58.0 * scale;
+    let android = cfg!(target_os = "android");
+    // Desktop AI is a compact utility button; phone/tablet keeps a fingertip
+    // target, capped so a high-res tablet does not get an oversized circle.
+    let android_scale = if android {
+        map_chip_side(scale) / 62.0
+    } else {
+        scale
+    };
+    let diameter = if android {
+        58.0 * android_scale
+    } else {
+        36.0 * scale
+    };
     // On Android the Settings gear owns the bottom-left corner; put the AI
     // circle directly above it. Desktops keep the AI button at the bottom.
-    let lift = if cfg!(target_os = "android") {
-        62.0 * scale + 10.0 * scale
+    let lift = if android {
+        map_chip_side(scale) + 10.0 * android_scale
     } else {
         0.0
     };
-    let x = rect.min.x
-        + 8.0 * scale
-        + if cfg!(target_os = "android") {
-            2.0 * scale
-        } else {
-            0.0
-        };
+    let x = rect.min.x + 8.0 * scale + if android { 2.0 * scale } else { 0.0 };
     let bottom_left = egui::pos2(x, rect.max.y - 8.0 * scale - lift);
     let center = egui::pos2(
         bottom_left.x + diameter * 0.5,
@@ -1117,7 +1201,11 @@ fn ai_chip(ui: &mut egui::Ui, rect: egui::Rect, app: &mut StormApp, scale: f32) 
         center,
         egui::Align2::CENTER_CENTER,
         "AI",
-        egui::FontId::proportional(20.0 * scale),
+        egui::FontId::proportional(if android {
+            20.0 * android_scale
+        } else {
+            13.0 * scale
+        }),
         egui::Color32::from_gray(235),
     );
     // Small green live dot plus unread count. The dot is deliberately outside
@@ -1174,25 +1262,20 @@ fn anchored_pos(
     scale: f32,
 ) -> egui::Pos2 {
     let screen = ctx.content_rect();
+    let bounds = pane.unwrap_or(screen);
     let margin = 12.0 * scale;
-    let want = match pane {
-        Some(r) => egui::pos2(
-            r.max.x - size.x - margin,
-            r.max.y - size.y - margin - 26.0 * scale,
-        ),
-        None => egui::pos2(
-            screen.max.x - size.x - margin,
-            screen.max.y - size.y - margin,
-        ),
-    };
+    let want = egui::pos2(
+        bounds.max.x - size.x - margin,
+        bounds.max.y - size.y - margin - 26.0 * scale,
+    );
     egui::pos2(
         want.x.clamp(
-            screen.min.x + margin,
-            (screen.max.x - size.x - margin).max(screen.min.x + margin),
+            bounds.min.x + margin,
+            (bounds.max.x - size.x - margin).max(bounds.min.x + margin),
         ),
         want.y.clamp(
-            screen.min.y + margin,
-            (screen.max.y - size.y - margin).max(screen.min.y + margin),
+            bounds.min.y + margin,
+            (bounds.max.y - size.y - margin).max(bounds.min.y + margin),
         ),
     )
 }
@@ -1498,20 +1581,25 @@ fn swipe_map_controls_tabs(
 /// Desktop uses two columns so every option stays visible in one window; the
 /// phone keeps a single scrollable column because its width cannot carry two
 /// readable controls side by side.
-fn map_controls_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
+fn map_controls_window(
+    ctx: &egui::Context,
+    app: &mut StormApp,
+    area: egui::Rect,
+    key: usize,
+    compact: bool,
+) {
     if !app.state.map_controls_open {
         return;
     }
+    let product_before = app.state.moment;
     let scale = app.sidebar_scale.max(1.0);
     let desktop = !cfg!(target_os = "android");
-    // The controls window is a vertical stack. At 4K the normal sidebar
-    // scale makes that stack taller than the screen, so use a slightly
-    // tighter type scale here: still comfortably above native size, but every
-    // section fits without a scrollbar.
+    // The controls window is a vertical stack. Keep text/UI the same scale as
+    // pane 1 across all panes.
     let ui_scale = if desktop {
         (scale * 0.82).max(1.0)
     } else {
-        (scale * 1.3).max(1.3)
+        popup_content_scale(ctx, (scale * 1.3).max(1.3))
     };
     // Phone: use almost the whole map pane, leaving the status/timeline bars
     // visible. This is intentionally not an immersive fullscreen window.
@@ -1519,41 +1607,85 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     #[cfg(target_os = "android")]
     swipe_map_controls_tabs(ctx, phone_fill, &mut app.state.map_controls_tab, scale);
     let size = if desktop {
-        let screen_h = ctx.content_rect().height();
-        egui::vec2(280.0 * scale, (screen_h - 24.0).max(420.0))
+        let pane_h = app
+            .map_rect_at
+            .map(|rect| rect.height())
+            .unwrap_or_else(|| ctx.content_rect().height());
+        let max_h = if compact {
+            (520.0 * scale).max(240.0)
+        } else {
+            (pane_h - 24.0).max(420.0)
+        };
+        egui::vec2(280.0 * scale, (pane_h - 24.0).min(max_h).max(220.0))
     } else {
         phone_fill.size()
     };
     let mut open = true;
-    let mut window = egui::Window::new("Map controls")
-        .id(egui::Id::new("stormscope.map_controls"))
+    let title = if key == 0 {
+        "Map controls".to_string()
+    } else {
+        format!("Pane {} map controls · {}", key + 1, app.state.site_id)
+    };
+    // Always open centered. `default_pos` is only consulted the first time
+    // egui sees a window (it remembers the user's last drag/size afterwards),
+    // so anchor every frame instead; that keeps pane cards centered even on
+    // reopen and after a rotate.
+    let mut window = egui::Window::new(title.clone())
+        .id(egui::Id::new(("stormscope.map_controls", key)))
         .open(&mut open)
         .resizable(false)
-        .default_size(size)
-        .default_pos(anchored_pos(ctx, app.map_rect_at, size, scale));
+        .default_size(size);
     if cfg!(target_os = "android") {
+        // Tablet/phone: pinned dead centre and not draggable, above the map.
+        // Sizing follows the content so a short card doesn't cover the map.
         window = window
             .title_bar(false)
-            .fixed_rect(phone_fill)
+            .resizable(false)
             .movable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .constrain_to(phone_fill)
-            .min_size(egui::vec2(size.x, 40.0 * scale))
-            .max_size(size);
+            .max_size(phone_fill.size());
     } else {
-        // egui remembers a window's last size. The compact controls window
-        // was previously opened shorter; pin it to the full available height
-        // so narrowing it never reintroduces a scrollbar.
-        window = window.fixed_size(size);
+        // Desktop: a normal floating tool window — starts centred, then the
+        // user can drag it wherever they like and it reopens where they left
+        // it, exactly like the other desktop panels.
+        window = window
+            .default_pos(centered_popup_pos(ctx, size))
+            .fixed_size(size);
     }
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close_requested = false;
     window.show(ctx, |ui| {
         #[cfg(target_os = "android")]
         {
-            close_requested |= phone_header(ui, "Map controls");
+            close_requested |= phone_header(ui, &title);
         }
         apply_text_scale(ui, ui_scale);
         ui.spacing_mut().item_spacing.y = 3.0 * ui_scale;
+        // Size to content on Android; don't force full height.
+        // Product and tilt belong to this map (and therefore to this pane),
+        // not to the app-wide Settings drawer.
+        let moments = crate::state::available_moments(&app.state);
+        let tilts = app.data.lock().unwrap().tilts.clone();
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_id_salt("map-controls-product")
+                .width(92.0 * ui_scale)
+                .selected_text(app.state.moment.label())
+                .show_ui(ui, |ui| {
+                    for moment in &moments {
+                        ui.selectable_value(&mut app.state.moment, *moment, moment.label());
+                    }
+                });
+            egui::ComboBox::from_id_salt("map-controls-tilt")
+                .width(70.0 * ui_scale)
+                .selected_text(format!("{:.1}°", app.state.tilt_deg))
+                .show_ui(ui, |ui| {
+                    for tilt in &tilts {
+                        ui.selectable_value(&mut app.state.tilt_deg, *tilt, format!("{tilt:.1}°"));
+                    }
+                });
+        });
+        ui.separator();
         ui.horizontal(|ui| {
             ui.selectable_value(
                 &mut app.state.map_controls_tab,
@@ -1576,9 +1708,7 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
             match app.state.map_controls_tab {
                 crate::state::MapControlsTab::Display => {
                     map_controls_display(ui, app, &mut sliders);
-                    map_controls_stations(ui, app);
                     map_controls_analysis(ui, app);
-                    map_controls_qc(ui, app, &mut sliders);
                     map_controls_alerts(ui, app, &mut sliders);
                 }
                 crate::state::MapControlsTab::Outlook => {
@@ -1637,6 +1767,9 @@ fn map_controls_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect
     }
     if !open {
         app.state.map_controls_open = false;
+    }
+    if key == 0 && app.state.moment != product_before {
+        app.state.persist_pane_defaults();
     }
 }
 
@@ -1796,52 +1929,8 @@ fn map_controls_display(
 }
 
 /// Station-layer switches.
-fn map_controls_stations(ui: &mut egui::Ui, app: &mut StormApp) {
-    ui.add_space(4.0);
-    ui.separator();
-    ui.label(egui::RichText::new("Local Weather Stations").strong());
-    let mut synoptic = app.state.show_synoptic;
-    if ui
-        .checkbox(&mut synoptic, "Show weather stations on map")
-        .on_hover_text("Synoptic network: NWS/mesonet/PWS stations (thermometer badges)")
-        .changed()
-    {
-        app.state.show_synoptic = synoptic;
-        app.state.persist_synoptic();
-        if synoptic {
-            app.fetch_synoptic_now();
-        }
-    }
-    let mut metar = app.state.show_metar;
-    if ui
-        .checkbox(&mut metar, "METAR airport observations")
-        .on_hover_text(
-            "Free aviationweather.gov METARs inside the radar window. \
-             Merged into the same station layer as Synoptic.",
-        )
-        .changed()
-    {
-        app.state.show_metar = metar;
-        if metar {
-            app.fetch_metar_now();
-        }
-    }
-    if app.state.show_metar {
-        let status = if app.state.metar_pending {
-            "fetching METARs…".to_string()
-        } else if let Some(err) = &app.state.metar_error {
-            format!("METAR: {err}")
-        } else {
-            let n = app
-                .state
-                .synoptic_stations
-                .iter()
-                .filter(|s| s.source == radar_data::synoptic::StationSource::Metar)
-                .count();
-            format!("{n} METAR stations · 10 min refresh")
-        };
-        ui.label(egui::RichText::new(status).small().weak());
-    }
+fn map_controls_stations(_ui: &mut egui::Ui, _app: &mut StormApp) {
+    // Moved to Settings.
 }
 
 /// Analysis windows and the two storm-feature switches.
@@ -1939,88 +2028,11 @@ fn map_controls_analysis(ui: &mut egui::Ui, app: &mut StormApp) {
             }
         });
     });
-    ui.checkbox(&mut app.state.show_rotation, "Rotation / TVS signatures")
-        .on_hover_text(
-            "Mark low-level inbound/outbound velocity couplets. Experimental; \
-             each mark is a single-radar, single-scan detection.",
-        );
-    ui.checkbox(&mut app.state.show_hail_cores, "Hail cores / swath (MEHS)")
-        .on_hover_text(
-            "Mark hail cores from the maximum estimated hail size product and \
-             accumulate their positions across the loaded loop.",
-        );
+    // Moved to Settings.
 }
 
 /// Display-level QC and calibration.
-fn map_controls_qc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8, egui::Rect)>) {
-    ui.add_space(4.0);
-    ui.separator();
-    ui.label(egui::RichText::new("QC / calibration (REF)").strong())
-        .on_hover_text(
-            "Display-level corrections for the map's reflectivity raster. \
-             Raw REF and the probe remain unchanged. Experimental; map display only.",
-        );
-    ui.checkbox(&mut app.state.qc_clutter, "Clutter filter (CC)")
-        .on_hover_text(
-            "Mask low-CC gates in weak echo. Targets ground clutter and biological \
-             returns; strong hail/debris is left alone.",
-        );
-    ui.checkbox(
-        &mut app.state.qc_attenuation,
-        "Attenuation correction (KDP)",
-    )
-    .on_hover_text(
-        "Apply a small KDP-based path correction to reflectivity behind heavy \
-             precipitation. Experimental.",
-    );
-    let blockage_before = app.state.qc_blockage;
-    if ui
-        .checkbox(&mut app.state.qc_blockage, "Beam blockage (DEM)")
-        .on_hover_text(
-            "Mask gates whose beam centre is below the terrain from a ~475 m AWS \
-             elevation grid. Downloads the DEM the first time it is enabled.",
-        )
-        .changed()
-        && app.state.qc_blockage
-        && !blockage_before
-    {
-        app.state.qc_terrain_error = None;
-        app.state.qc_terrain_site.clear();
-    }
-    if app.state.qc_blockage {
-        if app.state.qc_terrain_pending {
-            ui.label(egui::RichText::new("Loading terrain DEM…").weak().small());
-        } else if let Some(err) = &app.state.qc_terrain_error {
-            ui.label(
-                egui::RichText::new(format!("DEM failed: {err}"))
-                    .weak()
-                    .small(),
-            );
-            if ui.small_button("Retry DEM").clicked() {
-                app.state.qc_terrain_error = None;
-                app.state.qc_terrain_site.clear();
-            }
-        } else if app.state.qc_terrain.is_some() {
-            ui.label(
-                egui::RichText::new("DEM loaded · ~475 m grid")
-                    .weak()
-                    .small(),
-            );
-        }
-    }
-    let r = ui
-        .add(
-            egui::Slider::new(&mut app.state.qc_bias_db, -5.0..=5.0)
-                .step_by(0.5)
-                .text("REF bias")
-                .suffix(" dB"),
-        )
-        .on_hover_text(
-            "Manual calibration bias. Positive boosts reflectivity, negative lowers it. \
-             Use only when you know the site has a systematic bias.",
-        );
-    sliders.push((19, r.rect));
-}
+fn map_controls_qc(_ui: &mut egui::Ui, _app: &mut StormApp, _sliders: &mut Vec<(u8, egui::Rect)>) {}
 
 /// Watch, MCD and warning-polygon display.
 fn map_controls_alerts(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8, egui::Rect)>) {
@@ -2795,6 +2807,24 @@ fn hidpi_text_scale(
     (1.0 + (raw - 1.0) * 2.0).clamp(1.0, 2.5)
 }
 
+/// Content scale for the phone-tuned windows (Map controls, Settings).
+///
+/// The inflation above exists so popup type is readable on a phone, where the
+/// content rect is only ~360 pt wide. A tablet has room to spare, so the same
+/// scale lands oversized there; pull it back a notch on wide Android windows
+/// only — phones and desktop keep exactly what they had.
+pub(crate) fn popup_content_scale(ctx: &egui::Context, scale: f32) -> f32 {
+    let r = ctx.content_rect();
+    let tablet = cfg!(target_os = "android") && r.width().min(r.height()) >= 600.0;
+    // The cap matters: a tablet's sidebar scale (x2.0 here) multiplied by the
+    // phone inflation lands near x3, which is larger than any desktop panel.
+    if tablet {
+        (scale * 0.7).min(1.8)
+    } else {
+        scale
+    }
+}
+
 /// Enlarge fonts + spacing by `scale` (see [`hidpi_text_scale`]). Applied to
 /// a panel/window's root Ui each frame (a fresh style copy per frame, so
 /// sizes never compound). Combo/menu popups live in their own layers and
@@ -2886,7 +2916,7 @@ fn sidebar_overlay(ctx: &egui::Context, app: &mut StormApp, middle: egui::Rect) 
     // to read and tap. Keep the base scale for popups, but enlarge the drawer
     // itself on Android.
     let ui_scale = if cfg!(target_os = "android") {
-        (scale * 1.5).max(1.5)
+        popup_content_scale(ctx, (scale * 1.5).max(1.5))
     } else {
         scale
     };
@@ -3038,7 +3068,7 @@ fn sidebar_header(ui: &mut egui::Ui, app: &mut StormApp) {
         } else {
             26.0
         };
-        ui.label(egui::RichText::new("Controls").strong().size(title_size));
+        ui.label(egui::RichText::new("Settings").strong().size(title_size));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let close = if cfg!(target_os = "android") {
                 ui.add(egui::Button::new("Close").min_size(egui::vec2(88.0, 48.0)))
@@ -3146,58 +3176,10 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
         ),
     };
 
-    // Product (moment) selector: whatever the volume actually carries —
-    // decoded base moments plus the derived products attached at decode
-    // (VIL / Echo Tops / MEHS) and SRM, which is derived on demand from the
-    // motion sliders.
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label("Product");
-        if ui
-            .small_button("(i)")
-            .on_hover_text("What each product shows, and when to use it")
-            .clicked()
-        {
-            app.state.product_help_open = !app.state.product_help_open;
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        for m in crate::state::available_moments(&app.state) {
-            let selected = app.state.moment == m;
-            if ui.selectable_label(selected, m.label()).clicked() {
-                app.state.moment = m;
-            }
-        }
-    });
+    radar_panes::settings_controls(ui, app);
 
-    // Tilt selector.
-    ui.add_space(6.0);
-    let tilts = app.data.lock().unwrap().tilts.clone();
-    ui.label("Tilt (°)");
-    let mut tilt_idx = tilts
-        .iter()
-        .enumerate()
-        .min_by(|a, b| {
-            (a.1 - app.state.tilt_deg)
-                .abs()
-                .partial_cmp(&(b.1 - app.state.tilt_deg))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    egui::ComboBox::from_id_salt("tilt")
-        .selected_text(format!(
-            "{:.1}°",
-            tilts.get(tilt_idx).copied().unwrap_or(0.5)
-        ))
-        .show_ui(ui, |ui| {
-            for (i, t) in tilts.iter().enumerate() {
-                ui.selectable_value(&mut tilt_idx, i, format!("{t:.1}°"));
-            }
-        });
-    if let Some(t) = tilts.get(tilt_idx) {
-        app.state.tilt_deg = *t;
-    }
+    // Product and tilt now live in each pane's own Map Controls window, so
+    // the app-wide Settings drawer stays site/layer focused.
 
     // The radar display sliders (opacity / Min dBZ) moved into the map's
     // "Controls" window, bottom-right of the map itself.
@@ -3341,7 +3323,8 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
     }
 
     let futurecast_before = app.state.show_futurecast;
-    ui.checkbox(&mut app.state.show_futurecast, "FutureCast (HRRR)")
+    let mut futurecast_setting = app.state.show_futurecast;
+    ui.checkbox(&mut futurecast_setting, "FutureCast (HRRR)")
         .on_hover_text(match &app.state.futurecast {
             Some(fc) => format!(
                 "HRRR {}Z run — {} of {} frames loaded; showing f{:02} valid {}.                  Simulated composite reflectivity: a model forecast, not observed radar.",
@@ -3367,6 +3350,9 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
             )
             .to_string(),
         });
+    if futurecast_setting != app.state.show_futurecast {
+        app.set_futurecast(futurecast_setting);
+    }
     if app.state.show_futurecast != futurecast_before {
         if app.state.show_futurecast {
             app.state.loop_state = crate::state::LoopState::Paused;
@@ -3589,20 +3575,9 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
         app.state.persist_markers();
     }
 
-    // App-level settings live at the bottom of the slide-out instead of
-    // behind a second Settings button in its header.
+    // App-level settings follow the map controls in the same slide-out.
     ui.add_space(12.0);
     ui.separator();
-    ui.label(
-        egui::RichText::new("Settings")
-            .strong()
-            .size(if cfg!(target_os = "android") {
-                18.0
-            } else {
-                20.0
-            }),
-    );
-    ui.add_space(4.0);
     settings_body(ui, app);
 }
 
@@ -3610,17 +3585,6 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
 /// section (each gated behind [`confirm_clear_dialog`]).
 fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
     {
-        ui.label(egui::RichText::new("Data").strong());
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(match app.state.mode {
-                Mode::Live => "now: live",
-                Mode::Archive => "now: archive",
-            })
-            .weak()
-            .small(),
-        );
-        ui.separator();
         ui.label(egui::RichText::new("AI").strong());
         ui.add_space(4.0);
         if ui
@@ -3753,6 +3717,112 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             } else if app.state.ambient_api_key.is_empty() || app.state.ambient_app_key.is_empty() {
                 ui.label(egui::RichText::new("No keys set").weak().small());
             }
+        }
+        {
+            ui.separator();
+            ui.label(egui::RichText::new("Local Weather Stations").strong());
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Show NWS/mesonet/PWS stations and METARs on the map.")
+                    .weak()
+                    .small(),
+            );
+            let mut synoptic = app.state.show_synoptic;
+            if ui
+                .checkbox(&mut synoptic, "Show weather stations on map")
+                .on_hover_text("Synoptic network: NWS/mesonet/PWS stations (thermometer badges)")
+                .changed()
+            {
+                app.state.show_synoptic = synoptic;
+                app.state.persist_synoptic();
+                if synoptic {
+                    app.fetch_synoptic_now();
+                }
+            }
+            let mut metar = app.state.show_metar;
+            if ui
+                .checkbox(&mut metar, "METAR airport observations")
+                .on_hover_text(
+                    "Free aviationweather.gov METARs inside the radar window. \
+                     Merged into the same station layer as Synoptic.",
+                )
+                .changed()
+            {
+                app.state.show_metar = metar;
+                if metar {
+                    app.fetch_metar_now();
+                }
+            }
+            if app.state.show_metar {
+                let status = if app.state.metar_pending {
+                    "fetching METARs…".to_string()
+                } else if let Some(err) = &app.state.metar_error {
+                    format!("METAR: {err}")
+                } else {
+                    let n = app
+                        .state
+                        .synoptic_stations
+                        .iter()
+                        .filter(|s| s.source == radar_data::synoptic::StationSource::Metar)
+                        .count();
+                    format!("{n} METAR stations · 10 min refresh")
+                };
+                ui.label(egui::RichText::new(status).small().weak());
+            }
+        }
+        {
+            ui.separator();
+            ui.label(egui::RichText::new("Storm features").strong());
+            ui.add_space(4.0);
+            ui.checkbox(&mut app.state.show_rotation, "Rotation / TVS signatures")
+                .on_hover_text(
+                    "Mark low-level inbound/outbound velocity couplets. Experimental; \
+                     each mark is a single-radar, single-scan detection.",
+                );
+            ui.checkbox(&mut app.state.show_hail_cores, "Hail cores / swath (MEHS)")
+                .on_hover_text(
+                    "Mark hail cores from the maximum estimated hail size product and \
+                     accumulate their positions across the loaded loop.",
+                );
+        }
+        {
+            ui.separator();
+            ui.label(egui::RichText::new("QC / calibration (REF)").strong());
+            ui.add_space(4.0);
+            ui.checkbox(&mut app.state.qc_clutter, "Clutter filter (CC)")
+                .on_hover_text(
+                    "Mask low-CC gates in weak echo. Targets ground clutter and biological \
+                     returns; strong hail/debris is left alone.",
+                );
+            ui.checkbox(
+                &mut app.state.qc_attenuation,
+                "Attenuation correction (KDP)",
+            )
+            .on_hover_text(
+                "Apply a small KDP-based path correction to reflectivity behind heavy \
+                     rain. Display-level only.",
+            );
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label("Reflectivity bias");
+                let mut bias = app.state.qc_bias_db;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut bias, -5.0..=5.0)
+                            .step_by(0.5)
+                            .suffix(" dB")
+                            .clamping(egui::SliderClamping::Always),
+                    )
+                    .changed()
+                {
+                    app.state.qc_bias_db = bias;
+                }
+            })
+            .response
+            .on_hover_text(
+                "Manual display bias applied to the REF raster. Raw values and the probe \
+                 are unchanged. Useful for quick comparisons.",
+            );
         }
         {
             ui.separator();

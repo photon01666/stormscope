@@ -50,11 +50,20 @@ pub fn storm_trends_window(ctx: &egui::Context, app: &mut StormApp, area: egui::
     let mut refresh = false;
     #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
     let mut close = false;
-    let mut window = egui::Window::new("Storm trends")
+    let window = egui::Window::new("Storm trends")
         .id(egui::Id::new("stormscope.storm_trends.compact"))
-        .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
         .max_width((screen.x - 32.0).max(200.0));
+    // The phone's full-pane window is anchored top-left; the centre pivot is
+    // only for the re-sizable desktop card.
+    #[cfg(target_os = "android")]
+    let mut window = if fill {
+        window.pivot(egui::Align2::LEFT_TOP)
+    } else {
+        window.pivot(egui::Align2::CENTER_CENTER)
+    };
+    #[cfg(not(target_os = "android"))]
+    let mut window = window.pivot(egui::Align2::CENTER_CENTER);
     #[cfg(target_os = "android")]
     if fill {
         window = window.title_bar(false);

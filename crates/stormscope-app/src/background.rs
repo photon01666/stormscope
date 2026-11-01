@@ -131,6 +131,8 @@ pub fn run(
     out: Sender<DataMsg>,
     archive_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     #[allow(unused_variables)] shared: Arc<Mutex<crate::app::SharedData>>,
+    passive: bool,
+    initial_site: String,
 ) {
     let cache = DiskCache::with_default_max(DiskCache::default_root());
     #[cfg(target_os = "android")]
@@ -196,26 +198,34 @@ pub fn run(
     // Live poller for the currently selected site. Replaced on SetSite; the
     // old one exits when its receiver is dropped.
     let mut live: Option<(Receiver<radar_core::Volume>, radar_data::RealtimePoller)> = None;
-    let mut current_site = radar_core::DEFAULT_SITE.to_string();
+    let mut current_site = initial_site;
     // Listed archive day + loaded window, so ◀/▶ can page through the day
     // without re-listing S3.
     let mut archive: Option<ArchiveDay> = None;
     // Freshness tracking + archive catch-up watchdog: the app should show
     // whichever upstream (live chunks vs archive bucket) is AHEAD, not
     // whichever it happens to be listening to.
-    let mut watchdog_enabled = true; // off while browsing archive/last-hour
+    let mut watchdog_enabled = !passive; // off while browsing archive/last-hour
     let mut last_watchdog = std::time::Instant::now();
     const ARCHIVE_CATCHUP_INTERVAL: Duration = Duration::from_secs(60);
 
     let _ = out.send(DataMsg::Status("starting live feed…".into()));
-    start_live(&source, radar_core::DEFAULT_SITE, &mut live, &out);
-    // Restore the recent scans already on disk (instant) and top up with the
-    // newest, while the poller warms up in parallel. The watchdog below
-    // compares against whatever this delivers first.
-    let (mut last_delivered, queued) = prime_site(&source, radar_core::DEFAULT_SITE, &out);
-    // Volumes waiting to replay into the ring; drained a few per loop tick so
-    // commands stay responsive during the refill.
-    let mut backfill: VecDeque<radar_data::ArchiveVolumeRef> = queued;
+    let mut last_passive_fetch = std::time::Instant::now();
+    let mut passive_loaded = false;
+    let (mut last_delivered, mut backfill) = if passive {
+        // Secondary panes must not add another realtime S3 poller. Fetch one
+        // latest scan now, then refresh on a slow one-shot cadence below.
+        passive_loaded = load_latest_once(&source, &current_site, &out, true);
+        last_passive_fetch = std::time::Instant::now();
+        (None, VecDeque::new())
+    } else {
+        start_live(&source, &current_site, &mut live, &out);
+        // Restore the recent scans already on disk (instant) and top up with
+        // the newest, while the poller warms up in parallel. The watchdog
+        // below compares against whatever this delivers first.
+        let (last, queued) = prime_site(&source, &current_site, &out);
+        (last, queued)
+    };
     // Progress bookkeeping for the pill (counts only; reset when a fill
     // completes so the next one starts clean).
     let mut fill_total: u32 = 0;
@@ -284,7 +294,14 @@ pub fn run(
                     // the new station's data arrives.
                     let _ = out.send(DataMsg::ClearFrames);
                     current_site = site.clone();
-                    if backgrounded() {
+                    if passive {
+                        live = None;
+                        backfill.clear();
+                        watchdog_enabled = false;
+                        passive_loaded = load_latest_once(&source, &site, &out, false);
+                        last_passive_fetch = std::time::Instant::now();
+                        refresh_alerts(&alerts, &site, &out);
+                    } else if backgrounded() {
                         // A site selection queued just before the app left the
                         // foreground must not start downloading. The Storm Watch
                         // gate starts the feed only if an alert covers a point.
@@ -602,7 +619,52 @@ pub fn run(
                         {
                             last_delivered = Some(ts);
                         }
+                        // End the UI's resume strip here, whether a newer
+                        // scan was fetched or the feed was already current.
+                        let _ = out.send(DataMsg::LiveCatchupDone);
                     }
+                }
+                DataCmd::LoadPaneVolume { slot, site } => {
+                    // Secondary panes are independent snapshots. Use a short
+                    // worker thread and its own S3 client so fetching four
+                    // sites never blocks the main live poller or playback.
+                    let out = out.clone();
+                    std::thread::Builder::new()
+                        .name(format!("pane-{slot}-{site}"))
+                        .spawn(move || {
+                            let loaded = (|| -> anyhow::Result<_> {
+                                let cache = radar_data::DiskCache::with_default_max(
+                                    radar_data::DiskCache::default_root(),
+                                );
+                                let source = radar_data::S3Source::new(cache)?;
+                                let today = chrono::Utc::now()
+                                    .with_timezone(crate::timefmt::central())
+                                    .date_naive();
+                                let mut vols = list_central_day(&source, &site, today)?;
+                                if vols.is_empty()
+                                    && let Some(yesterday) = today.pred_opt()
+                                {
+                                    vols = list_central_day(&source, &site, yesterday)?;
+                                }
+                                let newest = vols
+                                    .first()
+                                    .ok_or_else(|| anyhow::anyhow!("no recent scans for {site}"))?;
+                                source.fetch_archive(newest)
+                            })();
+                            match loaded {
+                                Ok(volume) => {
+                                    let _ = out.send(DataMsg::PaneVolume { slot, site, volume });
+                                }
+                                Err(error) => {
+                                    let _ = out.send(DataMsg::PaneVolumeError {
+                                        slot,
+                                        site,
+                                        error: format!("{error:#}"),
+                                    });
+                                }
+                            }
+                        })
+                        .ok();
                 }
                 DataCmd::RefreshAlerts => {
                     refresh_alerts(&alerts, &current_site, &out);
@@ -1371,6 +1433,17 @@ pub fn run(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
+        if passive && live.is_none() {
+            // Retry quickly until the first scan lands; after that a passive
+            // pane refreshes slowly (three minutes), which keeps it well away
+            // from S3 list throttling while still tracking new volumes.
+            let interval = if passive_loaded { 180 } else { 30 };
+            if last_passive_fetch.elapsed() >= Duration::from_secs(interval) {
+                last_passive_fetch = std::time::Instant::now();
+                passive_loaded = load_latest_once(&source, &current_site, &out, false);
+            }
+        }
+
         // Android: Storm Watch keeps the radar feed alive in the background
         // only while a watch or warning covers the GPS fix or a map marker.
         // When the last one expires, stop the poller and stop downloading;
@@ -1938,6 +2011,70 @@ fn archive_catchup(
         Err(e) => {
             log::warn!("catchup fetch failed: {e:#}");
             None
+        }
+    }
+}
+
+/// One-shot newest scan for a passive (secondary-pane) data thread. Avoids
+/// the 5-second realtime poller and its repeated S3 list calls.
+fn load_cached_volume(site: &str, out: &Sender<DataMsg>) -> Option<chrono::DateTime<chrono::Utc>> {
+    let cached = radar_data::cache::list_cached_volumes(site).pop()?;
+    let bytes = std::fs::read(&cached.path).ok()?;
+    let mut volume = radar_decode::decode_volume_file(&bytes).ok()?;
+    radar_core::derived::attach_derived(&mut volume);
+    let start = volume.meta.volume_start;
+    let _ = out.send(DataMsg::Volume(std::sync::Arc::new(volume)));
+    Some(start)
+}
+
+fn load_latest_once(source: &S3Source, site: &str, out: &Sender<DataMsg>, clear: bool) -> bool {
+    if clear {
+        let _ = out.send(DataMsg::ClearFrames);
+    }
+    // Disk first: a secondary pane must show something immediately, even when
+    // S3 listing is throttled. This also makes reopening the app instant.
+    let cached = load_cached_volume(site, out);
+    if let Some(start) = cached
+        && chrono::Utc::now() - start < chrono::Duration::minutes(10)
+    {
+        log::info!(
+            "passive {site}: cached scan {}",
+            crate::timefmt::fmt_central(&start)
+        );
+        return true;
+    }
+
+    let today = chrono::Utc::now()
+        .with_timezone(crate::timefmt::central())
+        .date_naive();
+    let mut vols = match list_central_day(source, site, today) {
+        Ok(vols) => vols,
+        Err(error) => {
+            log::warn!("passive {site} list failed: {error:#}");
+            return cached.is_some();
+        }
+    };
+    if vols.is_empty()
+        && let Some(yesterday) = today.pred_opt()
+    {
+        vols = list_central_day(source, site, yesterday).unwrap_or_default();
+    }
+    let Some(newest) = vols.first() else {
+        let _ = out.send(DataMsg::Status(format!("no recent scans for {site}")));
+        return cached.is_some();
+    };
+    match source.fetch_archive(newest) {
+        Ok(volume) => {
+            log::info!(
+                "passive {site}: scan {}",
+                crate::timefmt::fmt_central(&newest.volume_start)
+            );
+            let _ = out.send(DataMsg::Volume(volume));
+            true
+        }
+        Err(error) => {
+            log::warn!("passive {site} fetch failed: {error:#}");
+            cached.is_some()
         }
     }
 }

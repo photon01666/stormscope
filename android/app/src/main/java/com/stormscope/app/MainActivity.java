@@ -16,6 +16,7 @@ import android.location.LocationManager;
 import android.media.AudioAttributes;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
@@ -65,6 +66,10 @@ public class MainActivity extends GameActivity {
     private static volatile String sPendingAlertId;
     /** Set when the app returns to the foreground after being paused. */
     private static volatile boolean sPendingResumeRefresh;
+    /** How long the last pause lasted, in ms (read once by Rust on resume). */
+    private static volatile long sPendingBackgroundMs;
+    /** Elapsed-realtime clock when the activity was paused. */
+    private static volatile long sPausedAtElapsed;
     private static boolean sHasResumed;
 
     /** Latest fix as {lat, lon}; volatile because Rust reads it on its own thread. */
@@ -130,6 +135,10 @@ public class MainActivity extends GameActivity {
         // paused in the background; Rust uses this to catch the live radar up.
         if (sHasResumed) {
             sPendingResumeRefresh = true;
+            long paused = sPausedAtElapsed;
+            sPendingBackgroundMs = paused == 0
+                ? 0
+                : Math.max(0, SystemClock.elapsedRealtime() - paused);
         }
         sHasResumed = true;
         GeminiLiveAudio.resumeCapture();
@@ -142,6 +151,7 @@ public class MainActivity extends GameActivity {
     @Override
     protected void onPause() {
         sForeground = false;
+        sPausedAtElapsed = SystemClock.elapsedRealtime();
         nativeSetForeground(false);
         // Free the microphone as soon as the app leaves the foreground; the
         // Gemini Live WebSocket can stay connected for a short background
@@ -194,6 +204,16 @@ public class MainActivity extends GameActivity {
         boolean pending = sPendingResumeRefresh;
         sPendingResumeRefresh = false;
         return pending;
+    }
+
+    /**
+     * Called from Rust (JNI, UI thread): how long the activity was paused
+     * before this resume, in milliseconds. Consumed once; 0 means unknown.
+     */
+    public long stormscopeTakeResumeBackgroundMs() {
+        long ms = sPendingBackgroundMs;
+        sPendingBackgroundMs = 0;
+        return ms;
     }
 
     /** Called from Rust: can this app request package installs? */

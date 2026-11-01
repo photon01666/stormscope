@@ -40,6 +40,77 @@ pub const MIN_RING_FRAMES: usize = 3;
 /// the newest frame; once the user has been idle this long, it snaps back.
 pub const TIMELINE_HOLD_SECS: u64 = 30;
 
+/// Total 2D radar panes supported by this build (main + secondaries).
+pub fn max_radar_panes() -> usize {
+    if cfg!(target_os = "android") { 2 } else { 4 }
+}
+
+/// One secondary 2D radar pane. The main pane keeps the full app feature set;
+/// secondary panes intentionally load only the newest scan from their own
+/// site and render a lightweight map canvas.
+#[derive(Clone)]
+pub struct RadarPane {
+    pub site_id: String,
+    /// Default product for this pane (persisted in site.json).
+    pub product: Option<Moment>,
+    pub view: MapView,
+    pub volume: Option<Arc<Volume>>,
+    pub fetched_at: Option<std::time::Instant>,
+    pub requested_at: Option<std::time::Instant>,
+    pub error: Option<String>,
+}
+
+impl Default for RadarPane {
+    fn default() -> Self {
+        Self {
+            site_id: String::new(),
+            product: None,
+            view: MapView::default(),
+            volume: None,
+            fetched_at: None,
+            requested_at: None,
+            error: None,
+        }
+    }
+}
+
+/// A map view centred on a radar site, used as the initial secondary-pane view.
+pub fn view_for_site(site_id: &str) -> MapView {
+    let Some(site) = radar_core::sites::site(site_id) else {
+        return MapView::default();
+    };
+    MapView {
+        center_lat: site.latitude,
+        center_lon: site.longitude,
+        zoom: 7.5,
+        ..MapView::default()
+    }
+}
+
+/// Parse a persisted product label (REF, VEL, ...) back into a [`Moment`].
+pub fn moment_from_label(label: &str) -> Option<Moment> {
+    [
+        Moment::Reflectivity,
+        Moment::Velocity,
+        Moment::SpectrumWidth,
+        Moment::DifferentialReflectivity,
+        Moment::DifferentialPhase,
+        Moment::SpecificDifferentialPhase,
+        Moment::CorrelationCoefficient,
+        Moment::CompositeReflectivity,
+        Moment::Vil,
+        Moment::EchoTops,
+        Moment::Mesh,
+        Moment::StormRelativeVelocity,
+        Moment::DealiasedVelocity,
+        Moment::Hydrometeor,
+        Moment::SnowRate,
+        Moment::MeltingLayer,
+    ]
+    .into_iter()
+    .find(|moment| moment.label() == label)
+}
+
 /// Where a sounding came from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SoundingKind {
@@ -234,6 +305,20 @@ pub struct LoadProgress {
     pub at: std::time::Instant,
 }
 
+/// A long Android background spell just ended and the live feed is catching
+/// up. `from` is the newest scan that was already on screen when the app
+/// resumed; a frame newer than that is the one the catch-up is waiting for.
+///
+/// The map draws a full-width "downloading the latest radar frame" strip
+/// while this is set. It is created only on resume, never by a download
+/// started while the app is in use, so live polling and archive loads stay
+/// quiet.
+#[derive(Clone, Copy, Debug)]
+pub struct ResumeCatchup {
+    pub from: Option<DateTime<Utc>>,
+    pub since: std::time::Instant,
+}
+
 /// Which page the map Controls window is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapControlsTab {
@@ -422,6 +507,17 @@ pub struct YouTubePlayer {
     pub title: String,
 }
 
+/// One placed SPC outlook map label: its screen rect and which product/risk
+/// level it names. Labels behave like the outlines they sit on — hover lights
+/// the boundary, click opens the discussion — so the text is a real target
+/// rather than decoration.
+#[derive(Debug, Clone, Copy)]
+pub struct OutlookLabelHit {
+    pub rect: egui::Rect,
+    pub ty: radar_core::outlooks::OutlookType,
+    pub dn: u16,
+}
+
 pub struct AppState {
     pub mode: Mode,
     /// Selected archive day (Central-date; edited in the Archive popup).
@@ -450,6 +546,10 @@ pub struct AppState {
     pub archive_text_requested: std::collections::HashSet<String>,
     /// The in-flight bulk radar load, if any (see [`LoadProgress`]).
     pub load_progress: Option<LoadProgress>,
+    /// Android: a long spell in the background just ended and the newest
+    /// scan is being fetched (see [`ResumeCatchup`]). Drives the prominent
+    /// resume strip; `None` for every download started in-app.
+    pub resume_catchup: Option<ResumeCatchup>,
     /// The first live radar frame has actually been painted on the map.
     /// Startup keeps the large loading card up until this becomes true.
     pub startup_radar_visible: bool,
@@ -509,6 +609,16 @@ pub struct AppState {
 
     // Map
     pub view: MapView,
+    /// Total 2D radar panes (1 = normal single map). Desktop/Linux/Windows
+    /// allow up to 4; Android allows 2.
+    pub radar_panes: usize,
+    /// Secondary panes for slots 2..=4. Always three slots are allocated; the
+    /// active count is `radar_panes`.
+    pub secondary_radar_panes: Vec<RadarPane>,
+    /// Pane count to restore when FutureCast is switched back to Live Radar.
+    /// FutureCast owns the whole central map, so entering it collapses the
+    /// multi-pane layout temporarily without losing the user's pane setup.
+    pub futurecast_pane_restore: Option<usize>,
 
     // Animation ring: index 0 = oldest retained, last = newest.
     pub ring: VecDeque<Frame>,
@@ -575,6 +685,13 @@ pub struct AppState {
     /// SPC risk category (`DN`) under the map pointer, for the outline
     /// emphasis and the "what does this level mean" tooltip.
     pub outlook_hover: Option<u16>,
+    /// Which product `outlook_hover` came from. The same DN appears in every
+    /// product's band set, so the emphasis and tooltip need the product too —
+    /// otherwise ALL mode highlights the wrong outline (or none).
+    pub outlook_hover_ty: Option<radar_core::outlooks::OutlookType>,
+    /// Placed outline labels from the last painted frame, so the text itself
+    /// is a click/hover target and not just decoration.
+    pub outlook_label_hits: Vec<OutlookLabelHit>,
     /// egui time the current outlook hover began (tooltip dwell).
     pub outlook_hover_at: f64,
     /// egui time when the current map hover began, for the tooltip's
@@ -1290,12 +1407,38 @@ impl Default for AppState {
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "Aoede".to_string());
         let voice = load_voice_alert_prefs();
-        let saved_default = load_default_site().filter(|id| radar_core::sites::site(id).is_some());
+        let site_prefs = load_site_prefs();
+        let saved_default = site_prefs
+            .default_site
+            .clone()
+            .filter(|id| radar_core::sites::site(id).is_some());
         let site = saved_default
             .as_deref()
             .and_then(radar_core::sites::site)
             .or_else(|| radar_core::sites::site(radar_core::DEFAULT_SITE))
             .unwrap_or_else(|| radar_core::sites::SITES.first().expect("site catalog"));
+        let saved_product = site_prefs
+            .panes
+            .first()
+            .and_then(|pane| pane.product.as_deref())
+            .and_then(moment_from_label)
+            .unwrap_or(Moment::Reflectivity);
+        let saved_pane_count = site_prefs.pane_count.clamp(1, max_radar_panes());
+        let mut secondary_radar_panes: Vec<RadarPane> =
+            (0..3).map(|_| RadarPane::default()).collect();
+        for (slot, pane_prefs) in site_prefs.panes.iter().skip(1).take(3).enumerate() {
+            let Some(site_id) = pane_prefs
+                .site
+                .as_deref()
+                .filter(|id| radar_core::sites::site(id).is_some())
+            else {
+                continue;
+            };
+            let pane = &mut secondary_radar_panes[slot];
+            pane.site_id = site_id.to_string();
+            pane.product = pane_prefs.product.as_deref().and_then(moment_from_label);
+            pane.view = view_for_site(site_id);
+        }
         Self {
             mode: Mode::Live,
             archive_date: chrono::Utc::now()
@@ -1310,6 +1453,7 @@ impl Default for AppState {
             archive_warnings_requested: None,
             archive_jump: None,
             load_progress: None,
+            resume_catchup: None,
             startup_radar_visible: false,
             site_mismatch_logged: None,
             archive_detail: None,
@@ -1339,7 +1483,7 @@ impl Default for AppState {
             },
             site_id: site.id.to_string(),
             default_site: saved_default,
-            moment: Moment::Reflectivity,
+            moment: saved_product,
             tilt_deg: 0.5,
             opacity: 1.0,
             // Suppresses the clear-air clutter/haze that reads as a green
@@ -1355,6 +1499,9 @@ impl Default for AppState {
                 width_px: 1280.0,
                 height_px: 800.0,
             },
+            radar_panes: saved_pane_count,
+            secondary_radar_panes,
+            futurecast_pane_restore: None,
             ring: VecDeque::with_capacity(RING_CAPACITY),
             playhead: 0,
             ring_bytes: 0,
@@ -1380,6 +1527,8 @@ impl Default for AppState {
             alerts_map_stack: Vec::new(),
             alerts_fill: 0.45,
             outlook_hover: None,
+            outlook_hover_ty: None,
+            outlook_label_hits: Vec::new(),
             outlook_hover_at: 0.0,
             alerts_map_hover_at: 0.0,
             alerts_focus: None,
@@ -1512,10 +1661,10 @@ impl Default for AppState {
             observed_sounding_fetched_at: None,
             observed_sounding_error: None,
             vad_open: false,
-            show_rotation: true,
-            show_hail_cores: true,
-            qc_clutter: true,
-            qc_attenuation: true,
+            show_rotation: false,
+            show_hail_cores: false,
+            qc_clutter: false,
+            qc_attenuation: false,
             qc_bias_db: 0.0,
             qc_blockage: true,
             qc_terrain: None,
@@ -1604,7 +1753,7 @@ impl Default for AppState {
             // Lightning is on by default; STORMSCOPE_LAYERS still acts as an
             // explicit layer whitelist when set.
             show_lightning: layers.is_empty() || layers.contains("lightning"),
-            lightning_density: true,
+            lightning_density: false,
             lightning: Vec::new(),
             lightning_pending: false,
             lightning_requested_at: None,
@@ -1976,15 +2125,35 @@ fn site_default_path() -> std::path::PathBuf {
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct PanePrefs {
+    #[serde(default)]
+    site: Option<String>,
+    #[serde(default)]
+    product: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct SitePrefs {
     #[serde(default)]
     default_site: Option<String>,
+    /// Saved pane count and per-pane site/product defaults.
+    #[serde(default)]
+    pane_count: usize,
+    #[serde(default)]
+    panes: Vec<PanePrefs>,
+}
+
+fn load_site_prefs() -> SitePrefs {
+    std::fs::read_to_string(site_default_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
 fn load_default_site() -> Option<String> {
-    let text = std::fs::read_to_string(site_default_path()).ok()?;
-    let prefs: SitePrefs = serde_json::from_str(&text).ok()?;
-    prefs.default_site.filter(|s| !s.trim().is_empty())
+    load_site_prefs()
+        .default_site
+        .filter(|s| !s.trim().is_empty())
 }
 
 fn load_markers() -> Vec<MapMarker> {
@@ -2142,8 +2311,29 @@ impl AppState {
 
     /// Remember the selected site as the explicit startup default (best-effort, 0600).
     pub fn persist_default_site(&self) {
+        self.persist_pane_defaults();
+    }
+
+    /// Persist the pane count and every pane's site/product, including the
+    /// primary pane. Called when any of those selections changes.
+    pub fn persist_pane_defaults(&self) {
+        let mut panes = Vec::new();
+        panes.push(PanePrefs {
+            site: Some(self.site_id.clone()),
+            product: Some(self.moment.label().to_string()),
+        });
+        for pane in &self.secondary_radar_panes {
+            panes.push(PanePrefs {
+                site: (!pane.site_id.is_empty()).then(|| pane.site_id.clone()),
+                product: pane.product.map(|moment| moment.label().to_string()),
+            });
+        }
         let prefs = SitePrefs {
             default_site: self.default_site.clone(),
+            // While FutureCast temporarily collapses the layout, keep the
+            // pre-FutureCast count so reopening the app restores both panes.
+            pane_count: self.futurecast_pane_restore.unwrap_or(self.radar_panes),
+            panes,
         };
         let Ok(json) = serde_json::to_string_pretty(&prefs) else {
             return;
@@ -2286,7 +2476,7 @@ impl AppState {
     /// must neither be silently dropped nor clobber the playhead. In Live
     /// mode the playhead follows the newest frame; otherwise it stays on the
     /// frame being viewed.
-    pub fn push_volume(&mut self, volume: Arc<Volume>) {
+    pub fn push_volume(&mut self, volume: Arc<Volume>) -> bool {
         // Frames are georeferenced to the selected station — another
         // station's sweeps would draw in the wrong place. "UNKNOWN" is
         // tolerated because a headerless stream can omit the site id.
@@ -2303,12 +2493,12 @@ impl AppState {
                 );
                 self.site_mismatch_logged = Some(volume.meta.site_id.clone());
             }
-            return;
+            return false;
         }
         self.site_mismatch_logged = None;
         let start = volume.meta.volume_start;
         if self.ring.iter().any(|f| f.volume_start == start) {
-            return; // duplicate
+            return false; // duplicate
         }
         // A live scrub hold pins the frame the user picked just like archive
         // mode does. Without this, the next poll's scan would snap them back
@@ -2352,6 +2542,99 @@ impl AppState {
         } else {
             self.playhead = self.playhead.min(self.ring.len().saturating_sub(1));
         }
+        true
+    }
+
+    /// A long background spell ended: start the resume catch-up strip,
+    /// anchored to the newest scan currently on screen.
+    pub fn begin_resume_catchup(&mut self) {
+        self.resume_catchup = Some(ResumeCatchup {
+            from: self.newest_start(),
+            since: std::time::Instant::now(),
+        });
+    }
+
+    /// The catch-up finished (or the app is no longer in a state where the
+    /// strip makes sense): drop it.
+    pub fn end_resume_catchup(&mut self) {
+        self.resume_catchup = None;
+    }
+
+    /// A volume landed: keep the strip only until a scan newer than the one
+    /// that was on screen at resume arrives. Older backfill must not clear it.
+    pub fn note_resume_volume(&mut self, start: DateTime<Utc>) {
+        if self
+            .resume_catchup
+            .is_some_and(|catchup| catchup.from.is_none_or(|from| start > from))
+        {
+            self.resume_catchup = None;
+        }
+    }
+
+    /// Fill empty secondary-pane slots with the nearest distinct radar sites
+    /// and clamp the requested pane count to this platform's limit.
+    pub fn ensure_radar_panes(&mut self) {
+        self.radar_panes = self.radar_panes.clamp(1, max_radar_panes());
+        let anchor = radar_core::sites::site(&self.site_id)
+            .or_else(|| radar_core::sites::site(radar_core::DEFAULT_SITE));
+        let Some(anchor) = anchor else {
+            return;
+        };
+        let mut used: std::collections::HashSet<String> = self
+            .secondary_radar_panes
+            .iter()
+            .map(|pane| pane.site_id.clone())
+            .filter(|id| !id.is_empty())
+            .collect();
+        used.insert(self.site_id.clone());
+        for slot in 0..self.radar_panes.saturating_sub(1) {
+            let Some(pane) = self.secondary_radar_panes.get_mut(slot) else {
+                continue;
+            };
+            if !pane.site_id.is_empty() {
+                continue;
+            }
+            let next = radar_core::sites::SITES
+                .iter()
+                .filter(|site| !used.contains(site.id))
+                .min_by(|a, b| {
+                    let da = radar_render::surface_distance_m(
+                        anchor.longitude,
+                        anchor.latitude,
+                        a.longitude,
+                        a.latitude,
+                    );
+                    let db = radar_render::surface_distance_m(
+                        anchor.longitude,
+                        anchor.latitude,
+                        b.longitude,
+                        b.latitude,
+                    );
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            let Some(site) = next else {
+                continue;
+            };
+            pane.site_id = site.id.to_string();
+            pane.view = view_for_site(site.id);
+            used.insert(site.id.to_string());
+        }
+    }
+
+    /// Select a site for one secondary pane and invalidate its loaded scan.
+    pub fn set_secondary_site(&mut self, slot: usize, site_id: &str) {
+        let Some(pane) = self.secondary_radar_panes.get_mut(slot) else {
+            return;
+        };
+        if pane.site_id == site_id {
+            return;
+        }
+        pane.site_id = site_id.to_string();
+        pane.view = view_for_site(site_id);
+        pane.volume = None;
+        pane.fetched_at = None;
+        pane.requested_at = None;
+        pane.error = None;
     }
 
     pub fn newest_start(&self) -> Option<DateTime<Utc>> {
@@ -2556,6 +2839,32 @@ mod tests {
         s.push_volume(vol("UNKNOWN", at(30)));
         assert_eq!(s.ring.len(), 2);
         assert_eq!(s.newest_start(), Some(at(30)));
+    }
+
+    /// The resume strip is anchored to the scan that was on screen: backfill
+    /// of older scans must not make it vanish, only the new scan does.
+    #[test]
+    fn resume_catchup_waits_for_a_newer_scan() {
+        let mut s = state();
+        s.push_volume(vol("KTWX", at(10)));
+        s.begin_resume_catchup();
+        assert!(s.resume_catchup.is_some());
+        s.note_resume_volume(at(10)); // duplicate / already on screen
+        assert!(s.resume_catchup.is_some(), "same scan is not progress");
+        s.note_resume_volume(at(5)); // older backfill
+        assert!(s.resume_catchup.is_some(), "older backfill is not progress");
+        s.note_resume_volume(at(20));
+        assert!(s.resume_catchup.is_none());
+    }
+
+    /// A quiet catch-up (nothing new to fetch) ends the strip explicitly,
+    /// so it cannot sit on the map claiming a download that is not running.
+    #[test]
+    fn resume_catchup_ends_without_a_new_scan() {
+        let mut s = state();
+        s.begin_resume_catchup();
+        s.end_resume_catchup();
+        assert!(s.resume_catchup.is_none());
     }
 
     /// The display volume follows the product: derived column products ride

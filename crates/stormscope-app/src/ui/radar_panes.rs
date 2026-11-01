@@ -267,6 +267,18 @@ fn draw_secondary_pane(
         if let (Some(product), Some(pane_app)) = (default_product, app.pane_apps[slot].as_mut()) {
             pane_app.state.moment = product;
         }
+        // A new pane joins a timeline that may already hold two hours of
+        // scans. Load the same window for its site, so the bottom scrub bar
+        // can move it with the others from the start instead of being stuck
+        // on the one newest scan.
+        if app.state.ring.len() >= 8
+            && let Some(pane_app) = app.pane_apps[slot].as_mut()
+        {
+            let _ = pane_app.tx.send(crate::app::DataCmd::LoadLastTwoHours(
+                pane_app.state.site_id.clone(),
+                None,
+            ));
+        }
     }
 
     // Take the app out while it is driven: the map needs `&mut StormApp`
@@ -285,6 +297,35 @@ fn draw_secondary_pane(
         && let Some(index) = pane.state.frame_nearest(at)
     {
         pane.state.playhead = index;
+    }
+    // Pane 1 may already hold a two-hour window (the user asked for it, or
+    // the live feed has been running). A pane with only the newest scan
+    // cannot follow the scrub bar into that history, so seed it with the
+    // same window. Only when the primary's ring is genuinely long, and at
+    // most every five minutes per pane.
+    let primary_span = match (app.state.ring.front(), app.state.ring.back()) {
+        (Some(first), Some(last)) => last.volume_start - first.volume_start,
+        _ => chrono::Duration::zero(),
+    };
+    let pane_oldest = pane.state.ring.front().map(|frame| frame.volume_start);
+    let needs_history = primary_span > chrono::Duration::minutes(90)
+        && match (app.state.ring.front(), pane_oldest) {
+            (Some(primary_oldest), Some(pane_oldest)) => {
+                primary_oldest.volume_start < pane_oldest - chrono::Duration::minutes(20)
+            }
+            (Some(_), None) => true,
+            _ => false,
+        };
+    let seed_due = pane
+        .state
+        .window_requested_at
+        .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(300));
+    if needs_history && seed_due {
+        pane.state.window_requested_at = Some(std::time::Instant::now());
+        let _ = pane.tx.send(crate::app::DataCmd::LoadLastTwoHours(
+            pane.state.site_id.clone(),
+            None,
+        ));
     }
     // User pins and the device GPS fix are app-level landmarks: show the same
     // ones in every radar pane, not just pane 1.

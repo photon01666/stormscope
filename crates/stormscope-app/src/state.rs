@@ -546,6 +546,10 @@ pub struct AppState {
     pub archive_text_requested: std::collections::HashSet<String>,
     /// The in-flight bulk radar load, if any (see [`LoadProgress`]).
     pub load_progress: Option<LoadProgress>,
+    /// When this app last asked its data thread for the shared two-hour
+    /// window that keeps every pane's timeline scrubbable. Throttles the
+    /// automatic seed so a short pane window is not re-requested every frame.
+    pub window_requested_at: Option<std::time::Instant>,
     /// Android: a long spell in the background just ended and the newest
     /// scan is being fetched (see [`ResumeCatchup`]). Drives the prominent
     /// resume strip; `None` for every download started in-app.
@@ -1453,6 +1457,7 @@ impl Default for AppState {
             archive_warnings_requested: None,
             archive_jump: None,
             load_progress: None,
+            window_requested_at: None,
             resume_catchup: None,
             startup_radar_visible: false,
             site_mismatch_logged: None,

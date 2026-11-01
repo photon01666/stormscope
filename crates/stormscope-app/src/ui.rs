@@ -4243,11 +4243,10 @@ fn last_two_hours_confirm(ctx: &egui::Context, app: &mut StormApp) {
             ui.set_max_width(440.0);
             ui.heading("Download the last 2 hours?");
             ui.add_space(6.0);
-            ui.label(format!(
-                "This downloads and loops the previous two hours of radar for {}. \
-                 It can use a significant amount of mobile data.",
-                app.state.site_id
-            ));
+            ui.label(
+                "This downloads and loops the previous two hours of radar for \
+                 every pane. It can use a significant amount of mobile data.",
+            );
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
@@ -4266,6 +4265,14 @@ fn last_two_hours_confirm(ctx: &egui::Context, app: &mut StormApp) {
             app.state.site_id.clone(),
             app.state.newest_start(),
         ));
+        // The bottom timeline drives every pane, so every pane needs the
+        // same two-hour window. Each data thread loads its own site.
+        for pane in app.pane_apps.iter_mut().flatten() {
+            let _ = pane.tx.send(crate::app::DataCmd::LoadLastTwoHours(
+                pane.state.site_id.clone(),
+                pane.state.newest_start(),
+            ));
+        }
         dismissed = true;
     }
     if dismissed {

@@ -30,6 +30,12 @@
   hail are off by default.
 - Station totals (rain/snow) is now an app-wide layer: turning off "Station
   totals on map" in Settings hides the diamonds in every pane, not only pane 1.
+- The bottom scrub bar and Play/Pause now drive every pane: each pane follows
+  the selected scan *time* (not a frame index), so all maps show the same
+  moment.
+- The primary map now paints the newest cached scan immediately while the S3
+  listing runs, so a slow or throttled listing no longer leaves it stuck
+  behind the loading card.
 - Android full-pane analysis windows (model comparison, storm trends, forecast
   videos) now fill the pane instead of being offset off-screen.
 - Live radar polls the S3 chunk feed every 30 seconds instead of every 5,

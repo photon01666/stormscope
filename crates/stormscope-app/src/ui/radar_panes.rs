@@ -276,6 +276,16 @@ fn draw_secondary_pane(
     };
     let pane = pane_app.as_mut();
     pane.pump();
+    // The bottom scrub bar and Play button belong to the app, so they drive
+    // every pane. Follow the primary's selected scan by *time* — frame indices
+    // differ between sites and cadences — so scrubbing to 4:26 AM shows 4:26
+    // AM everywhere instead of leaving the secondary panes on their old frame.
+    let followed_scan = app.state.current().map(|frame| frame.volume_start);
+    if let Some(at) = followed_scan
+        && let Some(index) = pane.state.frame_nearest(at)
+    {
+        pane.state.playhead = index;
+    }
     // User pins and the device GPS fix are app-level landmarks: show the same
     // ones in every radar pane, not just pane 1.
     pane.state.markers = app.state.markers.clone();

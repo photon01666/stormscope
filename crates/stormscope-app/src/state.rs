@@ -2656,6 +2656,17 @@ impl AppState {
         self.playhead = self.playhead.saturating_sub(1);
     }
 
+    /// Index of the frame closest to `at`, used to keep every pane on the
+    /// app-level timeline's selected scan. Frame *indices* are not comparable
+    /// across panes (different sites and cadences), but timestamps are.
+    pub fn frame_nearest(&self, at: DateTime<Utc>) -> Option<usize> {
+        self.ring
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, frame)| (frame.volume_start - at).num_milliseconds().abs())
+            .map(|(index, _)| index)
+    }
+
     /// Select a radar frame from the bottom timeline. In Live mode, picking
     /// an older frame starts a hold so newly arriving scans do not immediately
     /// replace it. Playback is paused for a historical selection so the loop
@@ -2865,6 +2876,21 @@ mod tests {
         s.begin_resume_catchup();
         s.end_resume_catchup();
         assert!(s.resume_catchup.is_none());
+    }
+
+    /// The app-level scrub bar follows a timestamp, not an index: panes have
+    /// different sites and ring lengths, so the nearest frame is the one that
+    /// makes every pane show the same scan time.
+    #[test]
+    fn frame_nearest_follows_time_not_index() {
+        let mut s = state();
+        s.push_volume(vol("KTWX", at(10)));
+        s.push_volume(vol("KTWX", at(20)));
+        s.push_volume(vol("KTWX", at(40)));
+        assert_eq!(s.frame_nearest(at(18)), Some(1), "20 is closer than 10");
+        assert_eq!(s.frame_nearest(at(39)), Some(2), "40 is closer than 20");
+        assert_eq!(s.frame_nearest(at(5)), Some(0));
+        assert_eq!(s.frame_nearest(at(59)), Some(2));
     }
 
     /// The display volume follows the product: derived column products ride

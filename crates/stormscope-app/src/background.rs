@@ -1907,6 +1907,20 @@ fn prime_site(
     Option<chrono::DateTime<Utc>>,
     VecDeque<radar_data::ArchiveVolumeRef>,
 ) {
+    // Drop whatever is on the ring before pushing, or a frame from the
+    // previous station lingers under the new one. Do this first, then show
+    // the newest *cached* scan immediately: the S3 listing below can stall
+    // for its full 60 s timeout, and the primary map must not stay blank
+    // behind the startup card while the passive panes already have frames.
+    let _ = out.send(DataMsg::ClearFrames);
+    let cached = load_cached_volume(site, out);
+    if let Some(start) = cached {
+        log::info!(
+            "prime {site}: cached scan {} (showing while S3 lists)",
+            crate::timefmt::fmt_central(&start)
+        );
+    }
+
     // Two hours of NEXRAD scans at the usual ~5-minute cadence. The live
     // ring may retain fewer on a phone, but the background prefetch still
     // covers the full two-hour window instead of only the cached subset.
@@ -1930,14 +1944,10 @@ fn prime_site(
     vols.truncate(PRIME_SCANS);
     if vols.is_empty() {
         log::warn!("prime {site}: no scans listed");
-        return (None, VecDeque::new());
+        return (cached, VecDeque::new());
     }
 
     let newest = vols[0].volume_start;
-
-    // Drop whatever is on the ring before pushing, or a frame from the
-    // previous station lingers under the new one.
-    let _ = out.send(DataMsg::ClearFrames);
 
     // Show the newest volume first, whether it comes from S3 or the disk
     // cache. The rest of the two-hour window is only queued after this call:
@@ -1966,7 +1976,7 @@ fn prime_site(
             );
         }
     }
-    (delivered, queue)
+    (delivered.or(cached), queue)
 }
 
 /// One polite catch-up check: if the archive bucket has a scan *newer* than

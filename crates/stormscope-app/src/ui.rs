@@ -1626,7 +1626,7 @@ fn map_controls_window(
     };
     let mut open = true;
     let title = if key == 0 {
-        "Map controls".to_string()
+        format!("Map controls · {}", app.state.site_id)
     } else {
         format!("Pane {} map controls · {}", key + 1, app.state.site_id)
     };

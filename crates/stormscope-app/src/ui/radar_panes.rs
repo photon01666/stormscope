@@ -41,31 +41,23 @@ pub fn show(ui: &mut egui::Ui, app: &mut StormApp) -> bool {
             crate::ui::map::map(ui, app);
         });
         app.map_rect_at = Some(rects[0]);
-        if maximized.is_none() {
-            let max = super::pane_chip_bottom_centered(
-                ui,
-                rects[0].center().x,
-                rects[0].max.y - 8.0 * scale,
-                "Max",
-                scale,
-            )
-            .on_hover_text("Fill the map area with this pane");
-            if max.clicked() {
-                app.state.maximized_pane = Some(0);
-                for pane in app.pane_apps.iter_mut().flatten() {
-                    pane.state.map_controls_open = false;
+        {
+            // Site + Max/Restore as one centered pair, so pane 1's station is
+            // as visible as the others'.
+            let label = if maximized.is_none() {
+                "Max"
+            } else {
+                "Restore"
+            };
+            let max = pane_bottom_center_chips(ui, rects[0], &app.state.site_id, label, scale);
+            if maximized.is_none() {
+                if max {
+                    app.state.maximized_pane = Some(0);
+                    for pane in app.pane_apps.iter_mut().flatten() {
+                        pane.state.map_controls_open = false;
+                    }
                 }
-            }
-        } else {
-            let restore = super::pane_chip_bottom_centered(
-                ui,
-                full.center().x,
-                full.max.y - 8.0 * scale,
-                "Restore",
-                scale,
-            )
-            .on_hover_text("Return to the multi-pane layout");
-            if restore.clicked() {
+            } else if max {
                 app.state.maximized_pane = None;
             }
         }
@@ -228,6 +220,51 @@ fn draw_global_chrome(ui: &mut egui::Ui, app: &mut StormApp, full: Rect, scale: 
     super::ai_chip(ui, full, app, scale);
 }
 
+/// Bottom-center chips for a pane: its radar site next to the Max/Restore
+/// button, drawn as one centered pair. With several independent radar sites
+/// it is otherwise impossible to tell which station a pane is showing, and
+/// the pair keeps clear of the global bottom-left/right chrome. Returns true
+/// when the Max/Restore chip was clicked.
+fn pane_bottom_center_chips(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    site: &str,
+    max_label: &str,
+    scale: f32,
+) -> bool {
+    let font = super::chip_font_size(ui);
+    let site_galley = super::chip_galley(ui, site, font);
+    let max_galley = super::chip_galley(ui, max_label, font);
+    let pad = super::chip_padding() * scale;
+    let site_size = site_galley.size() + pad;
+    let max_size = max_galley.size() + pad;
+    let gap = 6.0 * scale;
+    let bottom = rect.max.y - 8.0 * scale;
+    let x0 = rect.center().x - (site_size.x + gap + max_size.x) / 2.0;
+    super::chip_button(
+        ui,
+        Rect::from_min_size(egui::pos2(x0, bottom - site_size.y), site_size),
+        site,
+        font,
+    )
+    .on_hover_text("Radar station this pane is showing");
+    super::chip_button(
+        ui,
+        Rect::from_min_size(
+            egui::pos2(x0 + site_size.x + gap, bottom - max_size.y),
+            max_size,
+        ),
+        max_label,
+        font,
+    )
+    .on_hover_text(if max_label == "Restore" {
+        "Return to the multi-pane layout"
+    } else {
+        "Fill the map area with this pane"
+    })
+    .clicked()
+}
+
 fn show_secondary(
     ui: &mut egui::Ui,
     app: &mut StormApp,
@@ -305,6 +342,9 @@ fn draw_secondary_pane(
         if let Some(pane) = app.state.secondary_radar_panes.get_mut(slot) {
             pane.site_id = desired.clone();
         }
+        // Keep site.json in step with a map-click site change so the Settings
+        // combo and the next start show the same station as the pane map.
+        app.state.persist_pane_defaults();
     }
     if desired.is_empty() {
         return;
@@ -503,23 +543,19 @@ fn draw_secondary_pane(
             }
         }
 
-        // Maximize/restore this pane. Only exists in the multi-pane layout;
-        // fullscreen already owns the whole screen, so `chrome` is false there.
+        // Maximize/restore this pane, with the radar station beside it. Only
+        // exists in the multi-pane layout; fullscreen owns the whole screen,
+        // so `chrome` is false there.
         let pane_no = slot + 1;
         let is_maximized = app.state.maximized_pane == Some(pane_no);
-        let max = super::pane_chip_bottom_centered(
+        let max = pane_bottom_center_chips(
             ui,
-            rect.center().x,
-            rect.max.y - 8.0 * scale,
+            rect,
+            &pane.state.site_id,
             if is_maximized { "Restore" } else { "Max" },
             scale,
-        )
-        .on_hover_text(if is_maximized {
-            "Return to the multi-pane layout"
-        } else {
-            "Fill the map area with this pane"
-        });
-        if max.clicked() {
+        );
+        if max {
             app.state.maximized_pane = if is_maximized { None } else { Some(pane_no) };
             if !is_maximized {
                 // Only the maximized pane may keep its Controls card open.

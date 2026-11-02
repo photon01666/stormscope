@@ -1203,6 +1203,27 @@ impl StormApp {
             return;
         }
         self.state.site_id = id.to_string();
+        // Site-specific overlays must not linger over the new station's map
+        // while its data loads. Station totals were the obvious symptom: the
+        // old site's diamonds stayed at their old coordinates after a station
+        // click, which read as one station's radar on another.
+        self.state.totals.clear();
+        self.state.totals_target = None;
+        self.state.totals_fetched_at = None;
+        self.state.totals_requested = None;
+        self.state.totals_hover = None;
+        self.state.totals_open = false;
+        self.state.alerts_slow.clear();
+        self.state.alerts_fast.clear();
+        self.state.alerts_hover = None;
+        self.state.alerts_map_stack.clear();
+        self.state.alerts_focus = None;
+        self.state.alerts_focus_at = 0.0;
+        self.state.alert_detail = None;
+        self.map_alert_cycle = None;
+        // Watches are national; keep the shared set and drop the old site's
+        // warning polygons until the new station's alerts arrive.
+        self.state.alerts = crate::state::merge_watches(Vec::new(), &self.state.all_alerts);
         // Live AI trends belong to one radar; do not compare cells across a
         // site switch. Keep the visible feed as history.
         self.live_ai.reset_for_site(id);

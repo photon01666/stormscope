@@ -435,22 +435,20 @@ fn draw_secondary_pane(
     // this pane's day, use it instead of letting a throttled per-pane SPC
     // fetch leave the pane blank.
     if app.state.outlook_day == pane.state.outlook_day {
-        let primary_issue = app.state.outlooks.first().and_then(|o| o.issue);
-        let pane_issue = pane.state.outlooks.first().and_then(|o| o.issue);
-        let newer = match (primary_issue, pane_issue) {
-            (Some(p), Some(q)) => p > q,
-            (Some(_), None) => true,
-            _ => false,
-        };
-        // A partial set must be replaced too: "same issue" does not mean all
-        // four products arrived. This is what left pane 2 showing Categorical,
-        // Tornado and Wind while Hail sat on "loading hail…" forever.
-        let missing_product = app
-            .state
-            .outlooks
-            .iter()
-            .any(|primary| !pane.state.outlooks.iter().any(|pane| pane.ty == primary.ty));
-        if newer || missing_product {
+        // Compare every product, not just "is this type present": a pane can
+        // hold an empty or older Tornado/Wind/Hail feature set while still
+        // having an entry for it, which is how pane 2 ended up drawing a
+        // different outlook than pane 1. Feature count and issue must match.
+        let needs_copy = app.state.outlooks.iter().any(|primary| {
+            pane.state
+                .outlooks
+                .iter()
+                .find(|pane| pane.ty == primary.ty)
+                .is_none_or(|pane| {
+                    pane.issue != primary.issue || pane.features.len() != primary.features.len()
+                })
+        });
+        if needs_copy {
             pane.state.outlooks = app.state.outlooks.clone();
             pane.state.outlook = app
                 .state

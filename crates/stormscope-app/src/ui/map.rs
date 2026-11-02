@@ -270,7 +270,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                             if let Some((site, _)) = best {
                                 app.state.radar_site_label =
                                     Some((site.id.to_string(), ui.input(|i| i.time) + 3.0));
-                                app.select_site(site.id);
+                                // A site click means "show me this radar":
+                                // recenter on it as well as switching the
+                                // stream. `select_site` alone left the view
+                                // over the previous station, so the new
+                                // station's echoes appeared at long range on
+                                // what still looked like the old site.
+                                app.open_site(site.id);
                             } else if !futurecast_only
                                 && app.state.show_lsrs
                                 && let Some(r) =
@@ -4208,46 +4214,39 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
             animating = true;
         }
 
-        for ring in rings {
-            if ring.len() < 3 {
-                continue;
-            }
-            let pts: Vec<egui::Pos2> = ring
-                .iter()
-                .map(|&(lon, lat)| {
-                    let (vx, vy) = view.lonlat_to_view_px(lon, lat);
-                    egui::pos2(origin.x + vx as f32, origin.y + vy as f32)
-                })
-                .collect();
-            // Soft outer glow: two widening, fading strokes behind the edge.
-            if glow > 0.0 {
-                for (width, alpha) in [(6.0, 0.30), (11.0, 0.15)] {
-                    painter.add(egui::Shape::closed_line(
-                        pts.clone(),
-                        egui::Stroke::new(width, color.gamma_multiply(alpha * intensity)),
-                    ));
-                }
-            }
-            painter.add(egui::Shape::closed_line(
-                pts.clone(),
-                egui::Stroke::new(2.0 + 1.5 * intensity, color),
-            ));
-            // Filled at rest; the wash clears while the pointer is on it so
-            // the radar is visible where the user is looking, leaving only
-            // the outline. The sliders scale the resting fill for both
-            // warnings and watches (the watch default is 5%).
-            let fill = if watch {
-                watch_fill_alpha(intensity, app.state.watch_fill)
-            } else {
-                warning_fill_alpha(intensity, app.state.alerts_fill)
-            };
+        // Project the outline once. Zone-based watches arrive as a set of
+        // county polygons; outlining every county turns the watch into a
+        // grid that looks nothing like the watch box. Fill each county but
+        // draw one convex-hull outline for a multi-ring watch.
+        let projected: Vec<Vec<egui::Pos2>> = rings
+            .iter()
+            .filter(|ring| ring.len() >= 3)
+            .map(|ring| {
+                ring.iter()
+                    .map(|&(lon, lat)| {
+                        let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+                        egui::pos2(origin.x + vx as f32, origin.y + vy as f32)
+                    })
+                    .collect()
+            })
+            .collect();
+        // Filled at rest; the wash clears while the pointer is on it so the
+        // radar is visible where the user is looking. The sliders scale the
+        // resting fill for both warnings and watches (watch default 5%).
+        let fill = if watch {
+            watch_fill_alpha(intensity, app.state.watch_fill)
+        } else {
+            warning_fill_alpha(intensity, app.state.alerts_fill)
+        };
+        for pts in &projected {
             if fill > 0.0 {
                 painter.add(egui::Shape::convex_polygon(
-                    pts,
+                    pts.clone(),
                     color.gamma_multiply(fill),
                     egui::Stroke::NONE,
                 ));
             }
+            draw_alert_outline(painter, pts, color, glow, intensity);
         }
 
         // Name the warning on the map only while the pointer is on it (the
@@ -4275,6 +4274,32 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
         // Keep the pulse (and the focus flash decay) moving.
         painter.ctx().request_repaint();
     }
+}
+
+/// One alert outline with the hover glow, shared by warnings and watches.
+fn draw_alert_outline(
+    painter: &egui::Painter,
+    pts: &[egui::Pos2],
+    color: egui::Color32,
+    glow: f32,
+    intensity: f32,
+) {
+    if pts.len() < 3 {
+        return;
+    }
+    // Soft outer glow: two widening, fading strokes behind the edge.
+    if glow > 0.0 {
+        for (width, alpha) in [(6.0, 0.30), (11.0, 0.15)] {
+            painter.add(egui::Shape::closed_line(
+                pts.to_vec(),
+                egui::Stroke::new(width, color.gamma_multiply(alpha * intensity)),
+            ));
+        }
+    }
+    painter.add(egui::Shape::closed_line(
+        pts.to_vec(),
+        egui::Stroke::new(2.0 + 1.5 * intensity, color),
+    ));
 }
 
 /// Recompute storm tracks when the frame pair or tilt changes. Cheap enough

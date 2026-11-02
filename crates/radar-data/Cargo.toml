@@ -22,6 +22,9 @@ reqwest = { version = "0.12", default-features = false, features = [
     "gzip",
 ] }
 flate2 = "1"
+# Zone/county-based watches are a set of county polygons. `geo` unions them
+# into the single watch area NWS draws, instead of outlining every county.
+geo = "0.33"
 # GOES GLM Level 2 is NetCDF-4/HDF5. This reader is pure Rust (no libhdf5 /
 # libnetcdf), so the binary stays self-contained.
 netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }

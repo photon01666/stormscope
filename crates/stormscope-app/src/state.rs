@@ -1699,7 +1699,7 @@ impl Default for AppState {
             qc_clutter: false,
             qc_attenuation: false,
             qc_bias_db: 0.0,
-            qc_blockage: true,
+            qc_blockage: false,
             qc_terrain: None,
             qc_terrain_pending: false,
             qc_terrain_error: None,

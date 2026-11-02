@@ -3122,24 +3122,26 @@ fn draw_county_borders(
         egui::Color32::from_rgba_unmultiplied(155, 172, 195, 95),
     );
     let mut shapes = Vec::new();
-    for ring in crate::geodata::COUNTIES.iter() {
-        if f64::from(ring.max_lon) < min_lon
-            || f64::from(ring.min_lon) > max_lon
-            || f64::from(ring.max_lat) < min_lat
-            || f64::from(ring.min_lat) > max_lat
-        {
-            continue;
-        }
-        let pts: Vec<egui::Pos2> = ring
-            .points
-            .iter()
-            .map(|&[lon, lat]| {
-                let (vx, vy) = view.lonlat_to_view_px(lon as f64, lat as f64);
-                egui::pos2(origin.x + vx as f32, origin.y + vy as f32)
-            })
-            .collect();
-        if pts.len() >= 3 {
-            shapes.push(egui::Shape::closed_line(pts, stroke));
+    for county in crate::geodata::COUNTIES.iter() {
+        for ring in &county.rings {
+            if f64::from(ring.max_lon) < min_lon
+                || f64::from(ring.min_lon) > max_lon
+                || f64::from(ring.max_lat) < min_lat
+                || f64::from(ring.min_lat) > max_lat
+            {
+                continue;
+            }
+            let pts: Vec<egui::Pos2> = ring
+                .points
+                .iter()
+                .map(|&[lon, lat]| {
+                    let (vx, vy) = view.lonlat_to_view_px(lon as f64, lat as f64);
+                    egui::pos2(origin.x + vx as f32, origin.y + vy as f32)
+                })
+                .collect();
+            if pts.len() >= 3 {
+                shapes.push(egui::Shape::closed_line(pts, stroke));
+            }
         }
     }
     painter.extend(shapes);

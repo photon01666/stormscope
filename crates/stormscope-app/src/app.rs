@@ -1541,7 +1541,11 @@ impl StormApp {
                         }
                     }
                 }
-                DataMsg::Alerts(a) => {
+                DataMsg::Alerts(mut a) => {
+                    // Zone-based watches arrive with county zone URLs, not a
+                    // storm polygon. Fill them from the bundled county set so
+                    // the map draws the county grid immediately.
+                    crate::geodata::enrich_zone_warnings(&mut a, false);
                     self.state.alerts_slow = a;
                     self.state.alerts = crate::state::merge_watches(
                         crate::state::merge_alerts(
@@ -1556,7 +1560,8 @@ impl StormApp {
                 DataMsg::UvIndex(uv) => self.state.uv_index = uv,
                 DataMsg::Reports(v) => self.state.lsrs = v,
                 DataMsg::Mcds(v) => self.state.mcds = v,
-                DataMsg::AlertsFast(a) => {
+                DataMsg::AlertsFast(mut a) => {
+                    crate::geodata::enrich_zone_warnings(&mut a, false);
                     self.state.alerts_fast = a;
                     self.state.alerts = crate::state::merge_watches(
                         crate::state::merge_alerts(
@@ -1567,7 +1572,10 @@ impl StormApp {
                     );
                     self.announce_nearby_alerts();
                 }
-                DataMsg::AllAlerts(a) => {
+                DataMsg::AllAlerts(mut a) => {
+                    // The browser lists every watch nationwide; only those
+                    // need geometry for the map merge, so keep this cheap.
+                    crate::geodata::enrich_zone_warnings(&mut a, true);
                     self.state.all_alerts = a;
                     // Pick up watches the site-radius list missed right away,
                     // so every pane draws the same national watch boxes.

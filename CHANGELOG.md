@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.9.2 — 2026-11-02
+
+**Watches are back on the map**
+- Nationwide watches now take their county geometry from the bundled county
+  set, so the map draws the county-grid watch areas even when a watch is
+  outside the station-radius alert list. Previously only station alerts were
+  enriched, leaving the browser's nationwide watches with no polygon and no
+  map rendering.
+- A zone URL such as `OKC003` resolves directly to its county rings, so
+  drawing a multi-county watch costs no API request per county.
+
 ## v1.9.1 — 2026-11-02
 
 **County context, county-grid watches, and multi-pane fixes**

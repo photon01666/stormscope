@@ -1405,8 +1405,19 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::R
         (220.0 * scale).min((screen.y - 90.0).max(160.0)),
     );
     let mut open = true;
+    // A secondary pane's detail is a separate window from pane 1's. Sharing
+    // egui's id made two open alerts fight over one position/size (and look
+    // like the pane click did nothing).
+    let window_id = if app.is_secondary {
+        egui::Id::new((
+            "stormscope.alert.detail.pane",
+            app as *const StormApp as usize,
+        ))
+    } else {
+        egui::Id::new("stormscope.alert.detail")
+    };
     let mut window = egui::Window::new("NOAA alert details")
-        .id(egui::Id::new("stormscope.alert.detail"))
+        .id(window_id)
         // Centered *by its top-left corner*, not by a pivot: egui's pivot
         // is for anchored areas, and with a center pivot every size change
         // also shifts the stored position — which fights the resize drag.
@@ -1469,7 +1480,11 @@ pub fn alert_detail_popup(ctx: &egui::Context, app: &mut StormApp, area: egui::R
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .max_height((ui.available_height() - 50.0 * scale).max(120.0))
+                // There is no footer in this window: the scroll viewport owns
+                // the whole remaining height. The old `- 50 * scale` reserve
+                // left a dead band under the text and clipped the description
+                // above it, which read as a broken layout.
+                .max_height(ui.available_height().max(120.0))
                 .show(ui, |ui| {
                     if !w.instruction.is_empty() {
                         egui::Frame::NONE

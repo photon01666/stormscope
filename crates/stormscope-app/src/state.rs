@@ -370,6 +370,21 @@ pub fn merge_alerts(
     out
 }
 
+/// Watches are large, national boxes: a site-radius alert fetch can miss a
+/// watch that still belongs on the map. Add every watch from the nationwide
+/// list the site list does not already carry, preserving order.
+pub fn merge_watches(
+    mut live: Vec<radar_core::warnings::Warning>,
+    all: &[radar_core::warnings::Warning],
+) -> Vec<radar_core::warnings::Warning> {
+    for w in all {
+        if w.event.contains("Watch") && !live.iter().any(|x| x.id == w.id) {
+            live.push(w.clone());
+        }
+    }
+    live
+}
+
 /// Radius (km) within which an alert counts as "at" the selected station:
 /// the same radius the near-site fetch uses, i.e. the radar's practical
 /// warning area.
@@ -670,6 +685,10 @@ pub struct AppState {
     /// long-fused boxes and many people run with them hidden. On by default;
     /// the watch-fill slider sets their shading (default 5% fill).
     pub show_watches: bool,
+    /// Last `show_watches` value this app mirrored from the primary. Lets a
+    /// secondary pane's own Map Controls change the app-wide watch layer
+    /// without the per-frame sync immediately overwriting it.
+    pub synced_show_watches: bool,
     /// Watch box fill opacity (0 = outline only). Defaults to 5% (95%
     /// transparent); the pointer still clears the fill locally.
     pub watch_fill: f32,
@@ -1524,6 +1543,7 @@ impl Default for AppState {
             all_alerts: Vec::new(),
             show_alerts: true,
             show_watches: true,
+            synced_show_watches: true,
             watch_fill: 0.05,
             alerts_popup_open: false,
             alerts_tab: AlertsTab::Station,

@@ -405,6 +405,62 @@ fn draw_secondary_pane(
     // apply to every pane. Without this, turning it off hid pane 1's layer
     // only and the other panes kept drawing their diamonds.
     pane.state.show_totals = app.state.show_totals;
+    // Alert layers are app-wide too. `Show watches` is in every pane's Map
+    // Controls, so adopt a change made in this pane and otherwise mirror the
+    // app value; the Settings-only switches simply follow pane 1.
+    if pane.state.show_watches != pane.state.synced_show_watches {
+        app.state.show_watches = pane.state.show_watches;
+        pane.state.synced_show_watches = pane.state.show_watches;
+    } else {
+        pane.state.show_watches = app.state.show_watches;
+        pane.state.synced_show_watches = app.state.show_watches;
+    }
+    pane.state.show_alerts = app.state.show_alerts;
+    pane.state.show_lsrs = app.state.show_lsrs;
+    pane.state.show_mcds = app.state.show_mcds;
+    // The nationwide alert set is app-wide: pane 1 fetches it once and every
+    // pane mirrors it. Rebuild this pane's map list when it changes, so large
+    // watches the site-radius fetch missed still draw and can be clicked.
+    if pane.state.all_alerts.len() != app.state.all_alerts.len()
+        || pane.state.all_alerts.first().map(|w| w.id.as_str())
+            != app.state.all_alerts.first().map(|w| w.id.as_str())
+    {
+        pane.state.all_alerts = app.state.all_alerts.clone();
+        pane.state.alerts = crate::state::merge_watches(
+            crate::state::merge_alerts(&pane.state.alerts_slow, &pane.state.alerts_fast),
+            &pane.state.all_alerts,
+        );
+    }
+    // SPC outlooks are also app-wide. If the primary has a newer issue for
+    // this pane's day, use it instead of letting a throttled per-pane SPC
+    // fetch leave the pane blank.
+    if app.state.outlook_day == pane.state.outlook_day {
+        let primary_issue = app.state.outlooks.first().and_then(|o| o.issue);
+        let pane_issue = pane.state.outlooks.first().and_then(|o| o.issue);
+        let newer = match (primary_issue, pane_issue) {
+            (Some(p), Some(q)) => p > q,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        // A partial set must be replaced too: "same issue" does not mean all
+        // four products arrived. This is what left pane 2 showing Categorical,
+        // Tornado and Wind while Hail sat on "loading hail…" forever.
+        let missing_product = app
+            .state
+            .outlooks
+            .iter()
+            .any(|primary| !pane.state.outlooks.iter().any(|pane| pane.ty == primary.ty));
+        if newer || missing_product {
+            pane.state.outlooks = app.state.outlooks.clone();
+            pane.state.outlook = app
+                .state
+                .outlooks
+                .iter()
+                .find(|o| o.ty == pane.state.outlook_type)
+                .cloned()
+                .or_else(|| pane.state.outlook.clone());
+        }
+    }
     // The bottom dBZ button is app-wide: turn the inspection crosshair on for
     // every visible radar pane, each with its own map position.
     pane.state.dbz_crosshair = app.state.dbz_crosshair;

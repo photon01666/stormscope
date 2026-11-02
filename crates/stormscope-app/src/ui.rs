@@ -574,6 +574,10 @@ pub(crate) fn secondary_analysis_windows(
     app: &mut StormApp,
     area: egui::Rect,
 ) {
+    // Warning detail lives with the pane that was clicked. Without this the
+    // click set the pane app's `alert_detail` but no window was ever drawn,
+    // so watches and warnings were only clickable in pane 1.
+    alerts::alert_detail_popup(ctx, app, area);
     sounding::sounding_window(ctx, app, area);
     hrrr::hrrr_window(ctx, app, area);
     ensemble::ensemble_window(ctx, app, area);

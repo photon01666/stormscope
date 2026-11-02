@@ -1516,9 +1516,12 @@ impl StormApp {
                 }
                 DataMsg::Alerts(a) => {
                     self.state.alerts_slow = a;
-                    self.state.alerts = crate::state::merge_alerts(
-                        &self.state.alerts_slow,
-                        &self.state.alerts_fast,
+                    self.state.alerts = crate::state::merge_watches(
+                        crate::state::merge_alerts(
+                            &self.state.alerts_slow,
+                            &self.state.alerts_fast,
+                        ),
+                        &self.state.all_alerts,
                     );
                     self.inject_debug_warning();
                     self.announce_nearby_alerts();
@@ -1528,14 +1531,26 @@ impl StormApp {
                 DataMsg::Mcds(v) => self.state.mcds = v,
                 DataMsg::AlertsFast(a) => {
                     self.state.alerts_fast = a;
-                    self.state.alerts = crate::state::merge_alerts(
-                        &self.state.alerts_slow,
-                        &self.state.alerts_fast,
+                    self.state.alerts = crate::state::merge_watches(
+                        crate::state::merge_alerts(
+                            &self.state.alerts_slow,
+                            &self.state.alerts_fast,
+                        ),
+                        &self.state.all_alerts,
                     );
                     self.announce_nearby_alerts();
                 }
                 DataMsg::AllAlerts(a) => {
                     self.state.all_alerts = a;
+                    // Pick up watches the site-radius list missed right away,
+                    // so every pane draws the same national watch boxes.
+                    self.state.alerts = crate::state::merge_watches(
+                        crate::state::merge_alerts(
+                            &self.state.alerts_slow,
+                            &self.state.alerts_fast,
+                        ),
+                        &self.state.all_alerts,
+                    );
                     self.announce_nearby_alerts();
                 }
                 DataMsg::Observation(o) => {

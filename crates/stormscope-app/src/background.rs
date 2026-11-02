@@ -300,7 +300,7 @@ pub fn run(
                         watchdog_enabled = false;
                         passive_loaded = load_latest_once(&source, &site, &out, false);
                         last_passive_fetch = std::time::Instant::now();
-                        refresh_alerts(&alerts, &site, &out);
+                        refresh_alerts(&alerts, &site, &out, !passive);
                     } else if backgrounded() {
                         // A site selection queued just before the app left the
                         // foreground must not start downloading. The Storm Watch
@@ -324,7 +324,7 @@ pub fn run(
                         }
                         // Alerts are point-filtered, so they move with the site
                         // (previously evaluated around a hardcoded Oklahoma point).
-                        refresh_alerts(&alerts, &site, &out);
+                        refresh_alerts(&alerts, &site, &out, !passive);
                     }
                 }
                 DataCmd::LoadArchiveDate(site, date, minute) => {
@@ -667,7 +667,7 @@ pub fn run(
                         .ok();
                 }
                 DataCmd::RefreshAlerts => {
-                    refresh_alerts(&alerts, &current_site, &out);
+                    refresh_alerts(&alerts, &current_site, &out, !passive);
                 }
                 DataCmd::LoadOutlookDiscussion(day) => {
                     match outlooks.as_ref().map(|o| o.discussion(day)) {
@@ -1631,9 +1631,9 @@ pub fn run(
         }
         if last_alerts.elapsed() >= ALERTS_REFRESH {
             last_alerts = std::time::Instant::now();
-            refresh_alerts(&alerts, &current_site, &out);
+            refresh_alerts(&alerts, &current_site, &out, !passive);
         }
-        if last_outlook.elapsed() >= OUTLOOK_REFRESH {
+        if !passive && last_outlook.elapsed() >= OUTLOOK_REFRESH {
             last_outlook = std::time::Instant::now();
             if let Some(src) = outlooks.clone() {
                 let out = out.clone();
@@ -2365,7 +2365,12 @@ fn refresh_mcds(
     });
 }
 
-fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg>) {
+fn refresh_alerts(
+    alerts: &Option<AlertSource>,
+    site: &str,
+    out: &Sender<DataMsg>,
+    include_all: bool,
+) {
     let Some(a) = alerts else { return };
     let (lat, lon) = radar_core::sites::site(site)
         .map(|s| (s.latitude, s.longitude))
@@ -2382,6 +2387,11 @@ fn refresh_alerts(alerts: &Option<AlertSource>, site: &str, out: &Sender<DataMsg
             log::warn!("alerts fetch failed: {e:#}");
             let _ = out.send(DataMsg::Error(format!("alerts: {e:#}")));
         }
+    }
+    if !include_all {
+        // Secondary panes mirror pane 1's nationwide set through the UI; one
+        // fetch is enough and keeps the NWS request count flat as panes grow.
+        return;
     }
     // The alerts browser also wants the nationwide picture. Same request
     // cadence, one extra listing per 5 minutes.

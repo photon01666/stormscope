@@ -4240,11 +4240,15 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
         };
         for pts in &projected {
             if fill > 0.0 {
-                painter.add(egui::Shape::convex_polygon(
-                    pts.clone(),
-                    color.gamma_multiply(fill),
-                    egui::Stroke::NONE,
-                ));
+                // Earcut, not `convex_polygon`: zone/watch polygons are
+                // concave (a union of counties is a notched block), and a
+                // convex mesh of a concave ring renders as a starburst of
+                // triangles from its first vertex — the gray/white fans.
+                if let Some(mesh) =
+                    triangulate(std::slice::from_ref(pts), color.gamma_multiply(fill))
+                {
+                    painter.add(mesh);
+                }
             }
             draw_alert_outline(painter, pts, color, glow, intensity);
         }

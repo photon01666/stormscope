@@ -688,11 +688,12 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
                     ));
                 }
             }
-            painter.add(egui::Shape::convex_polygon(
-                poly.base.clone(),
-                fill,
-                Stroke::NONE,
-            ));
+            // Earcut the ground polygon: watch unions are notched concave
+            // shapes, and a convex mesh of a concave ring fans from its first
+            // vertex (the gray/white starburst on the 2D map, same here).
+            if let Some(mesh) = super::map::triangulate(std::slice::from_ref(&poly.base), fill) {
+                painter.add(mesh);
+            }
             painter.add(egui::Shape::closed_line(
                 poly.base.clone(),
                 Stroke::new(

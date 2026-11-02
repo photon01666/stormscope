@@ -794,6 +794,12 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         // Under the radar so echoes stay crisp; the outline pass (Layer 3.5)
         // re-draws the risk boundaries over the echoes.
         let _ = draw_outlooks(&painter, origin, &view, app, true);
+
+        // --- Layer 2.6: county outlines ------------------------------------
+        // Painted under the radar return (the user's requested order): county
+        // and state lines give the basemap geographic context without chopping
+        // up the echoes. Watch areas still outline their own counties on top.
+        draw_county_borders(&painter, origin, &view, app);
     }
 
     // --- Layer 3: radar sweep overlay --------------------------------------
@@ -1230,8 +1236,9 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
             draw_lightning(&painter, origin, &view, app);
         }
 
-        // --- Radar sites + city labels (above radar/warnings/tracks) ------
-        // Painted late so echoes never bury the dots or "ID City" names.
+        // --- Radar sites (above radar/warnings/tracks) ---------------------
+        // The basemap keeps its own city and county names; no duplicate
+        // label layer is drawn on top.
         draw_sites(&painter, origin, &view, app, ui.ctx());
 
         // --- Synoptic (Mesowest) stations ---------------------------------
@@ -3082,6 +3089,62 @@ fn draw_range_rings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView,
     }
 }
 
+/// County (and therefore state) outlines, painted under the radar return.
+///
+/// The full US county set ships with the app (about 100k points); each ring
+/// carries a bounding box so a frame only projects the counties that can
+/// actually appear in the viewport.
+fn draw_county_borders(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+) {
+    if !app.state.show_county_borders {
+        return;
+    }
+    let (w, h) = (view.width() as f64, view.height() as f64);
+    let (west, north) = view.view_px_to_lonlat(0.0, 0.0);
+    let (east, south) = view.view_px_to_lonlat(w, h);
+    let span_lon = (east - west).abs().max(1e-6);
+    let span_lat = (north - south).abs().max(1e-6);
+    let margin_lon = span_lon * 0.02;
+    let margin_lat = span_lat * 0.02;
+    let min_lon = west.min(east) - margin_lon;
+    let max_lon = west.max(east) + margin_lon;
+    let min_lat = south.min(north) - margin_lat;
+    let max_lat = south.max(north) + margin_lat;
+
+    // Thin, cool-gray lines: visible on the near-black basemap, quiet enough
+    // that the radar echoes still own the picture above them.
+    let stroke = egui::Stroke::new(
+        1.0,
+        egui::Color32::from_rgba_unmultiplied(155, 172, 195, 95),
+    );
+    let mut shapes = Vec::new();
+    for ring in crate::geodata::COUNTIES.iter() {
+        if f64::from(ring.max_lon) < min_lon
+            || f64::from(ring.min_lon) > max_lon
+            || f64::from(ring.max_lat) < min_lat
+            || f64::from(ring.min_lat) > max_lat
+        {
+            continue;
+        }
+        let pts: Vec<egui::Pos2> = ring
+            .points
+            .iter()
+            .map(|&[lon, lat]| {
+                let (vx, vy) = view.lonlat_to_view_px(lon as f64, lat as f64);
+                egui::pos2(origin.x + vx as f32, origin.y + vy as f32)
+            })
+            .collect();
+        if pts.len() >= 3 {
+            shapes.push(egui::Shape::closed_line(pts, stroke));
+        }
+    }
+    painter.extend(shapes);
+}
+
 /// Every radar site whose position falls inside the viewport: a light-blue
 /// PPI radar-scope icon, with its "ID City" label shown only while hovered or
 /// just tapped. The selected site is emphasized.
@@ -4252,10 +4315,10 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
             animating = true;
         }
 
-        // Project the outline once. Zone-based watches arrive as a set of
-        // county polygons; outlining every county turns the watch into a
-        // grid that looks nothing like the watch box. Fill each county but
-        // draw one convex-hull outline for a multi-ring watch.
+        // Zone-based watches arrive as a set of county polygons. Draw each
+        // county as its own filled cell with its own outline: the internal
+        // borders are the county grid the user wants to see, matching the
+        // NWS county-based watch graphic.
         let projected: Vec<Vec<egui::Pos2>> = rings
             .iter()
             .filter(|ring| ring.len() >= 3)

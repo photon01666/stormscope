@@ -366,8 +366,12 @@ fn decode_tile(bytes: &[u8]) -> Option<egui::ColorImage> {
         let inv = 1.0 - l;
         // RadarScope-style near-black: land sits at ~2.5% luminance and even
         // the brightest features (roads, labels) are capped at ~58% — a dim
-        // gray map, not a bright one.
-        let out_l = 0.025 + 0.55 * inv;
+        // gray map, not a bright one. Place names and road shields are the
+        // darkest ink in the source, so lift those high-inv pixels toward
+        // white: the basemap's own county and city labels then read clearly
+        // without washing out the land/water tones.
+        let ink = ((inv - 0.72) / 0.28).clamp(0.0, 1.0);
+        let out_l = 0.025 + 0.55 * inv + 0.35 * ink * ink;
         // Gain toward the source hue: scale the original channel by how far
         // the target luminance moved, so tints (blue water, green land) survive.
         let scale = if l > 0.001 { out_l / l } else { out_l };

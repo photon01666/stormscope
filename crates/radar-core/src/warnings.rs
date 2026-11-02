@@ -40,18 +40,29 @@ pub struct Warning {
 }
 
 impl Warning {
-    /// Mean position of the exterior ring, if the alert has a polygon.
-    /// Used for map focus and distance-to-radar filtering.
+    /// Mean position of the polygon, if the alert has one. Multi-ring
+    /// alerts (a zone watch issued as a set of counties, or a MultiPolygon
+    /// storm warning) average each ring's mean equally, so the focus lands
+    /// in the middle of the county set rather than inside whichever county
+    /// happens to be listed first.
     pub fn centroid(&self) -> Option<(f64, f64)> {
-        let ring = self.polygon.as_ref()?.first()?;
-        if ring.is_empty() {
-            return None;
+        let rings = self.polygon.as_ref()?;
+        let mut sum_lon = 0.0f64;
+        let mut sum_lat = 0.0f64;
+        let mut used = 0u32;
+        for ring in rings {
+            if ring.is_empty() {
+                continue;
+            }
+            let n = ring.len() as f64;
+            let (rlon, rlat) = ring.iter().fold((0.0f64, 0.0f64), |(sl, sa), (lon, lat)| {
+                (sl + lon, sa + lat)
+            });
+            sum_lon += rlon / n;
+            sum_lat += rlat / n;
+            used += 1;
         }
-        let n = ring.len() as f64;
-        let (sum_lon, sum_lat) = ring.iter().fold((0.0f64, 0.0f64), |(sl, sa), (lon, lat)| {
-            (sl + lon, sa + lat)
-        });
-        Some((sum_lat / n, sum_lon / n))
+        (used > 0).then(|| (sum_lat / used as f64, sum_lon / used as f64))
     }
 
     /// Convenience: is this a high-priority warning (tornado/severe T-storm

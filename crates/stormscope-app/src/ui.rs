@@ -3406,6 +3406,11 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
         });
     ui.checkbox(&mut app.state.show_alerts, "Show warnings");
     ui.checkbox(&mut app.state.show_tracks, "Show storm tracks");
+    ui.checkbox(&mut app.state.show_county_borders, "County borders")
+        .on_hover_text(
+            "County and state outlines under the radar return, plus the county \
+             grid of any zone-based watch",
+        );
     ui.checkbox(&mut app.state.show_lsrs, "Storm reports")
         .on_hover_text("NWS Preliminary Local Storm Reports from the last 12 hours, plotted where the report places them; white-ringed dots are trained spotters");
     ui.checkbox(&mut app.state.show_mcds, "Mesoscale discussions")

@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.9.1 — 2026-11-02
+
+**County context, county-grid watches, and multi-pane fixes**
+- Added a county-border overlay drawn under the radar return, with a "County
+  borders" toggle in Map Controls. County and city names stay with the
+  basemap, whose labels are now brighter and easier to read on the dark map.
+- Zone-based watches render as the NWS county grid again: every affected
+  county is filled and outlined individually instead of being dissolved into
+  one outer boundary.
+- Fixed concave warning and watch fills rendering as gray/white triangular
+  fans; the fills are now triangulated correctly.
+- Clicking any station marker (synoptic, Ambient Weather, rain/snow totals)
+  now switches to the radar that covers it, matching radar-site clicks.
+- Each pane shows its radar site beside the Max/Restore chip, Map Controls
+  titles include the site, and site changes persist across restarts.
+- Fixed secondary panes drifting out of sync on alerts, watches and SPC
+  outlooks; passive panes no longer fetch nationwide alerts or outlooks.
+- Alert-detail windows use the full available height and get a per-pane window
+  id, so they no longer leave a dead band or clip text mid-line.
+- Added the per-pane Max/Restore button, watch-fill slider, and the remaining
+  multi-pane polish from the v1.9.0 follow-up work.
+
 ## v1.9.0 — 2026-11-01
 
 **Multi-pane radar, stable SPC outlook labels, and tablet polish**
@@ -43,28 +65,3 @@
   videos) now fill the pane instead of being offset off-screen.
 - Live radar polls the S3 chunk feed every 30 seconds instead of every 5,
   reducing throttling while still catching new scans promptly.
-
-## v1.8.9 — 2026-10-31
-
-**Phone-local times, timeline hold, and UI polish**
-- Displayed scan times and archive day/time-of-day now use the device/OS
-  timezone with short names such as CDT/CST/PDT, instead of hardcoded Central
-  time.
-- In Live mode, scrubbing to an older radar scan holds that frame while new
-  scans arrive. After 30 seconds without touching the scrub bar it returns to
-  the newest scan; closing/reopening the app also returns to live.
-- The top status bar is removed on Linux, Windows, and Android. Site, product,
-  tilt and version now appear at the top of the Controls/Settings sidebar;
-  scan age, latency and status text were not moved there.
-- Radar keeps refreshing while the map is dragged instead of only after the
-  finger lifts.
-- All buttons use slightly rounded corners on every platform.
-- Android Settings/Controls/GPS actions use matching large touch targets, with
-  AI above Settings and hidden until an API key is configured.
-- Map Controls fill the map area, support swiping between Display and the SPC
-  outlook, and Back returns to Display before closing.
-- Forecast gains Forecast/Videos tabs with swipe navigation, compact current
-  conditions, Details collapsed by default, and no manual refresh button.
-- Archive moved to the bottom of Settings.
-- Fixed the Android sidebar header/Close button clipping after the status bar
-  removal.

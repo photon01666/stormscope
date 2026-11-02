@@ -33,6 +33,7 @@ mod embedded_piper;
 pub mod gemini_live;
 #[cfg(not(target_os = "android"))]
 mod gemini_speech;
+mod geodata;
 mod live_ai;
 mod player;
 pub mod render3d;

@@ -1135,6 +1135,9 @@ pub struct AppState {
     pub srm_shown_key: Option<u64>,
     /// Derived storm tracks overlay (cell motion arrows + nowcast lines).
     pub show_tracks: bool,
+    /// County (and therefore state) outlines, painted under the radar return
+    /// so echoes stay crisp but the basemap keeps its geographic context.
+    pub show_county_borders: bool,
     /// Storm-history window and the cached multi-scan trajectories.
     pub storm_trends_open: bool,
     pub storm_trends: Option<Vec<radar_render::StormHistory>>,
@@ -1826,6 +1829,7 @@ impl Default for AppState {
             srm_pending: None,
             srm_shown_key: None,
             show_tracks: true,
+            show_county_borders: true,
             storm_trends_open: std::env::var_os("STORMSCOPE_STORM_TRENDS_OPEN").is_some(),
             storm_trends: None,
             storm_trends_pending: false,

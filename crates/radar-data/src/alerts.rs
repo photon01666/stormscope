@@ -271,6 +271,10 @@ impl ZoneSource {
     }
 
     /// Fill `polygon` on zone-based warnings from their NWS zone URLs.
+    ///
+    /// The rings are kept per county (not dissolved): the map draws each
+    /// county as its own filled, outlined cell, which is the county-grid
+    /// view the NWS watch graphic uses.
     pub fn enrich(&mut self, warnings: &mut [Warning]) {
         for warning in warnings {
             if !warning.zone_only || warning.polygon.is_some() || warning.zone_urls.is_empty() {
@@ -283,7 +287,7 @@ impl ZoneSource {
                 }
             }
             if !rings.is_empty() {
-                warning.polygon = Some(union_counties(rings));
+                warning.polygon = Some(rings);
             }
         }
     }
@@ -366,58 +370,9 @@ fn ring_from_json(polygon_coords: &serde_json::Value) -> Option<Vec<(f64, f64)>>
     Some(out)
 }
 
-/// Union a watch's county rings into the single watch area NWS draws.
-///
-/// Zone-based watches are issued as a set of counties (`affectedZones`).
-/// Drawing every county border turns the watch into a grid; the boolean union
-/// produces the outer boundary (plus any genuinely separate pieces), which is
-/// what the NWS watch graphic shows. Falls back to the original rings if the
-/// union fails.
-fn union_counties(rings: Vec<Vec<(f64, f64)>>) -> Vec<Vec<(f64, f64)>> {
-    use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
-    if rings.len() <= 1 {
-        return rings;
-    }
-    let polygons: Vec<Polygon<f64>> = rings
-        .iter()
-        .filter(|ring| ring.len() >= 4)
-        .map(|ring| {
-            let coords: Vec<Coord<f64>> = ring
-                .iter()
-                .map(|&(lon, lat)| Coord { x: lon, y: lat })
-                .collect();
-            Polygon::new(LineString::new(coords), Vec::new())
-        })
-        .collect();
-    if polygons.len() <= 1 {
-        return rings;
-    }
-    let mut merged = MultiPolygon::new(vec![polygons[0].clone()]);
-    for polygon in &polygons[1..] {
-        merged = merged.union(&MultiPolygon::new(vec![polygon.clone()]));
-    }
-    let mut out = Vec::new();
-    for polygon in merged.0 {
-        let ring: Vec<(f64, f64)> = polygon
-            .exterior()
-            .0
-            .iter()
-            .map(|coord| (coord.x, coord.y))
-            .collect();
-        if ring.len() >= 4 {
-            out.push(ring);
-        }
-    }
-    if out.is_empty() { rings } else { out }
-}
-
-/// Average of ring vertices — good enough as a filter centroid for the
-/// mostly-convex warning polygons the LSR/FFW pipeline emits. Ring pairs
-/// are `(lon, lat)` per `Warning::polygon`.
-
-// Keep the WFO strip logic honest: US WFOs are Kxxx CONUS / Txxx TDWR /
-// PxNN Alaska-ish; the first letter is a region prefix that is dropped for
-// the 4-char "Kxxx" case only.
+/// Keep the WFO strip logic honest: US WFOs are Kxxx CONUS / Txxx TDWR /
+/// PxNN Alaska-ish; the first letter is a region prefix that is dropped for
+/// the 4-char "Kxxx" case only.
 fn office_from_vtec_tuple(office: &str) -> String {
     if office.len() == 4 && office.starts_with('K') {
         office[1..].to_string()
@@ -429,21 +384,6 @@ fn office_from_vtec_tuple(office: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Zone watches are a set of county polygons. The union must remove the
-    /// shared county border so the map draws one watch area, not a grid.
-    #[test]
-    fn county_union_removes_shared_borders() {
-        let a = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
-        let b = vec![(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 0.0)];
-        let union = union_counties(vec![a, b]);
-        assert_eq!(union.len(), 1, "adjacent counties become one area");
-        assert!(
-            union[0].len() <= 8,
-            "shared edge should be gone: {:?}",
-            union[0]
-        );
-    }
 
     #[test]
     fn parses_polygon_alert_and_filters_by_centroid() {

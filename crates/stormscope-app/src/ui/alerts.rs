@@ -991,17 +991,23 @@ fn archive_color(w: &HistoricWarning) -> egui::Color32 {
 
 /// Mean of the exterior ring, in (lat, lon).
 fn ring_centroid(rings: &Option<Vec<Vec<(f64, f64)>>>) -> Option<(f64, f64)> {
-    let ring = rings.as_ref()?.first()?;
-    if ring.is_empty() {
-        return None;
+    let rings = rings.as_ref()?;
+    let mut sum_lon = 0.0f64;
+    let mut sum_lat = 0.0f64;
+    let mut used = 0u32;
+    for ring in rings {
+        if ring.is_empty() {
+            continue;
+        }
+        let n = ring.len() as f64;
+        let (rlon, rlat) = ring.iter().fold((0.0f64, 0.0f64), |(sl, sa), (lon, lat)| {
+            (sl + lon, sa + lat)
+        });
+        sum_lon += rlon / n;
+        sum_lat += rlat / n;
+        used += 1;
     }
-    let n = ring.len() as f64;
-    let (mut slon, mut slat) = (0.0f64, 0.0f64);
-    for (lon, lat) in ring {
-        slon += lon;
-        slat += lat;
-    }
-    Some((slat / n, slon / n))
+    (used > 0).then(|| (sum_lat / used as f64, sum_lon / used as f64))
 }
 
 /// The archive tab's body: day picker, backfill status, and the clickable

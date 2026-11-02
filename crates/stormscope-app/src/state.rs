@@ -616,6 +616,9 @@ pub struct AppState {
     /// Total 2D radar panes (1 = normal single map). Desktop/Linux/Windows
     /// allow up to 4; Android allows 2.
     pub radar_panes: usize,
+    /// Which pane fills the whole central area in multi-pane mode: 0 is pane 1,
+    /// 1.. are the secondary panes. `None` is the normal grid.
+    pub maximized_pane: Option<usize>,
     /// Secondary panes for slots 2..=4. Always three slots are allocated; the
     /// active count is `radar_panes`.
     pub secondary_radar_panes: Vec<RadarPane>,
@@ -664,9 +667,12 @@ pub struct AppState {
     pub storm_watch_polled_at: f64,
     pub show_alerts: bool,
     /// NWS watch polygons are a separate map layer: watches are broad,
-    /// long-fused boxes and many people run with them hidden. Off by default;
-    /// when enabled they are drawn at 80% transparency (20% fill).
+    /// long-fused boxes and many people run with them hidden. On by default;
+    /// the watch-fill slider sets their shading (default 5% fill).
     pub show_watches: bool,
+    /// Watch box fill opacity (0 = outline only). Defaults to 5% (95%
+    /// transparent); the pointer still clears the fill locally.
+    pub watch_fill: f32,
     /// Alerts browser visibility and which tab is showing.
     pub alerts_popup_open: bool,
     pub alerts_tab: AlertsTab,
@@ -1505,6 +1511,7 @@ impl Default for AppState {
                 height_px: 800.0,
             },
             radar_panes: saved_pane_count,
+            maximized_pane: None,
             secondary_radar_panes,
             futurecast_pane_restore: None,
             ring: VecDeque::with_capacity(RING_CAPACITY),
@@ -1517,6 +1524,7 @@ impl Default for AppState {
             all_alerts: Vec::new(),
             show_alerts: true,
             show_watches: true,
+            watch_fill: 0.05,
             alerts_popup_open: false,
             alerts_tab: AlertsTab::Station,
             alerts_filter: String::new(),
@@ -2580,6 +2588,12 @@ impl AppState {
     /// and clamp the requested pane count to this platform's limit.
     pub fn ensure_radar_panes(&mut self) {
         self.radar_panes = self.radar_panes.clamp(1, max_radar_panes());
+        if self
+            .maximized_pane
+            .is_some_and(|pane| pane >= self.radar_panes)
+        {
+            self.maximized_pane = None;
+        }
         let anchor = radar_core::sites::site(&self.site_id)
             .or_else(|| radar_core::sites::site(radar_core::DEFAULT_SITE));
         let Some(anchor) = anchor else {

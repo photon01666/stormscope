@@ -627,7 +627,7 @@ pub fn show_pane(ui: &mut egui::Ui, app: &mut StormApp, rect: Rect) {
             // transparency. Walls wash a little lighter than the ground fill:
             // there are a lot more of them per warning.
             let wash = if poly.event.contains("Watch") {
-                super::map::watch_fill_alpha(intensity)
+                super::map::watch_fill_alpha(intensity, app.state.watch_fill)
             } else {
                 super::map::warning_fill_alpha(intensity, app.state.view3d_alerts_fill)
             };

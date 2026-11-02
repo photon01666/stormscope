@@ -13,27 +13,78 @@ use egui::{Color32, Rect};
 pub fn show(ui: &mut egui::Ui, app: &mut StormApp) -> bool {
     let count = app.state.radar_panes.clamp(1, max_radar_panes());
     if count < 2 {
+        app.state.maximized_pane = None;
         return false;
     }
     app.state.ensure_radar_panes();
+    if app.state.maximized_pane.is_some_and(|pane| pane >= count) {
+        app.state.maximized_pane = None;
+    }
 
     let full = ui.available_rect_before_wrap();
     let scale = app.sidebar_scale.max(1.0);
     let gap = (3.0 * scale).max(2.0);
-    let rects = pane_rects(full, count, gap);
+    let maximized = app.state.maximized_pane;
+    // A maximized pane takes the whole central area; otherwise the grid.
+    let rects = if maximized.is_some() {
+        vec![full]
+    } else {
+        pane_rects(full, count, gap)
+    };
     ui.painter().rect_filled(full, 0.0, Color32::from_gray(30));
 
     // Pane 1 keeps the complete app map (warnings, tracks, markers, controls).
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rects[0]), |ui| {
-        ui.set_clip_rect(rects[0]);
-        crate::ui::map::map(ui, app);
-    });
-    app.map_rect_at = Some(rects[0]);
-
-    for slot in 0..count.saturating_sub(1) {
-        if let Some(rect) = rects.get(slot + 1) {
-            show_secondary(ui, app, slot, *rect, full, scale);
+    // It is drawn in the grid and when it is the maximized pane.
+    if maximized.is_none() || maximized == Some(0) {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rects[0]), |ui| {
+            ui.set_clip_rect(rects[0]);
+            crate::ui::map::map(ui, app);
+        });
+        app.map_rect_at = Some(rects[0]);
+        if maximized.is_none() {
+            let max = super::pane_chip_bottom_centered(
+                ui,
+                rects[0].center().x,
+                rects[0].max.y - 8.0 * scale,
+                "Max",
+                scale,
+            )
+            .on_hover_text("Fill the map area with this pane");
+            if max.clicked() {
+                app.state.maximized_pane = Some(0);
+                for pane in app.pane_apps.iter_mut().flatten() {
+                    pane.state.map_controls_open = false;
+                }
+            }
+        } else {
+            let restore = super::pane_chip_bottom_centered(
+                ui,
+                full.center().x,
+                full.max.y - 8.0 * scale,
+                "Restore",
+                scale,
+            )
+            .on_hover_text("Return to the multi-pane layout");
+            if restore.clicked() {
+                app.state.maximized_pane = None;
+            }
         }
+    }
+
+    match maximized {
+        Some(pane) if pane > 0 => {
+            // `slot` is the secondary-pane index; the pane number is slot + 1.
+            show_secondary(ui, app, pane - 1, full, full, scale);
+            app.map_rect_at = Some(full);
+        }
+        None => {
+            for slot in 0..count.saturating_sub(1) {
+                if let Some(rect) = rects.get(slot + 1) {
+                    show_secondary(ui, app, slot, *rect, full, scale);
+                }
+            }
+        }
+        _ => {}
     }
 
     // The scan/mode/age/alerts/Forecast/FutureCast rail belongs to the app,
@@ -42,13 +93,22 @@ pub fn show(ui: &mut egui::Ui, app: &mut StormApp) -> bool {
     crate::ui::map::draw_top_badges(ui, &rail_painter, full, app);
 
     // Per-pane Controls button, then the app-level buttons (Settings, GPS,
-    // AI) once in fixed screen corners.
-    draw_pane_controls(ui, app, rects[0], scale);
+    // AI) once in fixed screen corners. A secondary pane draws its own
+    // Controls chip; pane 1's belongs here.
+    if maximized.is_none() || maximized == Some(0) {
+        draw_pane_controls(ui, app, rects[0], scale);
+    }
     draw_global_chrome(ui, app, full, scale);
 
     // Analysis windows opened from a secondary pane's Controls must paint
-    // above the app rail and global buttons.
-    for slot in 0..count.saturating_sub(1) {
+    // above the app rail and global buttons. Only the visible pane(s) may
+    // contribute windows while a pane is maximized.
+    let visible_slots: Vec<usize> = match maximized {
+        Some(0) => Vec::new(), // pane 1's windows are app-level
+        Some(pane) => vec![pane - 1],
+        None => (0..count.saturating_sub(1)).collect(),
+    };
+    for slot in visible_slots {
         if let Some(mut pane_app) = app.pane_apps.get_mut(slot).and_then(Option::take) {
             crate::ui::secondary_analysis_windows(ui.ctx(), pane_app.as_mut(), full);
             if let Some(slot_app) = app.pane_apps.get_mut(slot) {
@@ -57,14 +117,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut StormApp) -> bool {
         }
     }
 
-    let painter = ui.painter();
-    for rect in &rects {
-        painter.rect_stroke(
-            rect.shrink(0.5),
-            0.0,
-            egui::Stroke::new(1.0, Color32::from_white_alpha(38)),
-            egui::StrokeKind::Inside,
-        );
+    if maximized.is_none() {
+        let painter = ui.painter();
+        for rect in &rects {
+            painter.rect_stroke(
+                rect.shrink(0.5),
+                0.0,
+                egui::Stroke::new(1.0, Color32::from_white_alpha(38)),
+                egui::StrokeKind::Inside,
+            );
+        }
     }
     true
 }
@@ -376,6 +438,37 @@ fn draw_secondary_pane(
             #[cfg(target_os = "android")]
             if opening {
                 // One full-screen Controls card at a time on the phone/tablet.
+                app.state.map_controls_open = false;
+                for (other_slot, other) in app.pane_apps.iter_mut().enumerate() {
+                    if other_slot != slot
+                        && let Some(other) = other
+                    {
+                        other.state.map_controls_open = false;
+                    }
+                }
+            }
+        }
+
+        // Maximize/restore this pane. Only exists in the multi-pane layout;
+        // fullscreen already owns the whole screen, so `chrome` is false there.
+        let pane_no = slot + 1;
+        let is_maximized = app.state.maximized_pane == Some(pane_no);
+        let max = super::pane_chip_bottom_centered(
+            ui,
+            rect.center().x,
+            rect.max.y - 8.0 * scale,
+            if is_maximized { "Restore" } else { "Max" },
+            scale,
+        )
+        .on_hover_text(if is_maximized {
+            "Return to the multi-pane layout"
+        } else {
+            "Fill the map area with this pane"
+        });
+        if max.clicked() {
+            app.state.maximized_pane = if is_maximized { None } else { Some(pane_no) };
+            if !is_maximized {
+                // Only the maximized pane may keep its Controls card open.
                 app.state.map_controls_open = false;
                 for (other_slot, other) in app.pane_apps.iter_mut().enumerate() {
                     if other_slot != slot

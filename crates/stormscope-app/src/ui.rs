@@ -1758,6 +1758,9 @@ fn map_controls_window(
                 19 => {
                     app.state.qc_bias_db = (app.state.qc_bias_db + 0.5 * steps).clamp(-5.0, 5.0);
                 }
+                20 => {
+                    app.state.watch_fill = (app.state.watch_fill + 0.05 * steps).clamp(0.0, 1.0);
+                }
                 _ => {}
             });
         });
@@ -2042,10 +2045,20 @@ fn map_controls_alerts(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<
     ui.checkbox(&mut app.state.show_watches, "Show watches")
         .on_hover_text(
             "NWS watch boxes (tornado, severe thunderstorm, flood, winter…). \
-             This layer is off by default and draws at 80% transparency so the \
-             radar and basemap stay readable underneath. Clicking a watch in \
-             the Alerts window turns it on automatically.",
+             The watch-fill slider below sets how strongly they are shaded; \
+             the default is 5% so the radar and basemap stay readable.",
         );
+    let watch = ui.add(
+        egui::Slider::new(&mut app.state.watch_fill, 0.0..=1.0)
+            .text("Watch fill")
+            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+    );
+    sliders.push((20, watch.rect));
+    watch.on_hover_text(
+        "Watch box fill opacity. The default is 5% (95% transparent); \
+         0% leaves only the outline. The pointer still clears the fill \
+         locally so the radar is readable there.",
+    );
     let mcd = ui.add(
         egui::Slider::new(&mut app.state.mcd_fill, 0.0..=1.0)
             .text("MCD fill")

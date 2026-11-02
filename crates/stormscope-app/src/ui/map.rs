@@ -4234,10 +4234,10 @@ fn draw_warnings(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, ap
             ));
             // Filled at rest; the wash clears while the pointer is on it so
             // the radar is visible where the user is looking, leaving only
-            // the outline. The slider scales the resting fill for warnings;
-            // watches use their own fixed 80% transparency (20% fill).
+            // the outline. The sliders scale the resting fill for both
+            // warnings and watches (the watch default is 5%).
             let fill = if watch {
-                watch_fill_alpha(intensity)
+                watch_fill_alpha(intensity, app.state.watch_fill)
             } else {
                 warning_fill_alpha(intensity, app.state.alerts_fill)
             };
@@ -5361,11 +5361,12 @@ pub(super) fn warning_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
     0.95 * (1.0 - intensity.clamp(0.0, 1.0)) * user_fill.clamp(0.0, 1.0)
 }
 
-/// Watch boxes start at 80% transparency (a 20% fill) when the layer is
-/// switched on. The outline stays at full strength so the watch boundary is
-/// still easy to follow over radar and satellite.
-pub(super) fn watch_fill_alpha(intensity: f32) -> f32 {
-    0.20 * (1.0 - intensity.clamp(0.0, 1.0))
+/// Watch boxes use the watch-fill slider's opacity (default 5%, i.e. 95%
+/// transparent). The outline stays at full strength so the boundary is still
+/// easy to follow over radar and satellite, and the pointer clears the wash
+/// locally.
+pub(super) fn watch_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
+    user_fill.clamp(0.0, 1.0) * (1.0 - intensity.clamp(0.0, 1.0))
 }
 
 /// How close (viewport px) the pointer must be to a warning polygon's outline
@@ -6488,10 +6489,13 @@ mod tests {
     }
 
     #[test]
-    fn watch_fill_starts_at_eighty_percent_transparency() {
-        assert!((watch_fill_alpha(0.0) - 0.20).abs() < 1e-6);
-        assert_eq!(watch_fill_alpha(1.0), 0.0, "clears under the pointer");
-        assert_eq!(watch_fill_alpha(-1.0), 0.20, "clamped");
+    fn watch_fill_follows_the_slider() {
+        // The shipped default is 5% fill (95% transparent).
+        assert!((watch_fill_alpha(0.0, 0.05) - 0.05).abs() < 1e-6);
+        assert_eq!(watch_fill_alpha(1.0, 0.05), 0.0, "clears under the pointer");
+        assert_eq!(watch_fill_alpha(-1.0, 0.05), 0.05, "clamped");
+        assert!((watch_fill_alpha(0.0, 0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(watch_fill_alpha(0.0, 2.0), 1.0, "slider clamped");
     }
 
     /// Clicking a stack of overlapping warnings: the first click takes the

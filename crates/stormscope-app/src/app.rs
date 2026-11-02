@@ -1202,6 +1202,7 @@ impl StormApp {
         if self.state.site_id == id {
             return;
         }
+        log::info!("site switch: {} -> {}", self.state.site_id, id);
         self.state.site_id = id.to_string();
         // Site-specific overlays must not linger over the new station's map
         // while its data loads. Station totals were the obvious symptom: the

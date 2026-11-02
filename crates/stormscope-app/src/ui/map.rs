@@ -196,8 +196,17 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 }
             }
             if let Some(mac) = ambient_hit {
-                app.state.ambient_selected = Some(mac);
+                app.state.ambient_selected = Some(mac.clone());
                 app.state.ambient_open = true;
+                if let Some(c) = app
+                    .state
+                    .ambient_stations
+                    .iter()
+                    .find(|s| s.mac_address == mac)
+                    .and_then(|s| s.coords.as_ref())
+                {
+                    select_nearest_radar(app, c.lat, c.lon);
+                }
             } else {
                 // 0b) Synoptic station marker: open its observation popup.
                 const SYNOPTIC_HIT_PX: f64 = 16.0;
@@ -220,8 +229,17 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     }
                 }
                 if let Some(stid) = synoptic_hit {
-                    app.state.synoptic_selected = Some(stid);
+                    app.state.synoptic_selected = Some(stid.clone());
                     app.state.synoptic_open = true;
+                    if let Some(st) = app
+                        .state
+                        .synoptic_stations
+                        .iter()
+                        .find(|s| s.stid == stid)
+                        .and_then(|s| s.coords.as_ref())
+                    {
+                        select_nearest_radar(app, st.lat, st.lon);
+                    }
                 } else {
                     // 1) Clicking an existing pin opens its label editor.
                     const MARKER_HIT_PX: f64 = 18.0;
@@ -287,12 +305,16 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                 app.state.lsr_detail = Some(r.id.clone());
                             } else if !futurecast_only
                                 && app.state.show_totals
-                                && super::totals::totals_at(&app.state.totals, &view, cx, cy)
-                                    .is_some()
+                                && let Some(t) =
+                                    super::totals::totals_at(&app.state.totals, &view, cx, cy)
                             {
                                 // 5) A station-total dot: the marker is the shortcut,
-                                // the window the table.
+                                // the window the table — and the station's radar is
+                                // the radar that covers it, so switch to that too.
                                 app.state.totals_open = true;
+                                if let (Some(lat), Some(lon)) = (t.lat, t.lon) {
+                                    select_nearest_radar(app, lat, lon);
+                                }
                             } else if !futurecast_only {
                                 // 6) A warning polygon under the click — inside it, or
                                 // on its outline (8 px of reach, so a polygon drawn
@@ -3817,6 +3839,22 @@ fn place_outlook_labels(
         });
     }
     hits
+}
+
+/// Switch to the NEXRAD site nearest a clicked observation station.
+///
+/// Station markers (synoptic, Ambient, rain/snow totals) are not radars, but
+/// the user clicking one expects the radar that covers it. Same "nearest
+/// radar" rule the historical-warning jump uses, without moving the view.
+fn select_nearest_radar(app: &mut StormApp, lat: f64, lon: f64) {
+    let Some(site) = radar_core::sites::SITES.iter().min_by(|a, b| {
+        let da = radar_render::surface_distance_m(a.longitude, a.latitude, lon, lat);
+        let db = radar_render::surface_distance_m(b.longitude, b.latitude, lon, lat);
+        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+    }) else {
+        return;
+    };
+    app.select_site(site.id);
 }
 
 /// Points spaced along a screen-space ring, for on-outline label placement.

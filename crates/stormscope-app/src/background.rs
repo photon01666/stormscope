@@ -293,6 +293,7 @@ pub fn run(
                     // sweeps render (georeferenced to the new site!) until
                     // the new station's data arrives.
                     let _ = out.send(DataMsg::ClearFrames);
+                    log::info!("data thread SetSite: {site} (passive={passive})");
                     current_site = site.clone();
                     if passive {
                         live = None;

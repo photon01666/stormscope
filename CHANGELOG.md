@@ -19,7 +19,7 @@
   card the SPC outlooks use, including the WPC impact definition and a note
   that WSSI is impact-based rather than an inches forecast.
 
-## v1.9.2 — 2026-11-02
+## v1.9.2 — 2026-11-01
 
 **Watches are back on the map**
 - Nationwide watches now take their county geometry from the bundled county
@@ -30,7 +30,7 @@
 - A zone URL such as `OKC003` resolves directly to its county rings, so
   drawing a multi-county watch costs no API request per county.
 
-## v1.9.1 — 2026-11-02
+## v1.9.1 — 2026-10-31
 
 **County context, county-grid watches, and multi-pane fixes**
 - Added a county-border overlay drawn under the radar return, with a "County
@@ -52,7 +52,7 @@
 - Added the per-pane Max/Restore button, watch-fill slider, and the remaining
   multi-pane polish from the v1.9.0 follow-up work.
 
-## v1.9.0 — 2026-11-01
+## v1.9.0 — 2026-10-30
 
 **Multi-pane radar, stable SPC outlook labels, and tablet polish**
 - Radar now supports up to two independent panes on Android and up to four on

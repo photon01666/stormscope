@@ -1244,6 +1244,21 @@ impl StormApp {
         }
         log::info!("site switch: {} -> {}", self.state.site_id, id);
         self.state.site_id = id.to_string();
+        // Frames are georeferenced to the station that produced them. The
+        // data thread drops them too (ClearFrames), but only after the
+        // command round trip — until it lands, `current()` still returns the
+        // old station's scans and the raster draws them against the *new*
+        // site's coordinates. That reads as "the old radar on the new
+        // station", so drop them here, synchronously. ClearFrames then finds
+        // an empty ring and is a no-op.
+        self.state.ring.clear();
+        self.state.ring_bytes = 0;
+        self.state.playhead = 0;
+        self.state.timeline_scrub_last_touch = None;
+        self.state.timeline_scrub_pointer_down = false;
+        self.state.end_resume_catchup();
+        self.radar_tex = None;
+        self.radar_pending = None;
         // Persist a pane 1 site change (never from a pane app: its state would
         // overwrite the shared config with only its own panes).
         if !self.is_secondary {

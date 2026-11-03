@@ -857,7 +857,15 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     {
         // Derived products are read through the display volume: the column
         // products ride in the frame, SRM comes from the motion-keyed cache.
-        let volume = app.state.display_volume();
+        // Never render a frame from another station. The ring is cleared on a
+        // site switch (see `select_site`), but this guard is what makes the
+        // rule hold even if a stale frame survives the switch: its sweeps are
+        // georeferenced to the old site, so drawing them here would place the
+        // old station's echoes at the new station's coordinates.
+        let volume = app
+            .state
+            .display_volume()
+            .filter(|v| v.meta.site_id == app.state.site_id || v.meta.site_id == "UNKNOWN");
         if let (Some(volume), Some(site)) = (volume, radar_core::sites::site(&app.state.site_id)) {
             if let Some(si) =
                 volume.sweep_index_for_tilt_moment(app.state.tilt_deg, app.state.moment)

@@ -419,6 +419,8 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
 
     // SPC discussion popup (clicking an outlook outline).
     outlook_detail_window(ui.ctx(), app, pane_area);
+    // WPC WSSI impact popup (clicking a winter outlook outline).
+    wpc_detail_window(ui.ctx(), app, pane_area);
     reports::lsr_detail_window(ui.ctx(), app);
     reports::mcd_detail_window(ui.ctx(), app);
 
@@ -585,6 +587,7 @@ pub(crate) fn secondary_analysis_windows(
     midlevel::midlevel_window(ctx, app, area);
     vad::vad_window(ctx, app, area);
     totals::totals_window(ctx, app, area);
+    wpc_detail_window(ctx, app, area);
     verify::verification_window(ctx, app, area);
     trends::storm_trends_window(ctx, app, area);
 }
@@ -1570,10 +1573,15 @@ fn swipe_map_controls_tabs(
             let dx = end.x - start.x;
             let dy = end.y - start.y;
             if now - started <= 0.9 && dy.abs() <= 90.0 * scale && dx.abs() >= 80.0 * scale {
-                *tab = if dx < 0.0 {
-                    MapControlsTab::Outlook
-                } else {
-                    MapControlsTab::Display
+                // Three pages now: Display, SPC outlook, WPC winter. A left
+                // flick advances, a right flick goes back, wrapping around.
+                *tab = match (dx < 0.0, *tab) {
+                    (true, MapControlsTab::Display) => MapControlsTab::Outlook,
+                    (true, MapControlsTab::Outlook) => MapControlsTab::Wpc,
+                    (true, MapControlsTab::Wpc) => MapControlsTab::Display,
+                    (false, MapControlsTab::Display) => MapControlsTab::Wpc,
+                    (false, MapControlsTab::Outlook) => MapControlsTab::Display,
+                    (false, MapControlsTab::Wpc) => MapControlsTab::Outlook,
                 };
             }
         }
@@ -1701,6 +1709,11 @@ fn map_controls_window(
                 crate::state::MapControlsTab::Outlook,
                 "SPC outlook",
             );
+            ui.selectable_value(
+                &mut app.state.map_controls_tab,
+                crate::state::MapControlsTab::Wpc,
+                "WPC winter",
+            );
         });
         ui.separator();
         let scroll = egui::ScrollArea::vertical()
@@ -1717,6 +1730,9 @@ fn map_controls_window(
                 }
                 crate::state::MapControlsTab::Outlook => {
                     map_controls_outlook(ui, app);
+                }
+                crate::state::MapControlsTab::Wpc => {
+                    map_controls_wpc(ui, app, &mut sliders);
                 }
             }
             control_window_wheel(ui, &sliders, |target, steps| match target {
@@ -1764,6 +1780,9 @@ fn map_controls_window(
                 }
                 20 => {
                     app.state.watch_fill = (app.state.watch_fill + 0.05 * steps).clamp(0.0, 1.0);
+                }
+                21 => {
+                    app.state.wpc_opacity = (app.state.wpc_opacity + 0.05 * steps).clamp(0.0, 1.0);
                 }
                 _ => {}
             });
@@ -2036,6 +2055,136 @@ fn map_controls_analysis(ui: &mut egui::Ui, app: &mut StormApp) {
         });
     });
     // Moved to Settings.
+}
+
+/// WPC Winter Storm Severity Index: impact-based snow/ice guidance from the
+/// Weather Prediction Center, next to the convective outlooks.
+fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8, egui::Rect)>) {
+    use radar_core::wssi::{WssiComponent as C, WssiImpact, WssiPeriod as P};
+
+    ui.label(egui::RichText::new("WPC winter storm severity (WSSI)").strong());
+    let toggled = ui
+        .checkbox(&mut app.state.show_wpc, "Show WPC winter outlook")
+        .on_hover_text(
+            "WPC's impact-based winter outlook: snow amount, snow load, ice \
+             accumulation, blowing snow, and the combined overall impact. \
+             Guidance only — not an official watch or warning.",
+        )
+        .changed();
+    if toggled {
+        app.state.wpc_layers.clear();
+        if app.state.show_wpc && !app.is_secondary {
+            app.load_wpc();
+        }
+    }
+    if !app.state.show_wpc {
+        ui.label(
+            egui::RichText::new("Turn this on to draw WPC winter impacts over the radar.")
+                .weak()
+                .small(),
+        );
+        return;
+    }
+
+    ui.add_space(2.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .selectable_label(app.state.wpc_all_components, "ALL")
+            .on_hover_text("Show every WSSI component for the selected period")
+            .clicked()
+            && !app.state.wpc_all_components
+        {
+            app.state.wpc_all_components = true;
+            app.state.wpc_layers.clear();
+            if !app.is_secondary {
+                app.load_wpc();
+            }
+        }
+        for component in C::ALL {
+            let selected = !app.state.wpc_all_components && app.state.wpc_component == component;
+            if ui.selectable_label(selected, component.label()).clicked()
+                && (app.state.wpc_all_components || app.state.wpc_component != component)
+            {
+                app.state.wpc_all_components = false;
+                app.state.wpc_component = component;
+                app.state.wpc_layers.clear();
+                if !app.is_secondary {
+                    app.load_wpc();
+                }
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        for period in P::ALL {
+            if ui
+                .selectable_label(app.state.wpc_period == period, period.label())
+                .clicked()
+                && app.state.wpc_period != period
+            {
+                app.state.wpc_period = period;
+                app.state.wpc_layers.clear();
+                if !app.is_secondary {
+                    app.load_wpc();
+                }
+            }
+        }
+    });
+    let r = ui.add(
+        egui::Slider::new(&mut app.state.wpc_opacity, 0.0..=1.0)
+            .text("WSSI fill")
+            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+    );
+    sliders.push((21, r.rect));
+    r.on_hover_text("WPC impact-area fill opacity; 0% keeps just the impact outlines.");
+
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Impact scale").strong());
+    for impact in [
+        WssiImpact::WinterWeatherArea,
+        WssiImpact::Minor,
+        WssiImpact::Moderate,
+        WssiImpact::Major,
+        WssiImpact::Extreme,
+    ] {
+        let [red, green, blue] = impact.color();
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 2.0, egui::Color32::from_rgb(red, green, blue));
+            ui.label(egui::RichText::new(impact.label()).small())
+                .on_hover_text(impact.description());
+        });
+    }
+    ui.label(
+        egui::RichText::new(
+            "WSSI is impact-based, not inches: it combines forecast snow and ice \
+             with wind, climatology, population, roads and tree cover. Click an \
+             impact outline for the full WPC description.",
+        )
+        .weak()
+        .small(),
+    );
+    if app.state.wpc_pending {
+        ui.label(
+            egui::RichText::new("Loading WPC winter outlook…")
+                .weak()
+                .small(),
+        );
+    } else if let Some(layer) = app.state.wpc_layers.first() {
+        if !layer.issue.is_empty() || !layer.valid.is_empty() {
+            ui.label(
+                egui::RichText::new(format!("Issued {} · valid {}", layer.issue, layer.valid))
+                    .weak()
+                    .small(),
+            );
+        }
+    } else {
+        ui.label(
+            egui::RichText::new("No WPC winter impacts for this period.")
+                .weak()
+                .small(),
+        );
+    }
 }
 
 /// Display-level QC and calibration.
@@ -4724,6 +4873,121 @@ fn outlook_detail_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Re
     });
 
     app.state.outlook_detail_open = open && !close_requested;
+}
+
+/// WPC WSSI impact detail popup, using the same card/phone layout as the SPC
+/// outlook popup. Clicking a winter impact outline opens it.
+fn wpc_detail_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
+    let Some((layer_index, feature_index)) = app.state.wpc_detail else {
+        return;
+    };
+    let Some((component, period, issue, valid, impact)) =
+        app.state.wpc_layers.get(layer_index).and_then(|layer| {
+            layer.features.get(feature_index).map(|feature| {
+                (
+                    layer.component,
+                    layer.period,
+                    layer.issue.clone(),
+                    layer.valid.clone(),
+                    feature.impact,
+                )
+            })
+        })
+    else {
+        app.state.wpc_detail = None;
+        return;
+    };
+
+    let fill = cfg!(target_os = "android");
+    let scale = big_text_scale(app);
+    let screen = ctx.content_rect().size();
+    let size = popup_size(ctx, scale, 560.0, 430.0);
+    let max_h = popup_max_height(ctx, scale);
+    let min_size = egui::vec2(
+        (420.0 * scale).min((screen.x - 24.0).max(220.0)),
+        (220.0 * scale).min((screen.y - 90.0).max(160.0)),
+    );
+    let mut open = true;
+    let mut window = egui::Window::new("WPC winter outlook")
+        .id(egui::Id::new("stormscope.wpc.detail"))
+        .default_pos(centered_popup_pos(ctx, size))
+        .max_width((screen.x - 16.0).max(200.0))
+        .min_size(min_size);
+    #[cfg(target_os = "android")]
+    if fill {
+        window = window.title_bar(false);
+    }
+    window = if fill {
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
+        window
+            .fixed_rect(inset)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(inset)
+    } else {
+        window.default_size(size).max_height(max_h).resizable(true)
+    };
+    let window = window.open(&mut open);
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if fill {
+            close_requested |= phone_header(ui, "WPC winter outlook");
+        }
+        apply_text_scale(ui, scale);
+
+        ui.label(egui::RichText::new("What this area means").strong().small());
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                let [red, green, blue] = impact.color();
+                ui.horizontal_wrapped(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(12.0 * scale, 12.0 * scale),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter()
+                        .rect_filled(rect, 2.0, egui::Color32::from_rgb(red, green, blue));
+                    ui.heading(format!("{} — {}", component.label(), impact.label()));
+                });
+                ui.label(egui::RichText::new(impact.description()));
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(component.description()).weak().small());
+                let mut meta = vec![format!("WPC WSSI · {}", period.label())];
+                if !issue.is_empty() {
+                    meta.push(format!("issued {issue}"));
+                }
+                if !valid.is_empty() {
+                    meta.push(format!("valid {valid}"));
+                }
+                ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+            });
+
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("About this scale").strong().small());
+        ui.label(
+            "WSSI is an impact index, not a snowfall or ice accumulation forecast. \
+             It combines forecast snow and ice with wind, climatology, population, \
+             roads and tree cover, so it does not show inches. WPC publishes \
+             separate probabilistic winter precipitation products for amounts.",
+        );
+        ui.label(
+            egui::RichText::new("Guidance only — not an official watch or warning.")
+                .weak()
+                .small(),
+        );
+        ui.label(
+            egui::RichText::new("source: wpc.ncep.noaa.gov (public domain)")
+                .weak()
+                .small(),
+        );
+        if !fill {
+            fill_popup_height(ui);
+        }
+    });
+
+    app.state.wpc_detail = (open && !close_requested).then_some((layer_index, feature_index));
 }
 
 /// Human-readable byte size (B/KiB/MiB/GiB) for the Settings menu.

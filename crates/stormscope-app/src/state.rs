@@ -326,6 +326,8 @@ pub enum MapControlsTab {
     Display,
     /// SPC convective outlook layers, legend and fill.
     Outlook,
+    /// WPC Winter Storm Severity Index layers, legend and fill.
+    Wpc,
 }
 
 /// Which set the alerts browser is showing.
@@ -1168,6 +1170,27 @@ pub struct AppState {
     /// Day whose discussion is already requested (dedupes sends).
     pub outlook_discussion_requested: Option<u8>,
 
+    // WPC Winter Storm Severity Index (WSSI) winter outlook. Separate from
+    // the convective products: impact-based snow/ice guidance, updated every
+    // two hours by WPC.
+    pub show_wpc: bool,
+    pub wpc_layers: Vec<radar_core::wssi::WssiLayer>,
+    /// Draw every WSSI component for the selected period. Android starts with
+    /// only the Overall Impact summary to keep a phone map uncluttered;
+    /// desktop starts with all five components.
+    pub wpc_all_components: bool,
+    pub wpc_component: radar_core::wssi::WssiComponent,
+    pub wpc_period: radar_core::wssi::WssiPeriod,
+    /// Fill opacity of the WSSI polygons (0..=1).
+    pub wpc_opacity: f32,
+    pub wpc_pending: bool,
+    /// WSSI feature under the pointer: (layer index, feature index). The
+    /// impact outlines are the clickable/hoverable target, not the fills.
+    pub wpc_hover: Option<(usize, usize)>,
+    pub wpc_hover_at: f64,
+    /// WSSI feature whose detail popup is open.
+    pub wpc_detail: Option<(usize, usize)>,
+
     // Status surfaced in the status bar (filled by the coordinator).
     pub status_text: String,
     /// Archive window position (from `DataMsg::ArchiveInfo`): `total` scans in
@@ -1390,6 +1413,10 @@ impl Default for AppState {
         // Scripted screenshots: `STORMSCOPE_LAYERS=mrms,goes` opens the data
         // overlays at launch, the same spirit as `STORMSCOPE_3D_OPEN`.
         let layers = std::env::var("STORMSCOPE_LAYERS").unwrap_or_default();
+        // Phones are small: default the national outlook layers to the
+        // headline hazard only. Every product stays one tap away in Map
+        // Controls; desktop keeps the full default set.
+        let small_screen = cfg!(target_os = "android");
         // AI endpoint: the Settings popup's saved values, seeded by the
         // environment. The base URL and model default to OpenCode Go
         // (`deepseek-v4.1-flash`); the key is left for the user to paste.
@@ -1843,13 +1870,27 @@ impl Default for AppState {
             // boundaries show over the radar without tinting the echoes.
             show_outlook: true,
             outlook_day: 1,
-            outlook_type: radar_core::outlooks::OutlookType::Categorical,
-            outlook_all_types: true,
+            outlook_type: if small_screen {
+                radar_core::outlooks::OutlookType::Tornado
+            } else {
+                radar_core::outlooks::OutlookType::Categorical
+            },
+            outlook_all_types: !small_screen,
             outlook_opacity: 0.0,
             outlook_detail_open: false,
             outlook_detail_dn: None,
             outlook_discussion: None,
             outlook_discussion_requested: None,
+            show_wpc: true,
+            wpc_layers: Vec::new(),
+            wpc_all_components: !small_screen,
+            wpc_component: radar_core::wssi::WssiComponent::Overall,
+            wpc_period: radar_core::wssi::WssiPeriod::Days1to3,
+            wpc_opacity: 0.05,
+            wpc_pending: false,
+            wpc_hover: None,
+            wpc_hover_at: 0.0,
+            wpc_detail: None,
             status_text: "starting…".to_string(),
             archive_total: 0,
             archive_start: 0,

@@ -369,6 +369,12 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                     {
                                         // Discussion area: open the full SPC text.
                                         app.state.mcd_detail = Some(m.number);
+                                    } else if app.state.show_wpc
+                                        && let Some((layer, feature)) =
+                                            wpc_border_at(app, &view, lon, lat, WPC_EDGE_PX)
+                                    {
+                                        app.state.wpc_detail = Some((layer, feature));
+                                        app.state.wpc_hover = None;
                                     } else if app.state.show_outlook {
                                         // Clicking an SPC outline opens that day's
                                         // forecaster discussion. ALL mode accepts a
@@ -712,11 +718,38 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
+    // WPC winter impact *outline* under the pointer. Like the SPC outlines,
+    // the fill is background and the border is the target: it gets the
+    // pointer icon, a hover card, and a click opens the WSSI detail popup.
+    let wpc_hover_hit = if app.state.show_wpc
+        && !app.state.wpc_layers.is_empty()
+        && app.state.alerts_map_stack.is_empty()
+        && app.state.lsr_hover.is_none()
+        && app.state.totals_hover.is_none()
+        && app.state.mcd_hover.is_none()
+    {
+        response.hover_pos().and_then(|p| {
+            let (cx, cy) = viewport_pos(rect, p);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            wpc_border_at(app, &view, lon, lat, WPC_EDGE_PX)
+        })
+    } else {
+        None
+    };
+    if wpc_hover_hit != app.state.wpc_hover {
+        app.state.wpc_hover = wpc_hover_hit;
+        app.state.wpc_hover_at = ui.input(|i| i.time);
+    }
+    if app.state.wpc_hover.is_some() && !response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
     // SPC risk area *outline* under the pointer — only when no warning is (a
     // warning is the more specific reading of the same spot). The risk areas
     // cover most of the map, so the emphasis, the tooltip and the click all
     // key off the border.
-    let outlook_hover_hit = if app.state.alerts_map_stack.is_empty()
+    let outlook_hover_hit = if wpc_hover_hit.is_none()
+        && app.state.alerts_map_stack.is_empty()
         && app.state.lsr_hover.is_none()
         && app.state.totals_hover.is_none()
         && app.state.mcd_hover.is_none()
@@ -794,6 +827,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         // Under the radar so echoes stay crisp; the outline pass (Layer 3.5)
         // re-draws the risk boundaries over the echoes.
         let _ = draw_outlooks(&painter, origin, &view, app, true);
+
+        // --- Layer 2.55: WPC winter outlook fills ---------------------------
+        // Same contract as the SPC fills: translucent areas under the radar,
+        // with the impact outlines repainted above the echoes.
+        draw_wpc(&painter, origin, &view, app, true);
 
         // --- Layer 2.6: county outlines ------------------------------------
         // Painted under the radar return (the user's requested order): county
@@ -1186,6 +1224,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         // --- Layer 3.5: SPC outlook *outlines* over the radar -------------
         // Only the risk boundaries, so they stay legible across rain echoes.
         app.state.outlook_label_hits = draw_outlooks(&painter, origin, &view, app, false);
+        // WPC WSSI impact outlines: same layer position as the SPC outlines.
+        draw_wpc(&painter, origin, &view, app, false);
 
         // A derived product that is still being computed (SRM follows the
         // motion sliders) says so, instead of leaving a bare basemap.
@@ -1350,6 +1390,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // turning the probe off) restores the warning box.
     if !futurecast_only && !over_echo {
         warning_hover_tooltip(ui, &response, app);
+        wpc_hover_tooltip(ui, &response, app);
         super::reports::lsr_hover_tooltip(ui, &response, app);
         super::reports::mcd_hover_tooltip(ui, &response, app);
         super::totals::totals_hover_tooltip(ui, &response, app);
@@ -3638,6 +3679,63 @@ pub(super) fn draw_tag_label(
     painter.galley(rect.min, galley, fg);
 }
 
+/// WPC Winter Storm Severity Index overlay. `fills == true` paints the
+/// impact areas under the radar; `fills == false` repaints only their
+/// outlines above the echoes, matching the SPC two-pass pattern.
+fn draw_wpc(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &StormApp,
+    fills: bool,
+) {
+    if !app.state.show_wpc || app.state.wpc_layers.is_empty() {
+        return;
+    }
+    let fill_alpha = (app.state.wpc_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    for (layer_index, layer) in app.state.wpc_layers.iter().enumerate() {
+        let mut features: Vec<(usize, &radar_core::wssi::WssiFeature)> =
+            layer.features.iter().enumerate().collect();
+        features.sort_by_key(|(_, feature)| feature.impact.rank());
+        for (feature_index, feature) in features {
+            let [red, green, blue] = feature.impact.color();
+            let color = egui::Color32::from_rgb(red, green, blue);
+            let hovered = !fills && app.state.wpc_hover == Some((layer_index, feature_index));
+            for polygon in &feature.polygons {
+                let rings: Vec<Vec<egui::Pos2>> = polygon
+                    .iter()
+                    .map(|ring| project_ring(ring, view, origin))
+                    .collect();
+                if fills {
+                    if fill_alpha > 0
+                        && let Some(mesh) = triangulate(
+                            &rings,
+                            egui::Color32::from_rgba_unmultiplied(red, green, blue, fill_alpha),
+                        )
+                    {
+                        painter.add(egui::Shape::mesh(mesh));
+                    }
+                } else {
+                    for pts in &rings {
+                        if pts.len() >= 3 {
+                            if hovered {
+                                painter.add(egui::Shape::closed_line(
+                                    pts.clone(),
+                                    egui::Stroke::new(6.0, color.gamma_multiply(0.30)),
+                                ));
+                            }
+                            painter.add(egui::Shape::closed_line(
+                                pts.clone(),
+                                egui::Stroke::new(if hovered { 3.2 } else { 1.4 }, color),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// SPC convective-outlook overlay, all products for the selected day at once:
 /// categorical plus the tornado/wind/hail probability bands.
 ///
@@ -5404,6 +5502,52 @@ pub(super) fn outlook_hit<'a>(
     None
 }
 
+/// WPC WSSI impact border under the pointer. Same 8 px reach and
+/// most-severe-wins rule as the SPC outlines; returns `(layer, feature)` so
+/// the tooltip and popup can resolve the exact WSSI area.
+fn wpc_border_at(
+    app: &StormApp,
+    view: &MapView,
+    lon: f64,
+    lat: f64,
+    tolerance_px: f64,
+) -> Option<(usize, usize)> {
+    let (px, py) = view.lonlat_to_view_px(lon, lat);
+    let mut best: Option<(usize, usize, u8, f64)> = None;
+    for (layer_index, layer) in app.state.wpc_layers.iter().enumerate() {
+        for (feature_index, feature) in layer.features.iter().enumerate() {
+            let mut nearest = f64::INFINITY;
+            for polygon in &feature.polygons {
+                for ring in polygon {
+                    if ring.len() < 2 {
+                        continue;
+                    }
+                    for i in 0..ring.len() {
+                        let a = ring[i];
+                        let b = ring[(i + 1) % ring.len()];
+                        let (ax, ay) = view.lonlat_to_view_px(a.0, a.1);
+                        let (bx, by) = view.lonlat_to_view_px(b.0, b.1);
+                        nearest = nearest.min(point_segment_distance(px, py, ax, ay, bx, by));
+                    }
+                }
+            }
+            if nearest > tolerance_px {
+                continue;
+            }
+            let better = match best {
+                Some((_, _, rank, distance)) => {
+                    (feature.impact.rank(), -nearest) > (rank, -distance)
+                }
+                None => true,
+            };
+            if better {
+                best = Some((layer_index, feature_index, feature.impact.rank(), nearest));
+            }
+        }
+    }
+    best.map(|(layer, feature, _, _)| (layer, feature))
+}
+
 /// Border of the SPC risk area under the pointer: a click within
 /// `tolerance_px` of an outline opens that day's discussion. Risk areas nest,
 /// so the most severe one within tolerance wins (ties go to the closer edge).
@@ -5507,6 +5651,9 @@ pub(super) fn watch_fill_alpha(intensity: f32, user_fill: f32) -> f32 {
 /// what a click opens" holds for both. It is what keeps a warning drawn under
 /// another one reachable where their borders cross.
 pub(super) const WARNING_EDGE_PX: f64 = 8.0;
+/// Same reach for WPC WSSI outlines, so hovering/clicking a winter impact
+/// boundary feels like the SPC outlines next to it.
+const WPC_EDGE_PX: f64 = 8.0;
 /// Lift the Android dBZ crosshair above the finger so the touch target does
 /// not hide the edge being inspected.
 const DBZ_FINGER_OFFSET_PX: f32 = 72.0;
@@ -5537,6 +5684,55 @@ fn cycle_pick(
         }
         _ => 0,
     }
+}
+
+/// Tooltip for the WPC WSSI outline under the pointer, using the same
+/// one-second dwell as the SPC and warning tooltips.
+fn wpc_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormApp) {
+    if !app.state.show_wpc {
+        return;
+    }
+    let Some((layer_index, feature_index)) = app.state.wpc_hover else {
+        return;
+    };
+    if ui.input(|i| i.time) - app.state.wpc_hover_at < 1.0 {
+        return;
+    }
+    let Some(layer) = app.state.wpc_layers.get(layer_index) else {
+        return;
+    };
+    let Some(feature) = layer.features.get(feature_index) else {
+        return;
+    };
+    let [red, green, blue] = feature.impact.color();
+    let color = egui::Color32::from_rgb(red, green, blue);
+    egui::containers::Tooltip::for_widget(response)
+        .at_pointer()
+        .show(|ui| {
+            super::apply_text_scale(ui, app.sidebar_scale.max(1.0));
+            ui.horizontal(|ui| {
+                ui.colored_label(color, "●");
+                ui.strong(format!(
+                    "WSSI {} — {}",
+                    layer.component.label(),
+                    feature.impact.label()
+                ));
+            });
+            ui.label(egui::RichText::new(feature.impact.description()).small());
+            let mut meta = vec![layer.period.label().to_string()];
+            if !layer.issue.is_empty() {
+                meta.push(format!("issued {}", layer.issue));
+            }
+            if !layer.valid.is_empty() {
+                meta.push(format!("valid {}", layer.valid));
+            }
+            ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+            ui.label(
+                egui::RichText::new("Click the outline for the full WPC impact details")
+                    .weak()
+                    .small(),
+            );
+        });
 }
 
 /// Tooltip for the SPC outline under the pointer: what that risk level means

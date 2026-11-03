@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.9.3 — 2026-11-02
+
+**WPC winter outlook and phone-first defaults**
+- Added WPC's Winter Storm Severity Index (WSSI) beside the SPC outlook:
+  Overall Impact, snow amount, snow load, ice accumulation, and blowing snow,
+  with Day 1/2/3/Days 1-3 selection and WPC's official impact colors. The
+  WSSI fill defaults to 5%, matching the watch layer.
+- Linux and Windows start with every WSSI component; Android starts with the
+  Overall Impact summary (the maximum across components) to keep a phone map
+  uncluttered. The other components and ALL remain one tap away in Map
+  Controls.
+- Android SPC outlook now starts with Tornado only; Categorical, Wind, Hail
+  and ALL remain selectable. Desktop SPC defaults are unchanged.
+- WSSI fills render under the radar and their impact outlines above it,
+  following the same two-pass treatment as the SPC outlook. Hover a WSSI
+  outline for a one-second tooltip and click it for the same kind of detail
+  card the SPC outlooks use, including the WPC impact definition and a note
+  that WSSI is impact-based rather than an inches forecast.
+
 ## v1.9.2 — 2026-11-02
 
 **Watches are back on the map**

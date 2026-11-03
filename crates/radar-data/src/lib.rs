@@ -40,6 +40,7 @@ pub mod terrain;
 pub mod update;
 pub mod verify;
 pub mod warnings_archive;
+pub mod wssi;
 pub mod youtube;
 
 pub use alerts::{AlertSource, ZoneSource};

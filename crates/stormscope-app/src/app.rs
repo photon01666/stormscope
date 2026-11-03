@@ -169,6 +169,9 @@ pub enum DataMsg {
     YouTubeFeed(Result<Vec<radar_data::YouTubeVideo>, String>),
     /// A day's categorical SPC convective outlook (Day 1/2/3).
     Outlook(radar_core::outlooks::Outlook),
+    /// WPC Winter Storm Severity Index layers for the selected components
+    /// and period.
+    Wpc(Vec<radar_core::wssi::WssiLayer>),
     /// Forecaster discussion text for one outlook day.
     OutlookDiscussion(u8, String),
     Status(String),
@@ -384,6 +387,11 @@ pub enum DataCmd {
     RefreshAlerts,
     /// Fetch the SPC categorical outlook for a day (1..=3).
     LoadOutlook(u8, radar_core::outlooks::OutlookType),
+    /// Fetch WPC WSSI components for one period.
+    LoadWpc {
+        period: radar_core::wssi::WssiPeriod,
+        components: Vec<radar_core::wssi::WssiComponent>,
+    },
     /// Rain/snow totals for the stations around (lat, lon).
     LoadTotals(f64, f64),
     /// Fetch a model sounding for a point.
@@ -1196,6 +1204,22 @@ impl StormApp {
         Some((toward, kt))
     }
 
+    /// Request the WPC WSSI layers for the current component/period choice.
+    /// The WPC layer is app-wide; pane 2+ adopt pane 1's choice and this is
+    /// only called on the primary app.
+    pub fn load_wpc(&mut self) {
+        let components = if self.state.wpc_all_components {
+            radar_core::wssi::WssiComponent::ALL.to_vec()
+        } else {
+            vec![self.state.wpc_component]
+        };
+        self.state.wpc_pending = true;
+        let _ = self.tx.send(DataCmd::LoadWpc {
+            period: self.state.wpc_period,
+            components,
+        });
+    }
+
     /// Select a radar site from the map (or controls) and tell the data
     /// thread to load it. Mirrors what the controls panel does on change.
     pub fn select_site(&mut self, id: &str) {
@@ -1571,6 +1595,18 @@ impl StormApp {
                         &self.state.all_alerts,
                     );
                     self.announce_nearby_alerts();
+                }
+                DataMsg::Wpc(mut layers) => {
+                    // Keep draw order deterministic: hazards first, overall
+                    // summary last (it is the maximum of the components).
+                    layers.sort_by_key(|l| {
+                        radar_core::wssi::WssiComponent::DRAW_ORDER
+                            .iter()
+                            .position(|c| *c == l.component)
+                            .unwrap_or(usize::MAX)
+                    });
+                    self.state.wpc_layers = layers;
+                    self.state.wpc_pending = false;
                 }
                 DataMsg::AllAlerts(mut a) => {
                     // The browser lists every watch nationwide; only those

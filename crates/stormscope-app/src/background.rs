@@ -8,6 +8,7 @@
 
 use crate::app::{DataCmd, DataMsg};
 use chrono::{NaiveDate, Utc};
+use radar_data::wssi::WssiSource;
 use radar_data::{AlertSource, DiskCache, OutlookSource, S3Source, ZoneSource};
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
@@ -27,6 +28,9 @@ const OUTLOOK_REFRESH: Duration = Duration::from_secs(600);
 /// NWS alerts re-fetch cadence (api.weather.gov suggests <=1 req/s; this
 /// uses one every 5 minutes).
 const ALERTS_REFRESH: Duration = Duration::from_secs(300);
+/// WPC WSSI updates every two hours; half an hour is plenty and keeps a
+/// phone from downloading the winter polygons more than necessary.
+const WPC_REFRESH: Duration = Duration::from_secs(1800);
 
 /// Storm reports and mesoscale discussions are short-fused (a report lands
 /// within minutes of the event, an MD lives about an hour), so both ride the
@@ -158,6 +162,7 @@ pub fn run(
     let alerts = AlertSource::new(USER_AGENT).ok();
     let mut zones = ZoneSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
+    let wpc = WssiSource::new(USER_AGENT).ok();
     let mut synoptic_token: Option<String> = None;
     let mut ambient_keys: Option<(String, String)> = None;
     let forecasts = radar_data::ForecastSource::new(USER_AGENT).ok();
@@ -183,9 +188,18 @@ pub fn run(
     // (outlooks update only a few times per day).
     let mut outlook_day: u8 = 1;
     let mut outlook_type = radar_core::outlooks::OutlookType::Categorical;
+    // WPC WSSI: phones start with the Overall summary (the maximum impact
+    // across every component); desktop starts with all five components.
+    let mut wpc_period = radar_core::wssi::WssiPeriod::Days1to3;
+    let mut wpc_components: Vec<radar_core::wssi::WssiComponent> = if cfg!(target_os = "android") {
+        vec![radar_core::wssi::WssiComponent::Overall]
+    } else {
+        radar_core::wssi::WssiComponent::ALL.to_vec()
+    };
     // Start both timers pre-expired so the first loop iteration fetches
     // alerts + outlook immediately — startup never blocks on the network.
     let mut last_outlook = already_elapsed(OUTLOOK_REFRESH);
+    let mut last_wpc = already_elapsed(WPC_REFRESH);
     let mut last_alerts = already_elapsed(ALERTS_REFRESH);
     let mut last_alerts_fast = already_elapsed(ALERTS_FAST_REFRESH);
     let mut last_reports = already_elapsed(REPORTS_REFRESH);
@@ -692,6 +706,12 @@ pub fn run(
                         let out = out.clone();
                         std::thread::spawn(move || refresh_outlook(&src, day, ty, &out));
                     }
+                }
+                DataCmd::LoadWpc { period, components } => {
+                    wpc_period = period;
+                    wpc_components = components;
+                    last_wpc = std::time::Instant::now();
+                    refresh_wpc(&wpc, wpc_period, &wpc_components, &out);
                 }
                 DataCmd::LoadMrms => {
                     // Its own worker: the newest file is a several-MB download
@@ -1643,6 +1663,10 @@ pub fn run(
                 std::thread::spawn(move || refresh_outlook(&src, day, ty, &out));
             }
         }
+        if !passive && last_wpc.elapsed() >= WPC_REFRESH {
+            last_wpc = std::time::Instant::now();
+            refresh_wpc(&wpc, wpc_period, &wpc_components, &out);
+        }
         // Keep the Settings cache readout live. Only send on an actual
         // change — a directory walk every 2s that says the same thing would
         // just churn the message channel.
@@ -2442,6 +2466,48 @@ fn refresh_forecast(
         }
         Err(e) => log::debug!("UV index fetch failed: {e:#}"),
     }
+}
+
+/// Fetch the selected WPC WSSI components on a worker. WSSI updates every
+/// two hours; a phone request with the default Overall layer is ~100 kB.
+fn refresh_wpc(
+    src: &Option<WssiSource>,
+    period: radar_core::wssi::WssiPeriod,
+    components: &[radar_core::wssi::WssiComponent],
+    out: &Sender<DataMsg>,
+) {
+    let Some(src) = src.clone() else { return };
+    let out = out.clone();
+    let components = components.to_vec();
+    std::thread::spawn(move || {
+        let mut layers = Vec::new();
+        for component in components {
+            match src.fetch(component, period) {
+                Ok(layer) => {
+                    log::info!(
+                        "WPC WSSI {} {}: {} areas{}",
+                        component.label(),
+                        period.label(),
+                        layer.features.len(),
+                        if layer.issue.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", issued {}", layer.issue)
+                        }
+                    );
+                    layers.push(layer);
+                }
+                Err(error) => {
+                    log::warn!(
+                        "WPC WSSI {} {} fetch failed: {error:#}",
+                        component.label(),
+                        period.label()
+                    );
+                }
+            }
+        }
+        let _ = out.send(DataMsg::Wpc(layers));
+    });
 }
 
 /// Fetch every SPC outlook product SPC publishes for `day` — categorical

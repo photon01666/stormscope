@@ -19,6 +19,7 @@ pub mod vad;
 pub mod vcp;
 pub mod warnings;
 pub mod winter;
+pub mod wssi;
 
 use chrono::{DateTime, Utc};
 

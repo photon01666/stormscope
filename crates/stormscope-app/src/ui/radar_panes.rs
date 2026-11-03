@@ -499,6 +499,36 @@ fn draw_secondary_pane(
                 .or_else(|| pane.state.outlook.clone());
         }
     }
+    // WPC winter outlook is app-wide. Adopt a change made in this pane's WPC
+    // page into pane 1 (which owns the fetch), then mirror pane 1 back.
+    let wpc_changed = pane.state.show_wpc != app.state.show_wpc
+        || pane.state.wpc_all_components != app.state.wpc_all_components
+        || pane.state.wpc_component != app.state.wpc_component
+        || pane.state.wpc_period != app.state.wpc_period
+        || (pane.state.wpc_opacity - app.state.wpc_opacity).abs() > f32::EPSILON;
+    if wpc_changed {
+        app.state.show_wpc = pane.state.show_wpc;
+        app.state.wpc_all_components = pane.state.wpc_all_components;
+        app.state.wpc_component = pane.state.wpc_component;
+        app.state.wpc_period = pane.state.wpc_period;
+        app.state.wpc_opacity = pane.state.wpc_opacity;
+        app.state.wpc_layers.clear();
+        if app.state.show_wpc {
+            app.load_wpc();
+        }
+    }
+    pane.state.show_wpc = app.state.show_wpc;
+    pane.state.wpc_all_components = app.state.wpc_all_components;
+    pane.state.wpc_component = app.state.wpc_component;
+    pane.state.wpc_period = app.state.wpc_period;
+    pane.state.wpc_opacity = app.state.wpc_opacity;
+    pane.state.wpc_pending = app.state.wpc_pending;
+    if pane.state.wpc_layers.len() != app.state.wpc_layers.len()
+        || pane.state.wpc_layers.first().map(|l| l.issue.as_str())
+            != app.state.wpc_layers.first().map(|l| l.issue.as_str())
+    {
+        pane.state.wpc_layers = app.state.wpc_layers.clone();
+    }
     // The bottom dBZ button is app-wide: turn the inspection crosshair on for
     // every visible radar pane, each with its own map position.
     pane.state.dbz_crosshair = app.state.dbz_crosshair;

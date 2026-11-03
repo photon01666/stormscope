@@ -1784,6 +1784,10 @@ fn map_controls_window(
                 21 => {
                     app.state.wpc_opacity = (app.state.wpc_opacity + 0.05 * steps).clamp(0.0, 1.0);
                 }
+                22 => {
+                    app.state.pwpf_opacity =
+                        (app.state.pwpf_opacity + 0.05 * steps).clamp(0.0, 1.0);
+                }
                 _ => {}
             });
         });
@@ -2083,106 +2087,244 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
                 .weak()
                 .small(),
         );
-        return;
     }
-
-    ui.add_space(2.0);
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .selectable_label(app.state.wpc_all_components, "ALL")
-            .on_hover_text("Show every WSSI component for the selected period")
-            .clicked()
-            && !app.state.wpc_all_components
-        {
-            app.state.wpc_all_components = true;
-            app.state.wpc_layers.clear();
-            if !app.is_secondary {
-                app.load_wpc();
-            }
-        }
-        for component in C::ALL {
-            let selected = !app.state.wpc_all_components && app.state.wpc_component == component;
-            if ui.selectable_label(selected, component.label()).clicked()
-                && (app.state.wpc_all_components || app.state.wpc_component != component)
-            {
-                app.state.wpc_all_components = false;
-                app.state.wpc_component = component;
-                app.state.wpc_layers.clear();
-                if !app.is_secondary {
-                    app.load_wpc();
-                }
-            }
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        for period in P::ALL {
+    if app.state.show_wpc {
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
             if ui
-                .selectable_label(app.state.wpc_period == period, period.label())
+                .selectable_label(app.state.wpc_all_components, "ALL")
+                .on_hover_text("Show every WSSI component for the selected period")
                 .clicked()
-                && app.state.wpc_period != period
+                && !app.state.wpc_all_components
             {
-                app.state.wpc_period = period;
+                app.state.wpc_all_components = true;
                 app.state.wpc_layers.clear();
                 if !app.is_secondary {
                     app.load_wpc();
                 }
             }
-        }
-    });
-    let r = ui.add(
-        egui::Slider::new(&mut app.state.wpc_opacity, 0.0..=1.0)
-            .text("WSSI fill")
-            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-    );
-    sliders.push((21, r.rect));
-    r.on_hover_text("WPC impact-area fill opacity; 0% keeps just the impact outlines.");
-
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new("Impact scale").strong());
-    for impact in [
-        WssiImpact::WinterWeatherArea,
-        WssiImpact::Minor,
-        WssiImpact::Moderate,
-        WssiImpact::Major,
-        WssiImpact::Extreme,
-    ] {
-        let [red, green, blue] = impact.color();
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter()
-                .rect_filled(rect, 2.0, egui::Color32::from_rgb(red, green, blue));
-            ui.label(egui::RichText::new(impact.label()).small())
-                .on_hover_text(impact.description());
+            for component in C::ALL {
+                let selected =
+                    !app.state.wpc_all_components && app.state.wpc_component == component;
+                if ui.selectable_label(selected, component.label()).clicked()
+                    && (app.state.wpc_all_components || app.state.wpc_component != component)
+                {
+                    app.state.wpc_all_components = false;
+                    app.state.wpc_component = component;
+                    app.state.wpc_layers.clear();
+                    if !app.is_secondary {
+                        app.load_wpc();
+                    }
+                }
+            }
         });
-    }
-    ui.label(
-        egui::RichText::new(
-            "WSSI is impact-based, not inches: it combines forecast snow and ice \
+        ui.horizontal_wrapped(|ui| {
+            for period in P::ALL {
+                if ui
+                    .selectable_label(app.state.wpc_period == period, period.label())
+                    .clicked()
+                    && app.state.wpc_period != period
+                {
+                    app.state.wpc_period = period;
+                    app.state.wpc_layers.clear();
+                    if !app.is_secondary {
+                        app.load_wpc();
+                    }
+                }
+            }
+        });
+        let r = ui.add(
+            egui::Slider::new(&mut app.state.wpc_opacity, 0.0..=1.0)
+                .text("WSSI fill")
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        );
+        sliders.push((21, r.rect));
+        r.on_hover_text("WPC impact-area fill opacity; 0% keeps just the impact outlines.");
+
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Impact scale").strong());
+        for impact in [
+            WssiImpact::WinterWeatherArea,
+            WssiImpact::Minor,
+            WssiImpact::Moderate,
+            WssiImpact::Major,
+            WssiImpact::Extreme,
+        ] {
+            let [red, green, blue] = impact.color();
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, 2.0, egui::Color32::from_rgb(red, green, blue));
+                ui.label(egui::RichText::new(impact.label()).small())
+                    .on_hover_text(impact.description());
+            });
+        }
+        ui.label(
+            egui::RichText::new(
+                "WSSI is impact-based, not inches: it combines forecast snow and ice \
              with wind, climatology, population, roads and tree cover. Click an \
              impact outline for the full WPC description.",
-        )
-        .weak()
-        .small(),
-    );
-    if app.state.wpc_pending {
-        ui.label(
-            egui::RichText::new("Loading WPC winter outlook…")
-                .weak()
-                .small(),
+            )
+            .weak()
+            .small(),
         );
-    } else if let Some(layer) = app.state.wpc_layers.first() {
-        if !layer.issue.is_empty() || !layer.valid.is_empty() {
+        if app.state.wpc_pending {
             ui.label(
-                egui::RichText::new(format!("Issued {} · valid {}", layer.issue, layer.valid))
+                egui::RichText::new("Loading WPC winter outlook…")
+                    .weak()
+                    .small(),
+            );
+        } else if let Some(layer) = app.state.wpc_layers.first() {
+            if !layer.issue.is_empty() || !layer.valid.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("Issued {} · valid {}", layer.issue, layer.valid))
+                        .weak()
+                        .small(),
+                );
+            }
+        } else {
+            ui.label(
+                egui::RichText::new("No WPC winter impacts for this period.")
                     .weak()
                     .small(),
             );
         }
-    } else {
+    } // show_wpc
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Winter amounts (WPC PWPF)").strong());
+    let pwpf_toggled = ui
+        .checkbox(&mut app.state.show_pwpf, "Show snow/ice amounts")
+        .on_hover_text(
+            "WPC Probabilistic Winter Precipitation Forecasts: 50th-percentile \
+             accumulation in inches, or the probability of exceeding a threshold.",
+        )
+        .changed();
+    if pwpf_toggled {
+        app.state.pwpf_layer = None;
+        app.state.pwpf_image = None;
+        app.state.pwpf_tex = None;
+        if app.state.show_pwpf && !app.is_secondary {
+            app.load_pwpf();
+        }
+    }
+    if !app.state.show_pwpf {
         ui.label(
-            egui::RichText::new("No WPC winter impacts for this period.")
+            egui::RichText::new("Turn this on to draw WPC snow/ice amounts over the radar.")
                 .weak()
                 .small(),
+        );
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            for product in radar_core::pwpf::PwpfProduct::ALL {
+                let selected = app.state.pwpf_product == product;
+                if ui
+                    .selectable_label(selected, product.label())
+                    .on_hover_text(if product.is_probability() {
+                        "Probability of exceeding this snow/ice threshold."
+                    } else {
+                        "50th-percentile accumulation in inches."
+                    })
+                    .clicked()
+                    && !selected
+                {
+                    app.state.pwpf_product = product;
+                    app.state.pwpf_layer = None;
+                    app.state.pwpf_image = None;
+                    app.state.pwpf_tex = None;
+                    if !app.is_secondary {
+                        app.load_pwpf();
+                    }
+                }
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            for day in radar_core::pwpf::PwpfDay::ALL {
+                let selected = app.state.pwpf_day == day;
+                if ui.selectable_label(selected, day.label()).clicked() && !selected {
+                    app.state.pwpf_day = day;
+                    app.state.pwpf_layer = None;
+                    app.state.pwpf_image = None;
+                    app.state.pwpf_tex = None;
+                    if !app.is_secondary {
+                        app.load_pwpf();
+                    }
+                }
+            }
+        });
+        let r = ui.add(
+            egui::Slider::new(&mut app.state.pwpf_opacity, 0.0..=1.0)
+                .text("PWPF fill")
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        );
+        sliders.push((22, r.rect));
+        r.on_hover_text("Fill opacity for the WPC amount/probability bands.");
+
+        if app.state.pwpf_pending {
+            ui.label(
+                egui::RichText::new("Loading WPC snow/ice amounts…")
+                    .weak()
+                    .small(),
+            );
+        } else if let Some(layer) = app.state.pwpf_layer.as_ref() {
+            if !layer.issue.is_empty() || !layer.valid.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("Issued {} · valid {}", layer.issue, layer.valid))
+                        .weak()
+                        .small(),
+                );
+            }
+            match &layer.geometry {
+                radar_core::pwpf::PwpfGeometry::Vector(features) => {
+                    for feature in features.iter().take(8) {
+                        let [red, green, blue] = feature.color;
+                        ui.horizontal(|ui| {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().rect_filled(
+                                rect,
+                                2.0,
+                                egui::Color32::from_rgb(red, green, blue),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}{}",
+                                    feature.label,
+                                    if layer.product.is_probability() {
+                                        " chance"
+                                    } else {
+                                        ""
+                                    }
+                                ))
+                                .small(),
+                            );
+                        });
+                    }
+                }
+                radar_core::pwpf::PwpfGeometry::Raster(_) => {
+                    ui.label(
+                        egui::RichText::new("WPC ice overlay (raster)")
+                            .weak()
+                            .small(),
+                    );
+                }
+            }
+        } else {
+            ui.label(
+                egui::RichText::new("No WPC amounts for this product/day.")
+                    .weak()
+                    .small(),
+            );
+        }
+        ui.label(
+            egui::RichText::new(
+                "50th-percentile values are accumulation in inches; probability \
+                 layers are the chance of exceeding the threshold. Source: WPC PWPF.",
+            )
+            .weak()
+            .small(),
         );
     }
 }
@@ -3558,7 +3700,9 @@ fn controls_body(ui: &mut egui::Ui, app: &mut StormApp) {
     ui.checkbox(&mut app.state.show_county_borders, "County borders")
         .on_hover_text(
             "County and state outlines under the radar return, plus the county \
-             grid of any zone-based watch",
+             grid of any zone-based watch. Only drawn when zoomed in close \
+             (roughly radar-range scale); they stay off at wider regional \
+             views to keep dragging smooth.",
         );
     ui.checkbox(&mut app.state.show_lsrs, "Storm reports")
         .on_hover_text("NWS Preliminary Local Storm Reports from the last 12 hours, plotted where the report places them; white-ringed dots are trained spotters");

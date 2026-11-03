@@ -721,8 +721,11 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // WPC winter impact *outline* under the pointer. Like the SPC outlines,
     // the fill is background and the border is the target: it gets the
     // pointer icon, a hover card, and a click opens the WSSI detail popup.
+    let map_moving = app.radar_view_change_at.elapsed() < std::time::Duration::from_millis(180);
     let wpc_hover_hit = if app.state.show_wpc
         && !app.state.wpc_layers.is_empty()
+        && !map_moving
+        && !response.dragged()
         && app.state.alerts_map_stack.is_empty()
         && app.state.lsr_hover.is_none()
         && app.state.totals_hover.is_none()
@@ -749,6 +752,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     // cover most of the map, so the emphasis, the tooltip and the click all
     // key off the border.
     let outlook_hover_hit = if wpc_hover_hit.is_none()
+        && !map_moving
+        && !response.dragged()
         && app.state.alerts_map_stack.is_empty()
         && app.state.lsr_hover.is_none()
         && app.state.totals_hover.is_none()
@@ -832,6 +837,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         // Same contract as the SPC fills: translucent areas under the radar,
         // with the impact outlines repainted above the echoes.
         draw_wpc(&painter, origin, &view, app, true);
+        // WPC PWPF amount/probability bands (and the ice raster overlay).
+        draw_pwpf(&painter, origin, &view, app, true);
 
         // --- Layer 2.6: county outlines ------------------------------------
         // Painted under the radar return (the user's requested order): county
@@ -912,25 +919,16 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     app.state.qc_blockage.hash(&mut fh);
                     let frame_sig = fh.finish();
 
-                    let playing = app.state.loop_state == crate::state::LoopState::Playing;
                     let frame_changed = app
                         .radar_tex
                         .as_ref()
                         .map_or(true, |t| t.frame_sig != frame_sig);
-                    // While the loop is playing, keep animating through a drag
-                    // with a half-res raster once per playback frame. Between
-                    // frames the stale texture is translated with the pan, so
-                    // the pointer stays smooth; without this the radar froze
-                    // for the whole drag even though the loop was still
-                    // advancing.
-                    let drag_animation_raster = response.dragged()
-                        && playing
-                        && frame_changed
-                        && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(180);
-                    // Keep the radar updating while the map is being panned,
-                    // not only after the finger lifts. A half-res raster every
-                    // ~100 ms is cheap enough to keep the pointer responsive.
-                    let drag_raster = response.dragged()
+                    // A view gesture still needs radar coverage under the
+                    // pointer — without a raster, panning exposes blank areas
+                    // until the gesture stops and the layer visibly pops in.
+                    // Raster a very coarse frame (~8x fewer pixels) at ~25 fps
+                    // during the gesture, then a full-res frame on settle.
+                    let gesture_raster = (response.dragged() || burst)
                         && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(40);
                     // Scrubbing should still animate the radar, but full-res
                     // rasters for every pointer event made the thumb lag.
@@ -939,13 +937,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                     let scrub_raster = app.state.timeline_scrubbing
                         && frame_changed
                         && app.radar_last_raster.elapsed() >= std::time::Duration::from_millis(33);
-                    // Quarter-ish resolution is deliberately coarse: during a
-                    // finger drag the radar only has to keep animating, while
-                    // the basemap and pointer must stay at full frame rate.
-                    let raster_scale: f32 = if drag_animation_raster || scrub_raster {
-                        0.35
-                    } else if drag_raster {
-                        0.65
+                    let raster_scale: f32 = if gesture_raster || scrub_raster {
+                        0.28
                     } else {
                         1.0
                     };
@@ -977,14 +970,17 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                         // Between those frames the stale texture is translated
                         // with the pan, keeping the basemap, radar and pointer
                         // in lockstep.
-                        let settle_ms = if response.dragged() { 0 } else { 100 };
-                        let settling = drag_animation_raster
+                        // Coarse rasters keep the layer present throughout a
+                        // pan/zoom; the sharp full-res raster lands ~100 ms
+                        // after the gesture stops. Timeline scrubbing uses
+                        // the same coarse path so the loop previews live.
+                        let settling = gesture_raster
                             || scrub_raster
-                            || drag_raster
                             || (!response.dragged()
                                 && !app.state.timeline_scrubbing
+                                && !burst
                                 && app.radar_last_raster.elapsed()
-                                    >= std::time::Duration::from_millis(settle_ms));
+                                    >= std::time::Duration::from_millis(100));
                         if settling {
                             let min_dbz = match app.state.moment {
                                 radar_core::Moment::Reflectivity
@@ -1226,6 +1222,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         app.state.outlook_label_hits = draw_outlooks(&painter, origin, &view, app, false);
         // WPC WSSI impact outlines: same layer position as the SPC outlines.
         draw_wpc(&painter, origin, &view, app, false);
+        draw_pwpf(&painter, origin, &view, app, false);
 
         // A derived product that is still being computed (SRM follows the
         // motion sliders) says so, instead of leaving a bare basemap.
@@ -3144,6 +3141,13 @@ fn draw_county_borders(
     if !app.state.show_county_borders {
         return;
     }
+    // At a wide regional/full-US zoom every county ring is on screen; drawing
+    // the whole national grid is both unreadable and the main drag cost.
+    // The basemap already carries state boundaries there; county lines return
+    // once the view is close enough to use them.
+    if view.zoom < 7.5 {
+        return;
+    }
     let (w, h) = (view.width() as f64, view.height() as f64);
     let (west, north) = view.view_px_to_lonlat(0.0, 0.0);
     let (east, south) = view.view_px_to_lonlat(w, h);
@@ -3679,6 +3683,197 @@ pub(super) fn draw_tag_label(
     painter.galley(rect.min, galley, fg);
 }
 
+/// Lon/lat bounds of the current viewport, with a small margin for lines
+/// whose vertices sit just outside the screen.
+fn view_lonlat_bounds(view: &MapView) -> (f64, f64, f64, f64) {
+    let (w, h) = (view.width() as f64, view.height() as f64);
+    let (west, north) = view.view_px_to_lonlat(0.0, 0.0);
+    let (east, south) = view.view_px_to_lonlat(w, h);
+    let span_lon = (east - west).abs().max(1e-6);
+    let span_lat = (north - south).abs().max(1e-6);
+    (
+        west.min(east) - span_lon * 0.02,
+        west.max(east) + span_lon * 0.02,
+        south.min(north) - span_lat * 0.02,
+        south.max(north) + span_lat * 0.02,
+    )
+}
+
+/// Does this polygon overlap the viewport? Cheap per-frame reject before
+/// projecting and triangulating the (often continental) WPC geometry.
+fn polygon_in_bounds(polygon: &[Vec<(f64, f64)>], bounds: (f64, f64, f64, f64)) -> bool {
+    let (min_lon, max_lon, min_lat, max_lat) = bounds;
+    let (mut lo_lon, mut hi_lon) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut lo_lat, mut hi_lat) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut any = false;
+    for ring in polygon {
+        for &(lon, lat) in ring {
+            any = true;
+            lo_lon = lo_lon.min(lon);
+            hi_lon = hi_lon.max(lon);
+            lo_lat = lo_lat.min(lat);
+            hi_lat = hi_lat.max(lat);
+        }
+    }
+    any && hi_lon >= min_lon && lo_lon <= max_lon && hi_lat >= min_lat && lo_lat <= max_lat
+}
+
+/// WPC PWPF amount/probability overlay. Vector layers get the same
+/// fill-under-radar + outline-over-radar treatment as the outlooks; the ice
+/// products are a raster GroundOverlay and paint only in the fill pass.
+fn draw_pwpf(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    view: &MapView,
+    app: &mut StormApp,
+    fills: bool,
+) {
+    if !app.state.show_pwpf {
+        return;
+    }
+    // Fills are static art: skip their triangulation while the user is
+    // dragging/zooming, then paint them once the view settles. Outlines stay.
+    let bounds = view_lonlat_bounds(view);
+    // Raster ice overlays arrive as RGBA; turn them into an egui texture once.
+    if fills && app.state.pwpf_tex.is_none() {
+        if let Some(image) = app.state.pwpf_image.clone() {
+            let texture = painter.ctx().load_texture(
+                "wpc-pwpf",
+                (*image).clone(),
+                egui::TextureOptions::LINEAR,
+            );
+            app.state.pwpf_tex = Some(texture);
+        }
+    }
+    let Some(layer) = app.state.pwpf_layer.as_ref() else {
+        return;
+    };
+    match &layer.geometry {
+        radar_core::pwpf::PwpfGeometry::Vector(features) => {
+            let fill_alpha = (app.state.pwpf_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let scale = app.sidebar_scale.max(1.0);
+            let mut placed_labels: Vec<egui::Rect> = Vec::new();
+            for feature in features {
+                let [red, green, blue] = feature.color;
+                let color = egui::Color32::from_rgb(red, green, blue);
+                for polygon in &feature.polygons {
+                    if !polygon_in_bounds(polygon, bounds) {
+                        continue;
+                    }
+                    let rings: Vec<Vec<egui::Pos2>> = polygon
+                        .iter()
+                        .map(|ring| project_ring(ring, view, origin))
+                        .collect();
+                    if fills {
+                        if fill_alpha > 0
+                            && let Some(mesh) = triangulate(
+                                &rings,
+                                egui::Color32::from_rgba_unmultiplied(red, green, blue, fill_alpha),
+                            )
+                        {
+                            painter.add(egui::Shape::mesh(mesh));
+                        }
+                    } else {
+                        for pts in &rings {
+                            if pts.len() >= 3 {
+                                painter.add(egui::Shape::closed_line(
+                                    pts.clone(),
+                                    egui::Stroke::new(1.2, color),
+                                ));
+                            }
+                        }
+                        // Put the band's amount/probability on the map, the
+                        // way WPC labels its own contours. Always use the
+                        // full-resolution ring, even during a drag, so the
+                        // number neither moves nor vanishes.
+                        if let Some(full_ring) = polygon.first().filter(|r| r.len() >= 3) {
+                            let full_outer = project_ring(full_ring, view, origin);
+                            let (min_x, max_x) = full_outer
+                                .iter()
+                                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+                                    (lo.min(p.x), hi.max(p.x))
+                                });
+                            let (min_y, max_y) = full_outer
+                                .iter()
+                                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+                                    (lo.min(p.y), hi.max(p.y))
+                                });
+                            if max_x - min_x >= 24.0 * scale
+                                && max_y - min_y >= 12.0 * scale
+                                && !feature.label.is_empty()
+                            {
+                                let (mut lon, mut lat) = (0.0f64, 0.0f64);
+                                for &(lo, la) in full_ring {
+                                    lon += lo;
+                                    lat += la;
+                                }
+                                let (lon, lat) =
+                                    (lon / full_ring.len() as f64, lat / full_ring.len() as f64);
+                                let (vx, vy) = view.lonlat_to_view_px(lon, lat);
+                                let at = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+                                if ring_contains(&full_outer, at) {
+                                    let text = if !layer.product.is_probability()
+                                        && !feature.label.contains('"')
+                                    {
+                                        format!("{}\"", feature.label)
+                                    } else {
+                                        feature.label.clone()
+                                    };
+                                    let font = egui::FontId::proportional(10.5 * scale);
+                                    let galley = painter.layout_no_wrap(
+                                        text.clone(),
+                                        font.clone(),
+                                        egui::Color32::WHITE,
+                                    );
+                                    let rect =
+                                        egui::Rect::from_center_size(at, galley.size()).expand(2.0);
+                                    if !placed_labels.iter().any(|r| r.intersects(rect)) {
+                                        placed_labels.push(rect);
+                                        draw_tag_label(
+                                            painter,
+                                            at,
+                                            egui::Align2::CENTER_CENTER,
+                                            &text,
+                                            font,
+                                            egui::Color32::WHITE,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        radar_core::pwpf::PwpfGeometry::Raster(raster) => {
+            if !fills {
+                return;
+            }
+            let Some(texture) = app.state.pwpf_tex.as_ref() else {
+                return;
+            };
+            let (west, south, north, east) = (
+                raster.bounds[1],
+                raster.bounds[0],
+                raster.bounds[2],
+                raster.bounds[3],
+            );
+            let (x0, y0) = view.lonlat_to_view_px(west, north);
+            let (x1, y1) = view.lonlat_to_view_px(east, south);
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
+                egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
+            );
+            painter.image(
+                texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+}
+
 /// WPC Winter Storm Severity Index overlay. `fills == true` paints the
 /// impact areas under the radar; `fills == false` repaints only their
 /// outlines above the echoes, matching the SPC two-pass pattern.
@@ -3692,6 +3887,7 @@ fn draw_wpc(
     if !app.state.show_wpc || app.state.wpc_layers.is_empty() {
         return;
     }
+    let bounds = view_lonlat_bounds(view);
     let fill_alpha = (app.state.wpc_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
     for (layer_index, layer) in app.state.wpc_layers.iter().enumerate() {
         let mut features: Vec<(usize, &radar_core::wssi::WssiFeature)> =
@@ -3702,6 +3898,9 @@ fn draw_wpc(
             let color = egui::Color32::from_rgb(red, green, blue);
             let hovered = !fills && app.state.wpc_hover == Some((layer_index, feature_index));
             for polygon in &feature.polygons {
+                if !polygon_in_bounds(polygon, bounds) {
+                    continue;
+                }
                 let rings: Vec<Vec<egui::Pos2>> = polygon
                     .iter()
                     .map(|ring| project_ring(ring, view, origin))
@@ -4145,6 +4344,21 @@ fn label_text_color(rgb: [u8; 3]) -> egui::Color32 {
 }
 
 /// Shoelace area of a screen-space ring (absolute value).
+/// Ray-casting point-in-ring test for placing a label inside its band.
+fn ring_contains(ring: &[egui::Pos2], p: egui::Pos2) -> bool {
+    let mut inside = false;
+    let mut j = ring.len().saturating_sub(1);
+    for i in 0..ring.len() {
+        let a = ring[i];
+        let b = ring[j];
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 fn ring_area(ring: &[egui::Pos2]) -> f32 {
     if ring.len() < 3 {
         return 0.0;

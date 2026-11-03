@@ -30,6 +30,7 @@ pub mod metar;
 pub mod midlevel;
 pub mod mrms;
 pub mod outlooks;
+pub mod pwpf;
 pub mod raob;
 pub mod rap;
 pub mod s3;

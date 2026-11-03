@@ -22,6 +22,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "gzip",
 ] }
 flate2 = "1"
+# WPC PWPF is distributed as KMZ (a zip containing one KML file).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # GOES GLM Level 2 is NetCDF-4/HDF5. This reader is pure Rust (no libhdf5 /
 # libnetcdf), so the binary stays self-contained.
 netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }

@@ -529,6 +529,30 @@ fn draw_secondary_pane(
     {
         pane.state.wpc_layers = app.state.wpc_layers.clone();
     }
+    // WPC PWPF amounts/probabilities are nationwide and app-wide: pane 1 owns
+    // the fetch, every pane mirrors the selected layer.
+    pane.state.show_pwpf = app.state.show_pwpf;
+    pane.state.pwpf_product = app.state.pwpf_product;
+    pane.state.pwpf_day = app.state.pwpf_day;
+    pane.state.pwpf_opacity = app.state.pwpf_opacity;
+    pane.state.pwpf_pending = app.state.pwpf_pending;
+    let pwpf_changed = pane
+        .state
+        .pwpf_layer
+        .as_ref()
+        .map(|l| (l.product, l.day, l.issue.as_str()))
+        != app
+            .state
+            .pwpf_layer
+            .as_ref()
+            .map(|l| (l.product, l.day, l.issue.as_str()));
+    if pwpf_changed {
+        pane.state.pwpf_layer = app.state.pwpf_layer.clone();
+        pane.state.pwpf_image = app.state.pwpf_image.clone();
+        // Textures are owned by the shared egui context; recreate in the pane
+        // on its next draw rather than cloning a handle.
+        pane.state.pwpf_tex = None;
+    }
     // The bottom dBZ button is app-wide: turn the inspection crosshair on for
     // every visible radar pane, each with its own map position.
     pane.state.dbz_crosshair = app.state.dbz_crosshair;

@@ -9,6 +9,7 @@ pub mod dealias;
 pub mod derived;
 pub mod forecast;
 pub mod outlooks;
+pub mod pwpf;
 pub mod qc;
 pub mod sampling;
 pub mod severe;

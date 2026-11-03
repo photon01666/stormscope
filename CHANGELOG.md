@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.9.4 — 2026-11-03
+
+**WPC winter products, smoother dragging, and platform defaults**
+- Added WPC Winter Storm Severity Index (WSSI) with Overall, Snow Amount, Snow Load, Ice Accumulation, and Blowing Snow components across Day 1/2/3 and Days 1-3, with official impact colors, hover tooltips, and a click detail card (same layout as SPC).
+- Added WPC Probabilistic Winter Precipitation Forecast (PWPF) with snow/ice amounts (50th percentile, inches) and probabilities (≥4"/8"/12"/≥0.25", %), Day 1-3, including vector bands and raster ice overlays. Amount/probability labels stay visible and anchored to full-resolution geometry while dragging.
+- Winter weather geometry now draws at full resolution with no shape simplification during drag or zoom. County borders only draw at zoom ≥ 7.5 to keep wide views smooth; state basemap boundaries remain.
+- Radar rendering now keeps the layer visible throughout pan/zoom by rasterizing at low resolution during gestures (with full resolution ~100 ms after), eliminating blank areas and sudden pop-ins.
+- Platform defaults: on Android, SPC defaults to Tornado only, WSSI defaults to Overall only, PWPF defaults off; desktop keeps all on by default.
+- QC defaults: Hail cores (MEHS), Clutter filter (CC), and Attenuation correction (KDP) on by default; beam blockage remains off.
+
 ## v1.9.3 — 2026-11-02
 
 **WPC winter outlook and phone-first defaults**

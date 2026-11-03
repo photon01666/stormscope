@@ -8,6 +8,7 @@
 
 use crate::app::{DataCmd, DataMsg};
 use chrono::{NaiveDate, Utc};
+use radar_data::pwpf::PwpfSource;
 use radar_data::wssi::WssiSource;
 use radar_data::{AlertSource, DiskCache, OutlookSource, S3Source, ZoneSource};
 use std::collections::VecDeque;
@@ -31,6 +32,8 @@ const ALERTS_REFRESH: Duration = Duration::from_secs(300);
 /// WPC WSSI updates every two hours; half an hour is plenty and keeps a
 /// phone from downloading the winter polygons more than necessary.
 const WPC_REFRESH: Duration = Duration::from_secs(1800);
+/// WPC PWPF amount/probability layers update with the same package cadence.
+const PWPF_REFRESH: Duration = Duration::from_secs(1800);
 
 /// Storm reports and mesoscale discussions are short-fused (a report lands
 /// within minutes of the event, an MD lives about an hour), so both ride the
@@ -163,6 +166,7 @@ pub fn run(
     let mut zones = ZoneSource::new(USER_AGENT).ok();
     let outlooks = OutlookSource::new(USER_AGENT).ok();
     let wpc = WssiSource::new(USER_AGENT).ok();
+    let pwpf = PwpfSource::new(USER_AGENT).ok();
     let mut synoptic_token: Option<String> = None;
     let mut ambient_keys: Option<(String, String)> = None;
     let forecasts = radar_data::ForecastSource::new(USER_AGENT).ok();
@@ -196,10 +200,13 @@ pub fn run(
     } else {
         radar_core::wssi::WssiComponent::ALL.to_vec()
     };
+    let mut pwpf_product = radar_core::pwpf::PwpfProduct::SnowAmount50;
+    let mut pwpf_day = radar_core::pwpf::PwpfDay::Day1;
     // Start both timers pre-expired so the first loop iteration fetches
     // alerts + outlook immediately — startup never blocks on the network.
     let mut last_outlook = already_elapsed(OUTLOOK_REFRESH);
     let mut last_wpc = already_elapsed(WPC_REFRESH);
+    let mut last_pwpf = already_elapsed(PWPF_REFRESH);
     let mut last_alerts = already_elapsed(ALERTS_REFRESH);
     let mut last_alerts_fast = already_elapsed(ALERTS_FAST_REFRESH);
     let mut last_reports = already_elapsed(REPORTS_REFRESH);
@@ -712,6 +719,12 @@ pub fn run(
                     wpc_components = components;
                     last_wpc = std::time::Instant::now();
                     refresh_wpc(&wpc, wpc_period, &wpc_components, &out);
+                }
+                DataCmd::LoadPwpf { product, day } => {
+                    pwpf_product = product;
+                    pwpf_day = day;
+                    last_pwpf = std::time::Instant::now();
+                    refresh_pwpf(&pwpf, pwpf_product, pwpf_day, &out);
                 }
                 DataCmd::LoadMrms => {
                     // Its own worker: the newest file is a several-MB download
@@ -1667,6 +1680,10 @@ pub fn run(
             last_wpc = std::time::Instant::now();
             refresh_wpc(&wpc, wpc_period, &wpc_components, &out);
         }
+        if !passive && last_pwpf.elapsed() >= PWPF_REFRESH {
+            last_pwpf = std::time::Instant::now();
+            refresh_pwpf(&pwpf, pwpf_product, pwpf_day, &out);
+        }
         // Keep the Settings cache readout live. Only send on an actual
         // change — a directory walk every 2s that says the same thing would
         // just churn the message channel.
@@ -2466,6 +2483,39 @@ fn refresh_forecast(
         }
         Err(e) => log::debug!("UV index fetch failed: {e:#}"),
     }
+}
+
+/// Fetch one WPC PWPF layer on a worker.
+fn refresh_pwpf(
+    src: &Option<PwpfSource>,
+    product: radar_core::pwpf::PwpfProduct,
+    day: radar_core::pwpf::PwpfDay,
+    out: &Sender<DataMsg>,
+) {
+    let Some(src) = src.clone() else { return };
+    let out = out.clone();
+    std::thread::spawn(move || match src.fetch(product, day) {
+        Ok(layer) => {
+            log::info!(
+                "WPC PWPF {} {}: {}",
+                product.label(),
+                day.label(),
+                match &layer.geometry {
+                    radar_core::pwpf::PwpfGeometry::Vector(features) =>
+                        format!("{} bands", features.len()),
+                    radar_core::pwpf::PwpfGeometry::Raster(_) => "raster overlay".to_string(),
+                }
+            );
+            let _ = out.send(DataMsg::Pwpf(layer));
+        }
+        Err(error) => {
+            log::warn!(
+                "WPC PWPF {} {} fetch failed: {error:#}",
+                product.label(),
+                day.label()
+            );
+        }
+    });
 }
 
 /// Fetch the selected WPC WSSI components on a worker. WSSI updates every

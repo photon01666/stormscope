@@ -172,6 +172,8 @@ pub enum DataMsg {
     /// WPC Winter Storm Severity Index layers for the selected components
     /// and period.
     Wpc(Vec<radar_core::wssi::WssiLayer>),
+    /// WPC probabilistic winter precipitation amount/probability layer.
+    Pwpf(radar_core::pwpf::PwpfLayer),
     /// Forecaster discussion text for one outlook day.
     OutlookDiscussion(u8, String),
     Status(String),
@@ -391,6 +393,11 @@ pub enum DataCmd {
     LoadWpc {
         period: radar_core::wssi::WssiPeriod,
         components: Vec<radar_core::wssi::WssiComponent>,
+    },
+    /// Fetch one WPC PWPF amount/probability layer.
+    LoadPwpf {
+        product: radar_core::pwpf::PwpfProduct,
+        day: radar_core::pwpf::PwpfDay,
     },
     /// Rain/snow totals for the stations around (lat, lon).
     LoadTotals(f64, f64),
@@ -1220,6 +1227,15 @@ impl StormApp {
         });
     }
 
+    /// Request the selected WPC PWPF amount/probability layer.
+    pub fn load_pwpf(&mut self) {
+        self.state.pwpf_pending = true;
+        let _ = self.tx.send(DataCmd::LoadPwpf {
+            product: self.state.pwpf_product,
+            day: self.state.pwpf_day,
+        });
+    }
+
     /// Select a radar site from the map (or controls) and tell the data
     /// thread to load it. Mirrors what the controls panel does on change.
     pub fn select_site(&mut self, id: &str) {
@@ -1607,6 +1623,26 @@ impl StormApp {
                     });
                     self.state.wpc_layers = layers;
                     self.state.wpc_pending = false;
+                }
+                DataMsg::Pwpf(layer) => {
+                    // Ignore a reply for a product/day the user has already
+                    // navigated away from.
+                    if layer.product == self.state.pwpf_product && layer.day == self.state.pwpf_day
+                    {
+                        let image = match &layer.geometry {
+                            radar_core::pwpf::PwpfGeometry::Raster(raster) => Some(
+                                std::sync::Arc::new(egui::ColorImage::from_rgba_unmultiplied(
+                                    [raster.width, raster.height],
+                                    &raster.rgba,
+                                )),
+                            ),
+                            _ => None,
+                        };
+                        self.state.pwpf_layer = Some(layer);
+                        self.state.pwpf_image = image;
+                        self.state.pwpf_tex = None;
+                        self.state.pwpf_pending = false;
+                    }
                 }
                 DataMsg::AllAlerts(mut a) => {
                     // The browser lists every watch nationwide; only those

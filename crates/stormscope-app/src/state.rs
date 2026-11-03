@@ -1191,6 +1191,18 @@ pub struct AppState {
     /// WSSI feature whose detail popup is open.
     pub wpc_detail: Option<(usize, usize)>,
 
+    // WPC Probabilistic Winter Precipitation Forecasts (PWPF): the amount /
+    // probability complement to WSSI's impact index.
+    pub show_pwpf: bool,
+    pub pwpf_product: radar_core::pwpf::PwpfProduct,
+    pub pwpf_day: radar_core::pwpf::PwpfDay,
+    pub pwpf_layer: Option<radar_core::pwpf::PwpfLayer>,
+    pub pwpf_pending: bool,
+    pub pwpf_opacity: f32,
+    /// Raster ice overlays are decoded once and turned into a texture lazily.
+    pub pwpf_image: Option<std::sync::Arc<egui::ColorImage>>,
+    pub pwpf_tex: Option<egui::TextureHandle>,
+
     // Status surfaced in the status bar (filled by the coordinator).
     pub status_text: String,
     /// Archive window position (from `DataMsg::ArchiveInfo`): `total` scans in
@@ -1725,9 +1737,9 @@ impl Default for AppState {
             observed_sounding_error: None,
             vad_open: false,
             show_rotation: false,
-            show_hail_cores: false,
-            qc_clutter: false,
-            qc_attenuation: false,
+            show_hail_cores: true,
+            qc_clutter: true,
+            qc_attenuation: true,
             qc_bias_db: 0.0,
             qc_blockage: false,
             qc_terrain: None,
@@ -1886,11 +1898,19 @@ impl Default for AppState {
             wpc_all_components: !small_screen,
             wpc_component: radar_core::wssi::WssiComponent::Overall,
             wpc_period: radar_core::wssi::WssiPeriod::Days1to3,
-            wpc_opacity: 0.05,
+            wpc_opacity: 0.0,
             wpc_pending: false,
             wpc_hover: None,
             wpc_hover_at: 0.0,
             wpc_detail: None,
+            show_pwpf: !small_screen,
+            pwpf_product: radar_core::pwpf::PwpfProduct::SnowAmount50,
+            pwpf_day: radar_core::pwpf::PwpfDay::Day1,
+            pwpf_layer: None,
+            pwpf_pending: false,
+            pwpf_opacity: 0.05,
+            pwpf_image: None,
+            pwpf_tex: None,
             status_text: "starting…".to_string(),
             archive_total: 0,
             archive_start: 0,

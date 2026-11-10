@@ -190,14 +190,36 @@ fn placemark_polygons(block: &str) -> Vec<Vec<Vec<(f64, f64)>>> {
         let after = &rest[start + "<Polygon>".len()..];
         let end = after.find("</Polygon>").unwrap_or(after.len());
         let polygon = &after[..end];
+        let mut rings = Vec::new();
         if let Some(outer) = polygon.find("<outerBoundaryIs>") {
             let outer = &polygon[outer..];
             if let Some(coords) = tag_text(outer, "coordinates") {
                 let points = parse_coordinates(&coords);
                 if points.len() >= 3 {
-                    out.push(vec![points]);
+                    rings.push(points);
                 }
             }
+        }
+        // PWPF nests its amount bands: the 1" polygon has the 2"+ area cut
+        // out as an inner boundary. Keep those rings so the fill leaves the
+        // hole open (and the label can avoid it) instead of shading the next
+        // band as if it were part of this one.
+        let mut inner_rest = polygon;
+        while let Some(inner_start) = inner_rest.find("<innerBoundaryIs>") {
+            let inner_after = &inner_rest[inner_start + "<innerBoundaryIs>".len()..];
+            let inner_end = inner_after
+                .find("</innerBoundaryIs>")
+                .unwrap_or(inner_after.len());
+            if let Some(coords) = tag_text(&inner_after[..inner_end], "coordinates") {
+                let points = parse_coordinates(&coords);
+                if points.len() >= 3 {
+                    rings.push(points);
+                }
+            }
+            inner_rest = &inner_after[inner_end..];
+        }
+        if !rings.is_empty() {
+            out.push(rings);
         }
         rest = &after[end..];
     }
@@ -281,6 +303,33 @@ mod tests {
         let (issue, valid) = metadata(kml);
         assert!(issue.starts_with("0157Z"));
         assert!(valid.starts_with("00Z"));
+    }
+
+    #[test]
+    fn parses_inner_boundaries_as_holes() {
+        let kml = r#"<kml><Document>
+            <Style id="poly_1"><PolyStyle><color>7f80e579</color></PolyStyle></Style>
+            <Placemark>
+              <name>1"</name><styleUrl>#poly_1</styleUrl>
+              <MultiGeometry><Polygon>
+                <outerBoundaryIs><LinearRing><coordinates>
+                  -100,35,0 -99,35,0 -99,36,0 -100,36,0 -100,35,0
+                </coordinates></LinearRing></outerBoundaryIs>
+                <innerBoundaryIs><LinearRing><coordinates>
+                  -99.8,35.2,1000 -99.2,35.2,1000 -99.2,35.8,1000 -99.8,35.8,1000 -99.8,35.2,1000
+                </coordinates></LinearRing></innerBoundaryIs>
+              </Polygon></MultiGeometry>
+            </Placemark>
+        </Document></kml>"#;
+        let styles = parse_styles(kml);
+        let features = parse_features(kml, &styles);
+        assert_eq!(features.len(), 1);
+        let polygon = &features[0].polygons[0];
+        assert_eq!(polygon.len(), 2, "outer ring plus one hole");
+        assert_eq!(polygon[0].len(), 5);
+        assert_eq!(polygon[1].len(), 5);
+        // The hole is the 2"+ area, not part of the 1" band.
+        assert_eq!(polygon[1][0], (-99.8, 35.2));
     }
 
     #[test]

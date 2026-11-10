@@ -3793,9 +3793,13 @@ fn draw_pwpf(
                         // Put the band's amount/probability on the map, the
                         // way WPC labels its own contours. Always use the
                         // full-resolution ring, even during a drag, so the
-                        // number neither moves nor vanishes.
+                        // number neither moves nor vanishes. The label goes at
+                        // the ring's average when that lies in the band; if it
+                        // landed in a nested band's hole (WPC cuts the 2"+
+                        // area out of the 1" ring), it moves to the widest
+                        // open slice of the band instead.
                         if let Some(full_ring) = polygon.first().filter(|r| r.len() >= 3) {
-                            let full_outer = project_ring(full_ring, view, origin);
+                            let full_outer = &rings[0];
                             let (min_x, max_x) = full_outer
                                 .iter()
                                 .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
@@ -3818,8 +3822,9 @@ fn draw_pwpf(
                                 let (lon, lat) =
                                     (lon / full_ring.len() as f64, lat / full_ring.len() as f64);
                                 let (vx, vy) = view.lonlat_to_view_px(lon, lat);
-                                let at = egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
-                                if ring_contains(&full_outer, at) {
+                                let preferred =
+                                    egui::pos2(origin.x + vx as f32, origin.y + vy as f32);
+                                if let Some(at) = band_label_point(preferred, &rings) {
                                     let text = if !layer.product.is_probability()
                                         && !feature.label.contains('"')
                                     {
@@ -4378,6 +4383,64 @@ fn ring_area(ring: &[egui::Pos2]) -> f32 {
         sum += a.x * b.y - b.x * a.y;
     }
     (sum * 0.5).abs()
+}
+
+/// Where to put a PWPF band's number: the preferred spot when it lies inside
+/// the band, otherwise the centre of the widest horizontal slice of the band.
+///
+/// WPC nests its amount bands — the 1" ring has the 2"+ area cut out as a
+/// hole — so the average of a ring's vertices can fall inside the *next* band
+/// and label the 1" area inside the 2" one. The widest slice guarantees the
+/// number lands in open band (outer ring minus every hole), and its fixed
+/// sampling keeps the spot steady while panning or zooming.
+fn band_label_point(preferred: egui::Pos2, rings: &[Vec<egui::Pos2>]) -> Option<egui::Pos2> {
+    let outer = rings.first().filter(|r| r.len() >= 3)?;
+    let in_band = |p: egui::Pos2| {
+        ring_contains(outer, p)
+            && !rings[1..]
+                .iter()
+                .any(|hole| hole.len() >= 3 && ring_contains(hole, p))
+    };
+    if in_band(preferred) {
+        return Some(preferred);
+    }
+    let (min_y, max_y) = outer
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.y), hi.max(p.y))
+        });
+    if max_y - min_y < 1.0 {
+        return None;
+    }
+    const ROWS: usize = 32;
+    let mut best: Option<(f32, egui::Pos2)> = None;
+    for row in 1..ROWS {
+        let y = min_y + (max_y - min_y) * row as f32 / ROWS as f32;
+        // Even-odd crossings of every ring: sorted x pairs alternate between
+        // inside the band and inside a hole.
+        let mut xs: Vec<f32> = Vec::new();
+        for ring in rings {
+            let n = ring.len();
+            for i in 0..n {
+                let a = ring[i];
+                let b = ring[(i + 1) % n];
+                if (a.y > y) != (b.y > y) {
+                    let t = (y - a.y) / (b.y - a.y);
+                    xs.push(a.x + (b.x - a.x) * t);
+                }
+            }
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut i = 0;
+        while i + 1 < xs.len() {
+            let width = xs[i + 1] - xs[i];
+            if width > 0.0 && best.is_none_or(|(best_width, _)| width > best_width) {
+                best = Some((width, egui::pos2((xs[i] + xs[i + 1]) * 0.5, y)));
+            }
+            i += 2;
+        }
+    }
+    best.map(|(_, at)| at)
 }
 
 /// Label font size for an outlook risk area, in points.
@@ -7151,6 +7214,31 @@ mod tests {
         assert_eq!(mesh.vertices.len(), 8);
         assert!(mesh.indices.len() >= 6, "square hole needs >=2 triangles");
         assert_eq!(mesh.indices.len() % 3, 0);
+    }
+
+    /// A band label must never be placed inside the hole that WPC cuts for
+    /// the next amount band (the "1 inch inside the 2 inch area" bug).
+    #[test]
+    fn band_label_avoids_nested_hole() {
+        let outer = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 100.0),
+            egui::pos2(0.0, 100.0),
+        ];
+        let hole = vec![
+            egui::pos2(30.0, 30.0),
+            egui::pos2(70.0, 30.0),
+            egui::pos2(70.0, 70.0),
+            egui::pos2(30.0, 70.0),
+        ];
+        let rings = [outer, hole];
+        let at = band_label_point(egui::pos2(50.0, 50.0), &rings).expect("label spot");
+        assert!(!ring_contains(&rings[1], at), "label landed in the hole");
+        assert!(ring_contains(&rings[0], at), "label left the outer ring");
+        // A spot already inside the band is kept as-is.
+        let inside = egui::pos2(15.0, 50.0);
+        assert_eq!(band_label_point(inside, &rings), Some(inside));
     }
 
     #[test]

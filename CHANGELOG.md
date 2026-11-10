@@ -2,7 +2,7 @@
 
 ## v1.9.5 — 2026-11-10
 
-**PWPF labels, station switches, and signed Android updates**
+**PWPF labels, station switches**
 - Fixed WPC PWPF snow amount labels: the 1" polygon has the 2"+ area cut out as a KML hole, so nested bands are now parsed with their holes and each number is placed in its own band instead of inside the next threshold's area.
 - Switching radar sites clears the old station's frames and radar texture immediately, so the map cannot show the previous radar georeferenced to the new site while the clear command is in flight.
 

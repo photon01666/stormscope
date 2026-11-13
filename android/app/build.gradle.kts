@@ -45,8 +45,8 @@ android {
         applicationId = "com.stormscope.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 52
-        versionName = "1.9.5"
+        versionCode = 53
+        versionName = "1.9.6"
         ndk {
             // The Pixel 9a is arm64; add other ABIs here if needed.
             abiFilters += listOf("arm64-v8a")

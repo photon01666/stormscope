@@ -143,7 +143,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                 app.state.forecast_reopen_after_pick = false;
                 app.state.forecast_open = true;
             }
-            let _ = app.tx.send(crate::app::DataCmd::LoadForecast(lat, lon));
+            let _ = app.forecast_tx.send((lat, lon));
         }
     } else if app.state.sounding_pick_mode && response.clicked() && !crosshair_mode {
         if let Some(click) = response.interact_pointer_pos() {

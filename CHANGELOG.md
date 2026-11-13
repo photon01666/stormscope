@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.9.6 — 2026-11-13
+
+**Forecast loads immediately**
+- Opening the NWS forecast — from the forecast badge or the Storm Watch
+  notification — now fetches on a dedicated high-priority worker instead of
+  waiting behind radar archive/backfill frame loading. The window populates
+  while scans keep streaming, rather than hanging until the radar load ends.
+
 ## v1.9.5 — 2026-11-10
 
 **PWPF labels, station switches**

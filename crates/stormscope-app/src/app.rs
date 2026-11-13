@@ -439,8 +439,6 @@ pub enum DataCmd {
     LoadHrrr(f64, f64),
     /// Fetch the forecaster discussion text for a day (1..=3).
     LoadOutlookDiscussion(u8),
-    /// Fetch the NWS gridpoint forecast for a coordinate.
-    LoadForecast(f64, f64),
     /// Ask the AI meteorologist for a brief or an answer (spawned on its own
     /// thread so a slow model never holds up the data coordinator).
     AiBrief {
@@ -497,6 +495,10 @@ pub struct LivePendingTool {
 pub struct StormApp {
     pub state: AppState,
     pub tx: Sender<DataCmd>,
+    /// Forecast requests bypass the data command queue: radar frame loading
+    /// can hold that queue for a long time, and opening the forecast window
+    /// must fetch right away (see `background::run`).
+    pub forecast_tx: Sender<(f64, f64)>,
     pub rx: Receiver<DataMsg>,
     /// Set by GO LIVE / snap-to-live: a running archive stream checks it and
     /// stops, so the EnterLive command is not stuck behind 24 downloads.
@@ -741,6 +743,9 @@ impl StormApp {
 
         let (tx_ui, rx_data): (Sender<DataMsg>, Receiver<DataMsg>) = std::sync::mpsc::channel();
         let (tx_data, rx_ui): (Sender<DataCmd>, Receiver<DataCmd>) = std::sync::mpsc::channel();
+        // Forecast taps get their own channel so they never sit behind a
+        // radar archive/backfill load on the data thread.
+        let (forecast_tx, forecast_rx) = std::sync::mpsc::channel();
 
         let data = Arc::new(Mutex::new(SharedData {
             sites: radar_core::sites::SITES.iter().collect(),
@@ -763,6 +768,7 @@ impl StormApp {
             .spawn(move || {
                 crate::background::run(
                     rx_ui,
+                    forecast_rx,
                     tx_ui,
                     cancel,
                     shared,
@@ -833,6 +839,7 @@ impl StormApp {
         let app = Self {
             state,
             tx: tx_data,
+            forecast_tx,
             rx: rx_data,
             archive_cancel,
             data,
@@ -930,6 +937,7 @@ impl StormApp {
     ) -> Self {
         let (tx_ui, rx_data): (Sender<DataMsg>, Receiver<DataMsg>) = std::sync::mpsc::channel();
         let (tx_data, rx_ui): (Sender<DataCmd>, Receiver<DataCmd>) = std::sync::mpsc::channel();
+        let (forecast_tx, forecast_rx) = std::sync::mpsc::channel();
         let data = Arc::new(Mutex::new(SharedData {
             sites: radar_core::sites::SITES.iter().collect(),
             tilts: vec![
@@ -946,7 +954,9 @@ impl StormApp {
         let thread_site = site_id.to_string();
         std::thread::Builder::new()
             .name(format!("pane-data-{site_id}"))
-            .spawn(move || crate::background::run(rx_ui, tx_ui, cancel, shared, true, thread_site))
+            .spawn(move || {
+                crate::background::run(rx_ui, forecast_rx, tx_ui, cancel, shared, true, thread_site)
+            })
             .expect("spawn secondary data thread");
 
         let mut state = AppState::default();
@@ -967,6 +977,7 @@ impl StormApp {
         let app = Self {
             state,
             tx: tx_data,
+            forecast_tx,
             rx: rx_data,
             archive_cancel,
             data,
@@ -3646,7 +3657,7 @@ impl StormApp {
             self.state.forecast_point = Some((point.lat, point.lon));
             self.state.forecast_point_gps = false;
             self.state.forecast_requested = Some((point.lat, point.lon));
-            let _ = self.tx.send(DataCmd::LoadForecast(point.lat, point.lon));
+            let _ = self.forecast_tx.send((point.lat, point.lon));
             waiting.push("forecast".into());
             notes.push(match point.label.as_deref().map(str::trim) {
                 Some(label) if !label.is_empty() => format!("NWS forecast for {label}"),

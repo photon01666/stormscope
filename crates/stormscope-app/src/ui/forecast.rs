@@ -469,13 +469,15 @@ pub(crate) fn request_forecast_now(app: &mut StormApp) {
             app.state.observation = None;
         }
     }
-    log::debug!("forecast refresh (forced for AI): {lat:.4}, {lon:.4}");
+    log::debug!("forecast refresh: {lat:.4}, {lon:.4}");
     app.state.forecast_requested = Some((lat, lon));
     app.state.forecast_site = match picked {
         Some(_) => "pinned".to_string(),
         None => app.state.site_id.clone(),
     };
-    let _ = app.tx.send(crate::app::DataCmd::LoadForecast(lat, lon));
+    // The dedicated forecast channel skips the radar command queue, so the
+    // window can load while scans are still streaming in the background.
+    let _ = app.forecast_tx.send((lat, lon));
 }
 
 /// One line of "72°F · Light Rain · dew 61°F · …" for the current conditions,

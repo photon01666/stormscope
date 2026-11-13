@@ -135,12 +135,20 @@ fn backgrounded() -> bool {
 /// Entry point for the background "data" thread.
 pub fn run(
     cmds: Receiver<DataCmd>,
+    forecast_requests: Receiver<(f64, f64)>,
     out: Sender<DataMsg>,
     archive_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     #[allow(unused_variables)] shared: Arc<Mutex<crate::app::SharedData>>,
     passive: bool,
     initial_site: String,
 ) {
+    // Forecasts have their own thread and channel on purpose: the coordinator
+    // below blocks for tens of seconds while it streams and decodes a radar
+    // archive window, and a forecast tap used to wait behind all of it. The
+    // forecast API is independent of radar, so it loads the moment the window
+    // opens — even while frames are still arriving.
+    spawn_forecast_worker(forecast_requests, out.clone());
+
     let cache = DiskCache::with_default_max(DiskCache::default_root());
     #[cfg(target_os = "android")]
     let _ = cache.sweep_radar_age(chrono::Duration::hours(2));
@@ -169,7 +177,6 @@ pub fn run(
     let pwpf = PwpfSource::new(USER_AGENT).ok();
     let mut synoptic_token: Option<String> = None;
     let mut ambient_keys: Option<(String, String)> = None;
-    let forecasts = radar_data::ForecastSource::new(USER_AGENT).ok();
     // Both feeds hold caches (report texts, MCD pages) and a cold fill can
     // take tens of seconds (up to 80 product texts), so each poll runs on a
     // worker thread: measured cold-start fill blocked this loop for ~40 s,
@@ -1130,12 +1137,6 @@ pub fn run(
                             }
                         }
                     });
-                }
-                DataCmd::LoadForecast(lat, lon) => {
-                    let _ = out.send(DataMsg::Status(format!(
-                        "loading forecast for {lat:.3}, {lon:.3}…"
-                    )));
-                    refresh_forecast(&forecasts, lat, lon, &out);
                 }
                 DataCmd::LoadSounding(lat, lon) => {
                     let out = out.clone();
@@ -2448,16 +2449,49 @@ fn refresh_alerts(
     }
 }
 
-/// Re-fetch the SPC categorical outlook for `day` and emit it. CONUS-wide by
-/// nature, so it doesn't need the site; one GET every 10 min.
+/// Dedicated forecast fetcher. Requests arrive on their own channel, so a
+/// busy radar load on the coordinator never delays them. Fetches run one at a
+/// time; a burst of taps is coalesced to the newest target before starting.
+fn spawn_forecast_worker(requests: Receiver<(f64, f64)>, out: Sender<DataMsg>) {
+    if let Err(e) = std::thread::Builder::new()
+        .name("forecast".into())
+        .spawn(move || {
+            let source = radar_data::ForecastSource::new(USER_AGENT);
+            if let Err(e) = &source {
+                log::warn!("forecast source init failed: {e:#}");
+            }
+            while let Ok((lat, lon)) = requests.recv() {
+                // Opening the window can queue a station request and then a
+                // pinned point in quick succession; only the newest matters.
+                let mut target = (lat, lon);
+                while let Ok(newer) = requests.try_recv() {
+                    target = newer;
+                }
+                let _ = out.send(DataMsg::Status(format!(
+                    "loading forecast for {:.3}, {:.3}…",
+                    target.0, target.1
+                )));
+                match source.as_ref() {
+                    Ok(source) => refresh_forecast(source, target.0, target.1, &out),
+                    Err(e) => {
+                        let _ = out.send(DataMsg::Error(format!("forecast: {e:#}")));
+                    }
+                }
+            }
+        })
+    {
+        log::warn!("forecast worker spawn failed: {e}");
+    }
+}
+
+/// Fetch forecast + current conditions + UV and emit them to the UI.
 fn refresh_forecast(
-    forecasts: &Option<radar_data::ForecastSource>,
+    forecasts: &radar_data::ForecastSource,
     lat: f64,
     lon: f64,
     out: &Sender<DataMsg>,
 ) {
-    let Some(f) = forecasts else { return };
-    let (forecast, observation) = f.snapshot(lat, lon);
+    let (forecast, observation) = forecasts.snapshot(lat, lon);
     match forecast {
         Ok(fc) => {
             let _ = out.send(DataMsg::Forecast(fc));
@@ -2477,7 +2511,7 @@ fn refresh_forecast(
     }
     // UV index (Open-Meteo — NWS does not publish one). One small request per
     // refresh cadence.
-    match f.uv_index(lat, lon) {
+    match forecasts.uv_index(lat, lon) {
         Ok(uv) => {
             let _ = out.send(DataMsg::UvIndex(uv));
         }

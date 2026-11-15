@@ -992,7 +992,10 @@ fn current_conditions_ui(
                 // the end of it, and the compact text uses less horizontal
                 // room than individually spaced labels.
                 ui.add(
-                    egui::Label::new(egui::RichText::new(summary.join(" · ")).size(size)).wrap(),
+                    egui::Label::new(
+                        egui::RichText::new(format!("· {}", summary.join(" · "))).size(size),
+                    )
+                    .wrap(),
                 );
             }
         }

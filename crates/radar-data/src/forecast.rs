@@ -21,6 +21,15 @@ pub struct ForecastSource {
     client: reqwest::blocking::Client,
 }
 
+/// Open-Meteo's current-UV endpoint. Kept as one line deliberately: a
+/// wrapped string literal with a space before the continuation put `%20`
+/// after the longitude and Open-Meteo rejected every UV request with a 400.
+fn open_meteo_uv_url(lat: f64, lon: f64) -> String {
+    format!(
+        "https://api.open-meteo.com/v1/forecast?latitude={lat:.4}&longitude={lon:.4}&current=uv_index"
+    )
+}
+
 impl ForecastSource {
     /// Build a source with a descriptive User-Agent (required by
     /// api.weather.gov — include something identifying the app and a
@@ -68,10 +77,7 @@ impl ForecastSource {
     /// Current UV index for a point from Open-Meteo (NWS has no UV feed).
     /// Free, no API key; one tiny request.
     pub fn uv_index(&self, lat: f64, lon: f64) -> Result<Option<f32>> {
-        let url = format!(
-            "https://api.open-meteo.com/v1/forecast?latitude={lat:.4}&longitude={lon:.4} \
-             &current=uv_index"
-        );
+        let url = open_meteo_uv_url(lat, lon);
         let resp: serde_json::Value = self
             .client
             .get(url)
@@ -800,6 +806,16 @@ mod tests {
                 ]
             }
         })
+    }
+
+    /// The UV URL must stay whitespace-free. A trailing space before a string
+    /// continuation previously became `%20` after the longitude, and
+    /// Open-Meteo answered every current-UV request with HTTP 400.
+    #[test]
+    fn uv_url_has_no_whitespace() {
+        let url = open_meteo_uv_url(39.13, -96.67);
+        assert!(!url.contains(char::is_whitespace), "{url}");
+        assert!(url.ends_with("&current=uv_index"), "{url}");
     }
 
     #[test]

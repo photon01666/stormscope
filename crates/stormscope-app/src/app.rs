@@ -1355,6 +1355,17 @@ impl StormApp {
         }
     }
 
+    /// Minutes elapsed and required for the automatic warm exit, when a warm
+    /// hold is currently running.
+    pub fn auto_winter_warm_hold(&self) -> Option<(u64, u64)> {
+        self.auto_winter_warm_since.map(|started| {
+            (
+                started.elapsed().as_secs() / 60,
+                AUTO_WINTER_WARM_HOLD.as_secs() / 60,
+            )
+        })
+    }
+
     /// Watched points for automatic winter mode: the selected radar, GPS fix,
     /// a pinned forecast point, then custom map markers. Duplicates (e.g. GPS
     /// and a pin at the same spot) are removed, and the batch is capped so the

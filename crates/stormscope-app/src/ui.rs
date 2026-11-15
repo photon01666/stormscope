@@ -2129,6 +2129,17 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
                     .small(),
                 );
             }
+            if app.winter_mode_active()
+                && let Some((elapsed, total)) = app.auto_winter_warm_hold()
+            {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Winter mode is on; warm hold {elapsed}/{total} min"
+                    ))
+                    .weak()
+                    .small(),
+                );
+            }
         } else if let Some(error) = &app.auto_winter_error {
             ui.label(
                 egui::RichText::new(format!("Auto winter: conditions unavailable ({error})"))

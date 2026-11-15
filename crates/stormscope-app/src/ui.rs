@@ -1,7 +1,7 @@
 //! Top-level layout: auto-hiding controls sidebar, central map, bottom timeline.
 
 use crate::app::StormApp;
-use crate::state::{AiTab, Mode, PaneMax};
+use crate::state::{AiTab, Mode, PaneMax, PwpfHit};
 use radar_core::Moment;
 
 mod ai;
@@ -421,6 +421,8 @@ pub fn layout(ui: &mut egui::Ui, app: &mut StormApp) {
     outlook_detail_window(ui.ctx(), app, pane_area);
     // WPC WSSI impact popup (clicking a winter outlook outline).
     wpc_detail_window(ui.ctx(), app, pane_area);
+    // WPC PWPF snow/ice amount popup (clicking a band or the ice raster).
+    pwpf_detail_window(ui.ctx(), app, pane_area);
     reports::lsr_detail_window(ui.ctx(), app);
     reports::mcd_detail_window(ui.ctx(), app);
 
@@ -2066,6 +2068,28 @@ fn map_controls_analysis(ui: &mut egui::Ui, app: &mut StormApp) {
 fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8, egui::Rect)>) {
     use radar_core::wssi::{WssiComponent as C, WssiImpact, WssiPeriod as P};
 
+    if ui
+        .button("Winter mode")
+        .on_hover_text(
+            "Switch the map to winter weather: snowfall-rate radar, a 5 dBZ \
+             reflectivity floor, the 0 °C level, winter 3D shells, WPC WSSI \
+             impacts and PWPF snow amounts. Convective tracks, rotation, hail \
+             cores and the SPC outlook are turned off.",
+        )
+        .clicked()
+    {
+        app.winter_mode();
+    }
+    ui.label(
+        egui::RichText::new(
+            "Snowfall-rate radar · low dBZ floor · 0 °C level · WPC winter outlook and amounts.",
+        )
+        .weak()
+        .small(),
+    );
+    ui.add_space(4.0);
+    ui.separator();
+
     ui.label(egui::RichText::new("WPC winter storm severity (WSSI)").strong());
     let toggled = ui
         .checkbox(&mut app.state.show_wpc, "Show WPC winter outlook")
@@ -2262,6 +2286,8 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
         sliders.push((22, r.rect));
         r.on_hover_text("Fill opacity for the WPC amount/probability bands.");
 
+        let mut legend_pick: Option<PwpfHit> = None;
+        let mut legend_label: Option<String> = None;
         if app.state.pwpf_pending {
             ui.label(
                 egui::RichText::new("Loading WPC snow/ice amounts…")
@@ -2278,36 +2304,86 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
             }
             match &layer.geometry {
                 radar_core::pwpf::PwpfGeometry::Vector(features) => {
-                    for feature in features.iter().take(8) {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut shown = 0usize;
+                    for (index, feature) in features.iter().enumerate() {
+                        if !seen.insert((feature.label.clone(), feature.color)) {
+                            continue;
+                        }
+                        if shown >= 12 {
+                            break;
+                        }
+                        shown += 1;
                         let [red, green, blue] = feature.color;
+                        let detail = if layer.product.is_probability() {
+                            format!(
+                                "{} — chance ≥{}",
+                                feature.label,
+                                pwpf_threshold_short(layer.product)
+                            )
+                        } else {
+                            format!("{} — median {}", feature.label, pwpf_kind(layer.product))
+                        };
                         ui.horizontal(|ui| {
-                            let (rect, _) = ui
-                                .allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            let (rect, swatch) = ui.allocate_exact_size(
+                                egui::vec2(10.0, 10.0),
+                                egui::Sense::click(),
+                            );
                             ui.painter().rect_filled(
                                 rect,
                                 2.0,
                                 egui::Color32::from_rgb(red, green, blue),
                             );
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{}{}",
-                                    feature.label,
-                                    if layer.product.is_probability() {
-                                        " chance"
-                                    } else {
-                                        ""
-                                    }
-                                ))
-                                .small(),
-                            );
+                            let row = ui
+                                .selectable_label(
+                                    false,
+                                    egui::RichText::new(detail).small(),
+                                )
+                                .on_hover_text(
+                                    "Click to center the map on this band and open its WPC explanation",
+                                );
+                            if swatch.clicked() || row.clicked() {
+                                legend_pick = Some(PwpfHit::Feature(index));
+                                legend_label = Some(feature.label.clone());
+                            }
                         });
+                    }
+                    if shown == 0 {
+                        ui.label(
+                            egui::RichText::new("No WPC bands for this product/day.")
+                                .weak()
+                                .small(),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(
+                                "Click a band to center the map and open its explanation.",
+                            )
+                            .weak()
+                            .small(),
+                        );
                     }
                 }
                 radar_core::pwpf::PwpfGeometry::Raster(_) => {
+                    let detail = if layer.product.is_probability() {
+                        "≥0.25\" ice — probability"
+                    } else {
+                        "0.01–10 in — median ice"
+                    };
+                    let row = ui
+                        .selectable_label(false, egui::RichText::new(detail).small())
+                        .on_hover_text(
+                            "Click to center the map on this ice area and open its WPC explanation",
+                        );
+                    if row.clicked() {
+                        legend_pick = Some(PwpfHit::Raster);
+                    }
                     ui.label(
-                        egui::RichText::new("WPC ice overlay (raster)")
-                            .weak()
-                            .small(),
+                        egui::RichText::new(
+                            "WPC ice is a color raster; colors follow WPC's 0.01–10 inch scale.",
+                        )
+                        .weak()
+                        .small(),
                     );
                 }
             }
@@ -2318,10 +2394,26 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
                     .small(),
             );
         }
+        if let Some(hit) = legend_pick {
+            match hit {
+                PwpfHit::Feature(_) => {
+                    if let Some(label) = legend_label.as_deref() {
+                        map::focus_pwpf_label(app, label);
+                    }
+                }
+                PwpfHit::Raster => map::focus_pwpf_raster(app),
+            }
+            app.state.pwpf_detail = Some(hit);
+            app.state.wpc_detail = None;
+            // Close Controls so the centered map and the detail card are
+            // visible; the user can reopen it for another band.
+            app.state.map_controls_open = false;
+        }
         ui.label(
             egui::RichText::new(
-                "50th-percentile values are accumulation in inches; probability \
-                 layers are the chance of exceeding the threshold. Source: WPC PWPF.",
+                "50th-percentile values are 24-hour accumulation in inches; probability \
+                 layers are the chance of reaching or exceeding the threshold. Click a band \
+                 for the WPC explanation. Source: WPC PWPF.",
             )
             .weak()
             .small(),
@@ -5135,6 +5227,227 @@ fn wpc_detail_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) 
     });
 
     app.state.wpc_detail = (open && !close_requested).then_some((layer_index, feature_index));
+}
+
+fn pwpf_kind(product: radar_core::pwpf::PwpfProduct) -> &'static str {
+    if matches!(
+        product,
+        radar_core::pwpf::PwpfProduct::SnowAmount50
+            | radar_core::pwpf::PwpfProduct::SnowProb4
+            | radar_core::pwpf::PwpfProduct::SnowProb8
+            | radar_core::pwpf::PwpfProduct::SnowProb12
+    ) {
+        "snow"
+    } else {
+        "ice"
+    }
+}
+
+fn pwpf_threshold(product: radar_core::pwpf::PwpfProduct) -> &'static str {
+    match product {
+        radar_core::pwpf::PwpfProduct::SnowProb4 => "4 inches of snow",
+        radar_core::pwpf::PwpfProduct::SnowProb8 => "8 inches of snow",
+        radar_core::pwpf::PwpfProduct::SnowProb12 => "12 inches of snow",
+        radar_core::pwpf::PwpfProduct::IceProb025 => "0.25 inch of ice",
+        radar_core::pwpf::PwpfProduct::SnowAmount50 => "snow",
+        radar_core::pwpf::PwpfProduct::IceAmount50 => "ice",
+    }
+}
+
+fn pwpf_threshold_short(product: radar_core::pwpf::PwpfProduct) -> &'static str {
+    match product {
+        radar_core::pwpf::PwpfProduct::SnowProb4 => "4\" snow",
+        radar_core::pwpf::PwpfProduct::SnowProb8 => "8\" snow",
+        radar_core::pwpf::PwpfProduct::SnowProb12 => "12\" snow",
+        radar_core::pwpf::PwpfProduct::IceProb025 => "0.25\" ice",
+        radar_core::pwpf::PwpfProduct::SnowAmount50 => "snow",
+        radar_core::pwpf::PwpfProduct::IceAmount50 => "ice",
+    }
+}
+
+/// Plain-language explanation of a PWPF band, used by both the map tooltip and
+/// the in-app detail popup. No browser: this is the NWS/WPC wording rendered
+/// directly in the Egui window.
+pub(super) fn pwpf_band_explanation(product: radar_core::pwpf::PwpfProduct, label: &str) -> String {
+    if product.is_probability() {
+        if label.is_empty() {
+            return format!(
+                "This raster shows the chance of at least {} in this 24-hour period.",
+                pwpf_threshold(product)
+            );
+        }
+        return format!(
+            "This area has a {label} chance of at least {} in this 24-hour period.",
+            pwpf_threshold(product)
+        );
+    }
+    match product {
+        radar_core::pwpf::PwpfProduct::SnowAmount50 => format!(
+            "Median (50th-percentile) 24-hour snow accumulation in this band: {label}. \
+             Half of WPC's forecast scenarios are below this range and half above."
+        ),
+        radar_core::pwpf::PwpfProduct::IceAmount50 => "WPC's 24-hour median \
+             (50th-percentile) ice accumulation. This product is a color raster; the \
+             scale runs from 0.01 to 10 inches of ice."
+            .to_string(),
+        _ => format!(
+            "WPC's 24-hour {} accumulation for this area: {label}.",
+            pwpf_kind(product)
+        ),
+    }
+}
+
+fn pwpf_what_it_means(product: radar_core::pwpf::PwpfProduct) -> &'static str {
+    if product.is_probability() {
+        "The percentage is the chance of reaching or exceeding the threshold, not the expected \
+         amount. A 40% band means roughly four of ten forecast scenarios reach that amount."
+    } else {
+        "The 50th percentile is the median of WPC's forecast scenarios, not a guarantee: half \
+         of the scenarios fall below the band, half above. Use it for the expected range, not \
+         as an exact point forecast."
+    }
+}
+
+/// WPC PWPF snow/ice amount detail popup. Clicking a band or the ice raster
+/// opens this; the text comes from WPC's own product explanation, rendered
+/// in-app rather than opening a browser.
+fn pwpf_detail_window(ctx: &egui::Context, app: &mut StormApp, area: egui::Rect) {
+    let Some(hit) = app.state.pwpf_detail else {
+        return;
+    };
+    let Some(layer) = app.state.pwpf_layer.as_ref() else {
+        app.state.pwpf_detail = None;
+        return;
+    };
+    let product = layer.product;
+    let day = layer.day;
+    let issue = layer.issue.clone();
+    let valid = layer.valid.clone();
+    let (title, color, explanation, raster) = match (&layer.geometry, hit) {
+        (radar_core::pwpf::PwpfGeometry::Vector(features), PwpfHit::Feature(index)) => {
+            let Some(feature) = features.get(index) else {
+                app.state.pwpf_detail = None;
+                return;
+            };
+            (
+                feature.label.clone(),
+                feature.color,
+                pwpf_band_explanation(product, &feature.label),
+                false,
+            )
+        }
+        (radar_core::pwpf::PwpfGeometry::Raster(_), PwpfHit::Raster) => (
+            product.label().to_string(),
+            [0, 153, 255],
+            pwpf_band_explanation(product, ""),
+            true,
+        ),
+        _ => {
+            app.state.pwpf_detail = None;
+            return;
+        }
+    };
+
+    let fill = cfg!(target_os = "android");
+    let scale = big_text_scale(app);
+    let screen = ctx.content_rect().size();
+    let size = popup_size(ctx, scale, 560.0, 430.0);
+    let max_h = popup_max_height(ctx, scale);
+    let min_size = egui::vec2(
+        (420.0 * scale).min((screen.x - 24.0).max(220.0)),
+        (220.0 * scale).min((screen.y - 90.0).max(160.0)),
+    );
+    let mut open = true;
+    let mut window = egui::Window::new("WPC winter amounts")
+        .id(egui::Id::new("stormscope.pwpf.detail"))
+        .default_pos(centered_popup_pos(ctx, size))
+        .max_width((screen.x - 16.0).max(200.0))
+        .min_size(min_size);
+    #[cfg(target_os = "android")]
+    if fill {
+        window = window.title_bar(false);
+    }
+    window = if fill {
+        let inset = area.shrink2(egui::vec2(4.0, 8.0));
+        window
+            .fixed_rect(inset)
+            .movable(false)
+            .resizable(false)
+            .constrain_to(inset)
+    } else {
+        window.default_size(size).max_height(max_h).resizable(true)
+    };
+    let window = window.open(&mut open);
+    #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
+    let mut close_requested = false;
+    window.show(ctx, |ui| {
+        #[cfg(target_os = "android")]
+        if fill {
+            close_requested |= phone_header(ui, "WPC winter amounts");
+        }
+        apply_text_scale(ui, scale);
+
+        ui.label(egui::RichText::new("What this area means").strong().small());
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                let [red, green, blue] = color;
+                ui.horizontal_wrapped(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(12.0 * scale, 12.0 * scale),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter()
+                        .rect_filled(rect, 2.0, egui::Color32::from_rgb(red, green, blue));
+                    let heading = if raster {
+                        product.label().to_string()
+                    } else {
+                        format!("{} — {}", product.label(), title)
+                    };
+                    ui.heading(heading);
+                });
+                ui.label(explanation);
+                let mut meta = vec![format!("WPC PWPF · {}", day.label())];
+                if !issue.is_empty() {
+                    meta.push(format!("issued {issue}"));
+                }
+                if !valid.is_empty() {
+                    meta.push(format!("valid {valid}"));
+                }
+                ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+            });
+
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("What the number means")
+                .strong()
+                .small(),
+        );
+        ui.label(pwpf_what_it_means(product));
+        if raster && product == radar_core::pwpf::PwpfProduct::IceAmount50 {
+            ui.label(
+                egui::RichText::new(
+                    "WPC ice scale (inches): 0.01 · 0.10 · 0.25 · 0.50 · 0.75 · 1.0 · \
+                     1.50 · 2.0 · 2.50 · 3.0 · 4.0 · 5.0 · 6.0 · 7.0 · 8.0 · 9.0 · 10.0",
+                )
+                .weak()
+                .small(),
+            );
+        }
+        ui.label(
+            egui::RichText::new(
+                "Source: NWS Weather Prediction Center, Probabilistic Winter Precipitation \
+                 Forecasts (WPC PWPF). Guidance only — not an official watch or warning.",
+            )
+            .weak()
+            .small(),
+        );
+        if !fill {
+            fill_popup_height(ui);
+        }
+    });
+
+    app.state.pwpf_detail = (open && !close_requested).then_some(hit);
 }
 
 /// Human-readable byte size (B/KiB/MiB/GiB) for the Settings menu.

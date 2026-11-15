@@ -330,6 +330,13 @@ pub enum MapControlsTab {
     Wpc,
 }
 
+/// A PWPF map area: one vector band, or the continuous ice raster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PwpfHit {
+    Feature(usize),
+    Raster,
+}
+
 /// Which set the alerts browser is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertsTab {
@@ -1176,8 +1183,8 @@ pub struct AppState {
     pub show_wpc: bool,
     pub wpc_layers: Vec<radar_core::wssi::WssiLayer>,
     /// Draw every WSSI component for the selected period. Android starts with
-    /// only the Overall Impact summary to keep a phone map uncluttered;
-    /// desktop starts with all five components.
+    /// only the Overall Impact summary when the layer is enabled; desktop
+    /// starts with all five components. The layer itself now starts off.
     pub wpc_all_components: bool,
     pub wpc_component: radar_core::wssi::WssiComponent,
     pub wpc_period: radar_core::wssi::WssiPeriod,
@@ -1199,6 +1206,12 @@ pub struct AppState {
     pub pwpf_layer: Option<radar_core::pwpf::PwpfLayer>,
     pub pwpf_pending: bool,
     pub pwpf_opacity: f32,
+    /// PWPF band or ice raster under the pointer; the tooltip resolves the
+    /// exact band. `Feature` indexes the vector band list.
+    pub pwpf_hover: Option<PwpfHit>,
+    pub pwpf_hover_at: f64,
+    /// PWPF area whose detail popup is open.
+    pub pwpf_detail: Option<PwpfHit>,
     /// Raster ice overlays are decoded once and turned into a texture lazily.
     pub pwpf_image: Option<std::sync::Arc<egui::ColorImage>>,
     pub pwpf_tex: Option<egui::TextureHandle>,
@@ -1893,7 +1906,7 @@ impl Default for AppState {
             outlook_detail_dn: None,
             outlook_discussion: None,
             outlook_discussion_requested: None,
-            show_wpc: true,
+            show_wpc: false,
             wpc_layers: Vec::new(),
             wpc_all_components: !small_screen,
             wpc_component: radar_core::wssi::WssiComponent::Overall,
@@ -1909,6 +1922,9 @@ impl Default for AppState {
             pwpf_layer: None,
             pwpf_pending: false,
             pwpf_opacity: 0.05,
+            pwpf_hover: None,
+            pwpf_hover_at: 0.0,
+            pwpf_detail: None,
             pwpf_image: None,
             pwpf_tex: None,
             status_text: "starting…".to_string(),

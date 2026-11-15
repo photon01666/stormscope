@@ -836,7 +836,7 @@ impl StormApp {
         let cache_root = radar_data::DiskCache::default_root();
         let tiles = radar_render::TileLayer::new(cache_root.join("tiles"));
 
-        let app = Self {
+        let mut app = Self {
             state,
             tx: tx_data,
             forecast_tx,
@@ -923,6 +923,11 @@ impl StormApp {
         // a different startup site, switch it immediately.
         if app.state.site_id != radar_core::DEFAULT_SITE {
             let _ = app.tx.send(DataCmd::SetSite(app.state.site_id.clone()));
+        }
+        // PWPF is on by default on desktop: fetch it at startup instead of
+        // waiting for the user to open Map Controls and re-toggle the checkbox.
+        if app.state.show_pwpf {
+            app.load_pwpf();
         }
         app
     }
@@ -1245,6 +1250,49 @@ impl StormApp {
             product: self.state.pwpf_product,
             day: self.state.pwpf_day,
         });
+    }
+
+    /// One-tap winter weather preset. Snowfall-rate radar, the low reflectivity
+    /// floor snow lives in, the 0 °C level, winter 3D shells, WPC WSSI and
+    /// PWPF snow amounts — with the convective-only overlays switched off.
+    pub fn winter_mode(&mut self) {
+        if self.state.show_futurecast {
+            self.set_futurecast(false);
+        }
+        self.state.moment = radar_core::Moment::SnowRate;
+        self.state.tilt_deg = 0.5;
+        self.state.min_dbz = 5.0;
+        self.state.show_melting_layer = true;
+        self.state.view3d_shell_preset = crate::state::ShellPreset::Winter;
+        self.state.show_tracks = false;
+        self.state.show_rotation = false;
+        self.state.show_hail_cores = false;
+        self.state.show_outlook = false;
+        self.state.show_alerts = true;
+        self.state.show_watches = true;
+
+        self.state.show_wpc = true;
+        self.state.wpc_all_components = false;
+        self.state.wpc_component = radar_core::wssi::WssiComponent::Overall;
+        self.state.wpc_period = radar_core::wssi::WssiPeriod::Days1to3;
+        self.state.wpc_hover = None;
+        self.state.wpc_detail = None;
+        self.state.wpc_layers.clear();
+
+        self.state.show_pwpf = true;
+        self.state.pwpf_product = radar_core::pwpf::PwpfProduct::SnowAmount50;
+        self.state.pwpf_day = radar_core::pwpf::PwpfDay::Day1;
+        self.state.pwpf_hover = None;
+        self.state.pwpf_detail = None;
+        self.state.pwpf_layer = None;
+        self.state.pwpf_image = None;
+        self.state.pwpf_tex = None;
+
+        if !self.is_secondary {
+            self.load_wpc();
+            self.load_pwpf();
+            self.state.persist_pane_defaults();
+        }
     }
 
     /// Select a radar site from the map (or controls) and tell the data

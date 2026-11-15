@@ -17,6 +17,7 @@
 
 use crate::app::StormApp;
 use crate::state::BadgeKind;
+use crate::state::PwpfHit;
 use crate::state::{MeasureDrag, MeasureEnd};
 use radar_render::MapView;
 
@@ -375,6 +376,15 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                     {
                                         app.state.wpc_detail = Some((layer, feature));
                                         app.state.wpc_hover = None;
+                                        app.state.pwpf_detail = None;
+                                    } else if app.state.show_pwpf
+                                        && let Some(hit) = pwpf_at(app, lon, lat)
+                                    {
+                                        // WPC snow/ice band or the ice raster:
+                                        // open the in-app explanation popup.
+                                        app.state.pwpf_detail = Some(hit);
+                                        app.state.pwpf_hover = None;
+                                        app.state.wpc_detail = None;
                                     } else if app.state.show_outlook {
                                         // Clicking an SPC outline opens that day's
                                         // forecaster discussion. ALL mode accepts a
@@ -794,6 +804,35 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         app.state.outlook_hover_at = ui.input(|i| i.time);
     }
     if app.state.outlook_hover.is_some() && !response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    // WPC PWPF band or ice raster under the pointer. The bands are filled
+    // areas, so the whole area is the target; the WSSI/SPC outlines above
+    // still win when the pointer is on their border.
+    let pwpf_hover_hit = if app.state.show_pwpf
+        && app.state.wpc_hover.is_none()
+        && app.state.outlook_hover.is_none()
+        && !map_moving
+        && !response.dragged()
+        && app.state.alerts_map_stack.is_empty()
+        && app.state.lsr_hover.is_none()
+        && app.state.totals_hover.is_none()
+        && app.state.mcd_hover.is_none()
+    {
+        response.hover_pos().and_then(|p| {
+            let (cx, cy) = viewport_pos(rect, p);
+            let (lon, lat) = view.view_px_to_lonlat(cx, cy);
+            pwpf_at(app, lon, lat)
+        })
+    } else {
+        None
+    };
+    if pwpf_hover_hit != app.state.pwpf_hover {
+        app.state.pwpf_hover = pwpf_hover_hit;
+        app.state.pwpf_hover_at = ui.input(|i| i.time);
+    }
+    if app.state.pwpf_hover.is_some() && !response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
@@ -1396,6 +1435,7 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
     if !futurecast_only && !over_echo {
         warning_hover_tooltip(ui, &response, app);
         wpc_hover_tooltip(ui, &response, app);
+        pwpf_hover_tooltip(ui, &response, app);
         super::reports::lsr_hover_tooltip(ui, &response, app);
         super::reports::mcd_hover_tooltip(ui, &response, app);
         super::totals::totals_hover_tooltip(ui, &response, app);
@@ -3761,9 +3801,12 @@ fn draw_pwpf(
             let fill_alpha = (app.state.pwpf_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
             let scale = app.sidebar_scale.max(1.0);
             let mut placed_labels: Vec<egui::Rect> = Vec::new();
-            for feature in features {
+            for (feature_index, feature) in features.iter().enumerate() {
                 let [red, green, blue] = feature.color;
                 let color = egui::Color32::from_rgb(red, green, blue);
+                let emphasized = !fills
+                    && (app.state.pwpf_hover == Some(PwpfHit::Feature(feature_index))
+                        || app.state.pwpf_detail == Some(PwpfHit::Feature(feature_index)));
                 for polygon in &feature.polygons {
                     if !polygon_in_bounds(polygon, bounds) {
                         continue;
@@ -3784,9 +3827,15 @@ fn draw_pwpf(
                     } else {
                         for pts in &rings {
                             if pts.len() >= 3 {
+                                if emphasized {
+                                    painter.add(egui::Shape::closed_line(
+                                        pts.clone(),
+                                        egui::Stroke::new(6.0, color.gamma_multiply(0.30)),
+                                    ));
+                                }
                                 painter.add(egui::Shape::closed_line(
                                     pts.clone(),
-                                    egui::Stroke::new(1.2, color),
+                                    egui::Stroke::new(if emphasized { 3.2 } else { 1.2 }, color),
                                 ));
                             }
                         }
@@ -3859,12 +3908,6 @@ fn draw_pwpf(
             }
         }
         radar_core::pwpf::PwpfGeometry::Raster(raster) => {
-            if !fills {
-                return;
-            }
-            let Some(texture) = app.state.pwpf_tex.as_ref() else {
-                return;
-            };
             let (west, south, north, east) = (
                 raster.bounds[1],
                 raster.bounds[0],
@@ -3877,6 +3920,22 @@ fn draw_pwpf(
                 egui::pos2(origin.x + x0 as f32, origin.y + y0 as f32),
                 egui::pos2(origin.x + x1 as f32, origin.y + y1 as f32),
             );
+            if !fills {
+                if app.state.pwpf_hover == Some(PwpfHit::Raster)
+                    || app.state.pwpf_detail == Some(PwpfHit::Raster)
+                {
+                    painter.rect_stroke(
+                        rect,
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 153, 255)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                return;
+            }
+            let Some(texture) = app.state.pwpf_tex.as_ref() else {
+                return;
+            };
             painter.image(
                 texture.id(),
                 rect,
@@ -5833,6 +5892,167 @@ fn wpc_border_at(
     best.map(|(layer, feature, _, _)| (layer, feature))
 }
 
+/// Which PWPF band or ice raster contains a lon/lat. Nested vector bands are
+/// resolved by the smallest containing polygon, so the 2-4" area wins over the
+/// 1-2" ring that surrounds it. The ice raster is sampled for alpha so a click
+/// on its transparent background does not open a false detail card.
+fn pwpf_at(app: &StormApp, lon: f64, lat: f64) -> Option<PwpfHit> {
+    let layer = app.state.pwpf_layer.as_ref()?;
+    match &layer.geometry {
+        radar_core::pwpf::PwpfGeometry::Vector(features) => {
+            let mut best: Option<(usize, f64)> = None;
+            for (index, feature) in features.iter().enumerate() {
+                for polygon in &feature.polygons {
+                    let Some(outer) = polygon.first() else {
+                        continue;
+                    };
+                    if outer.len() < 3 || !lonlat_in_ring(lon, lat, outer) {
+                        continue;
+                    }
+                    if polygon[1..]
+                        .iter()
+                        .any(|hole| lonlat_in_ring(lon, lat, hole))
+                    {
+                        continue;
+                    }
+                    let area = lonlat_ring_area(outer).abs();
+                    if best.is_none_or(|(_, best_area)| area < best_area) {
+                        best = Some((index, area));
+                    }
+                }
+            }
+            best.map(|(index, _)| PwpfHit::Feature(index))
+        }
+        radar_core::pwpf::PwpfGeometry::Raster(raster) => {
+            let [south, west, north, east] = raster.bounds;
+            if lon < west
+                || lon > east
+                || lat < south
+                || lat > north
+                || (east - west).abs() < 1e-9
+                || (north - south).abs() < 1e-9
+            {
+                return None;
+            }
+            if raster.width == 0 || raster.height == 0 {
+                return Some(PwpfHit::Raster);
+            }
+            let u = ((lon - west) / (east - west)).clamp(0.0, 0.999_999);
+            let v = ((north - lat) / (north - south)).clamp(0.0, 0.999_999);
+            let x = (u * raster.width as f64) as usize;
+            let y = (v * raster.height as f64) as usize;
+            let alpha = raster
+                .rgba
+                .get((y * raster.width + x) * 4 + 3)
+                .copied()
+                .unwrap_or(255);
+            (alpha >= 16).then_some(PwpfHit::Raster)
+        }
+    }
+}
+
+fn lonlat_in_ring(lon: f64, lat: f64, ring: &[(f64, f64)]) -> bool {
+    if ring.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = ring.len() - 1;
+    for i in 0..ring.len() {
+        let (xi, yi) = ring[i];
+        let (xj, yj) = ring[j];
+        if (yi > lat) != (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+fn lonlat_ring_area(ring: &[(f64, f64)]) -> f64 {
+    let mut sum = 0.0;
+    for i in 0..ring.len() {
+        let (x1, y1) = ring[i];
+        let (x2, y2) = ring[(i + 1) % ring.len()];
+        sum += x1 * y2 - x2 * y1;
+    }
+    sum * 0.5
+}
+
+fn pwpf_feature_bounds(feature: &radar_core::pwpf::PwpfFeature) -> Option<(f64, f64, f64, f64)> {
+    let mut bounds: Option<(f64, f64, f64, f64)> = None;
+    for polygon in &feature.polygons {
+        for ring in polygon {
+            for &(lon, lat) in ring {
+                bounds = Some(match bounds {
+                    Some((west, south, east, north)) => {
+                        (west.min(lon), south.min(lat), east.max(lon), north.max(lat))
+                    }
+                    None => (lon, lat, lon, lat),
+                });
+            }
+        }
+    }
+    bounds
+}
+
+/// Center the map on every polygon carrying this legend label. The same
+/// amount band can be split into several geographic Placemarks, so the union
+/// is what the legend row represents.
+pub(super) fn focus_pwpf_label(app: &mut StormApp, label: &str) {
+    let Some(layer) = app.state.pwpf_layer.as_ref() else {
+        return;
+    };
+    let radar_core::pwpf::PwpfGeometry::Vector(features) = &layer.geometry else {
+        return;
+    };
+    let mut bounds: Option<(f64, f64, f64, f64)> = None;
+    for feature in features.iter().filter(|feature| feature.label == label) {
+        if let Some(feature_bounds) = pwpf_feature_bounds(feature) {
+            bounds = Some(match bounds {
+                Some((west, south, east, north)) => (
+                    west.min(feature_bounds.0),
+                    south.min(feature_bounds.1),
+                    east.max(feature_bounds.2),
+                    north.max(feature_bounds.3),
+                ),
+                None => feature_bounds,
+            });
+        }
+    }
+    if let Some((west, south, east, north)) = bounds {
+        fit_view_to_bounds(app, west, south, east, north);
+    }
+}
+
+/// Center the map on the ice GroundOverlay.
+pub(super) fn focus_pwpf_raster(app: &mut StormApp) {
+    let Some(layer) = app.state.pwpf_layer.as_ref() else {
+        return;
+    };
+    let radar_core::pwpf::PwpfGeometry::Raster(raster) = &layer.geometry else {
+        return;
+    };
+    let [south, west, north, east] = raster.bounds;
+    fit_view_to_bounds(app, west, south, east, north);
+}
+
+/// Fit a lon/lat box into the current map with a little breathing room.
+fn fit_view_to_bounds(app: &mut StormApp, west: f64, south: f64, east: f64, north: f64) {
+    let (x1, y1) = radar_render::lonlat_to_merc_px(west, north, 0.0);
+    let (x2, y2) = radar_render::lonlat_to_merc_px(east, south, 0.0);
+    let width = (x2 - x1).abs().max(1.0);
+    let height = (y2 - y1).abs().max(1.0);
+    let fit = ((app.state.view.width_px as f64 * 0.78 / width)
+        .min(app.state.view.height_px as f64 * 0.78 / height))
+    .log2();
+    let (center_lon, center_lat) =
+        radar_render::merc_px_to_lonlat((x1 + x2) * 0.5, (y1 + y2) * 0.5, 0.0);
+    app.state.view.center_lon = center_lon.clamp(-180.0, 180.0);
+    app.state.view.center_lat = center_lat.clamp(-85.0, 85.0);
+    app.state.view.zoom = fit.clamp(MIN_ZOOM, MAX_ZOOM);
+    app.radar_view_change_at = std::time::Instant::now();
+}
+
 /// Border of the SPC risk area under the pointer: a click within
 /// `tolerance_px` of an outline opens that day's discussion. Risk areas nest,
 /// so the most severe one within tolerance wins (ties go to the closer edge).
@@ -6014,6 +6234,69 @@ fn wpc_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormApp) {
             ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
             ui.label(
                 egui::RichText::new("Click the outline for the full WPC impact details")
+                    .weak()
+                    .small(),
+            );
+        });
+}
+
+/// Tooltip for a WPC PWPF snow/ice band (or the ice raster) under the pointer,
+/// using the same one-second dwell as the SPC and WSSI cards.
+fn pwpf_hover_tooltip(ui: &egui::Ui, response: &egui::Response, app: &StormApp) {
+    if !app.state.show_pwpf {
+        return;
+    }
+    let Some(hit) = app.state.pwpf_hover else {
+        return;
+    };
+    if ui.input(|i| i.time) - app.state.pwpf_hover_at < 1.0 {
+        return;
+    }
+    let Some(layer) = app.state.pwpf_layer.as_ref() else {
+        return;
+    };
+    let product = layer.product;
+    let day = layer.day;
+    let issue = layer.issue.clone();
+    let valid = layer.valid.clone();
+    let (color, title, explanation) = match (&layer.geometry, hit) {
+        (radar_core::pwpf::PwpfGeometry::Vector(features), PwpfHit::Feature(index)) => {
+            let Some(feature) = features.get(index) else {
+                return;
+            };
+            let [red, green, blue] = feature.color;
+            (
+                egui::Color32::from_rgb(red, green, blue),
+                format!("{} — {}", product.label(), feature.label),
+                super::pwpf_band_explanation(product, &feature.label),
+            )
+        }
+        (radar_core::pwpf::PwpfGeometry::Raster(_), PwpfHit::Raster) => (
+            egui::Color32::from_rgb(0, 153, 255),
+            product.label().to_string(),
+            super::pwpf_band_explanation(product, ""),
+        ),
+        _ => return,
+    };
+    egui::containers::Tooltip::for_widget(response)
+        .at_pointer()
+        .show(|ui| {
+            super::apply_text_scale(ui, app.sidebar_scale.max(1.0));
+            ui.horizontal(|ui| {
+                ui.colored_label(color, "●");
+                ui.strong(title);
+            });
+            ui.label(egui::RichText::new(explanation).small());
+            let mut meta = vec![day.label().to_string()];
+            if !issue.is_empty() {
+                meta.push(format!("issued {issue}"));
+            }
+            if !valid.is_empty() {
+                meta.push(format!("valid {valid}"));
+            }
+            ui.label(egui::RichText::new(meta.join(" · ")).weak().small());
+            ui.label(
+                egui::RichText::new("Click for the full WPC explanation")
                     .weak()
                     .small(),
             );

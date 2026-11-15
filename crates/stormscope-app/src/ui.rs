@@ -4539,20 +4539,18 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
     );
     ui.add_space(10.0);
     ui.separator();
-    ui.label(egui::RichText::new("Radar playback").strong());
-    let mut animate = app.state.radar_animation;
+    ui.label(egui::RichText::new("Radar display").strong());
+    let mut sweep_animate = app.state.radar_sweep_animation;
     if ui
-        .checkbox(&mut animate, "Animate radar sweep")
+        .checkbox(&mut sweep_animate, "Radar sweep animation")
         .on_hover_text(
-            "Loop the loaded radar frames. Turn this off to keep the map on one \
-             scan; the timeline scrubber still works for stepping manually.",
+            "Show the rotating antenna sweep around the selected live radar \
+             site. Turning this off leaves the site marker static and stops \
+             its continuous high-frame-rate repaint.",
         )
         .changed()
     {
-        app.state.radar_animation = animate;
-        if !animate {
-            app.state.loop_state = crate::state::LoopState::Paused;
-        }
+        app.state.radar_sweep_animation = sweep_animate;
         app.state.persist_pane_defaults();
     }
 }

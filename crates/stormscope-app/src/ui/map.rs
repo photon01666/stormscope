@@ -3308,7 +3308,8 @@ fn draw_sites(
         // Illustrative antenna sweep around the selected live site. It is not
         // a claim about the current beam position; NEXRAD data arrives as a
         // completed volume, so this only reinforces that the site is scanning.
-        if selected && app.state.mode == crate::state::Mode::Live {
+        if selected && app.state.mode == crate::state::Mode::Live && app.state.radar_sweep_animation
+        {
             let radius = radar_sweep_radius_px(&view, site, app).unwrap_or(140.0);
             draw_radar_sweep(painter, pos, now, radius);
             // The sweep is a continuous animation, not a 10 fps slideshow.

@@ -626,9 +626,10 @@ pub struct AppState {
     pub map_controls_tab: MapControlsTab,
     pub view3d_controls_open: bool,
     pub loop_state: LoopState,
-    /// Continuously loop the loaded radar frames. Off keeps the map on one
-    /// scan; the timeline scrubber still works. Persisted in the site prefs.
-    pub radar_animation: bool,
+    /// Draw the rotating sweep around the selected live radar site. Off leaves
+    /// the site marker static and stops its continuous repaint. Persisted in
+    /// the shared site prefs on Linux, Windows and Android.
+    pub radar_sweep_animation: bool,
     /// Android: a map drag temporarily paused an active loop; resume it when
     /// the finger lifts. Without this, every playback frame rasterized under
     /// the drag and produced judder.
@@ -1535,7 +1536,7 @@ impl Default for AppState {
             .and_then(|pane| pane.product.as_deref())
             .and_then(moment_from_label)
             .unwrap_or(Moment::Reflectivity);
-        let saved_radar_animation = site_prefs.radar_animation.unwrap_or(true);
+        let saved_radar_sweep_animation = site_prefs.radar_sweep_animation.unwrap_or(true);
         let saved_pane_count = site_prefs.pane_count.clamp(1, max_radar_panes());
         let mut secondary_radar_panes: Vec<RadarPane> =
             (0..3).map(|_| RadarPane::default()).collect();
@@ -1585,7 +1586,7 @@ impl Default for AppState {
                 now.hour() * 60 + now.minute()
             },
             loop_state: LoopState::Paused,
-            radar_animation: saved_radar_animation,
+            radar_sweep_animation: saved_radar_sweep_animation,
             resume_loop_after_drag: false,
             timeline_scrubbing: false,
             timeline_scrub_last_touch: None,
@@ -2287,7 +2288,7 @@ struct SitePrefs {
     panes: Vec<PanePrefs>,
     /// Continuous radar loop on/off. Shared by Linux, Windows and Android.
     #[serde(default)]
-    radar_animation: Option<bool>,
+    radar_sweep_animation: Option<bool>,
 }
 
 fn load_site_prefs() -> SitePrefs {
@@ -2481,7 +2482,7 @@ impl AppState {
             // pre-FutureCast count so reopening the app restores both panes.
             pane_count: self.futurecast_pane_restore.unwrap_or(self.radar_panes),
             panes,
-            radar_animation: Some(self.radar_animation),
+            radar_sweep_animation: Some(self.radar_sweep_animation),
         };
         let Ok(json) = serde_json::to_string_pretty(&prefs) else {
             return;
@@ -2912,10 +2913,6 @@ impl AppState {
     /// the elapsed time since last tick.
     pub fn tick(&mut self, dt: std::time::Duration) {
         self.expire_timeline_hold();
-        if !self.radar_animation {
-            self.loop_state = LoopState::Paused;
-            return;
-        }
         if self.loop_state != LoopState::Playing || self.ring.len() < 2 {
             return;
         }

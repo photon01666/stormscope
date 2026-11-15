@@ -20,17 +20,13 @@ pub fn timeline(ui: &mut egui::Ui, app: &mut StormApp) {
         let playing = app.state.loop_state == LoopState::Playing;
         let label = if playing { "Pause" } else { "Play" };
         let play = if cfg!(target_os = "android") {
-            ui.add_enabled(
-                app.state.radar_animation,
+            ui.add(
                 egui::Button::new(egui::RichText::new(label).size(16.0).strong())
                     .min_size(egui::vec2(76.0, 40.0)),
             )
         } else {
-            ui.add_enabled(app.state.radar_animation, egui::Button::new(label))
+            ui.button(label)
         };
-        let play = play.on_disabled_hover_text(
-            "Enable \"Animate radar sweep\" at the bottom of the Settings menu",
-        );
         if play.clicked() {
             if playing {
                 app.state.loop_state = LoopState::Paused;

@@ -890,11 +890,29 @@ fn current_conditions_ui(
         ui.label(egui::RichText::new(station).weak().small());
     });
 
-    // Large headline: temperature and the NWS condition word. The details are
-    // a label/value list below so the eye can scan them instead of parsing one
-    // long dot-separated line.
+    // Large headline: temperature and the NWS condition word. While the
+    // Details section is collapsed, the essential readings ride on the same
+    // line at a smaller size, so the headline still answers "what is it like
+    // out there?" without opening the full table.
     let temp =
         f(o.temperature_c).map(|t| ui.animate_value_with_time(egui::Id::new("cc-temp"), t, 0.6));
+    let wind_shown = o
+        .wind_speed_kmh
+        .map(|sp| ui.animate_value_with_time(egui::Id::new("cc-wind"), sp * 0.621371, 0.6));
+    let alt_shown = o
+        .pressure_pa
+        .map(|p| ui.animate_value_with_time(egui::Id::new("cc-alt"), p / 3386.389, 0.6));
+    let uv_shown = uv_index.map(|uv| ui.animate_value_with_time(egui::Id::new("cc-uv"), uv, 0.6));
+
+    let details_id = egui::Id::new("stormscope.forecast.conditions.details");
+    // The Details header is drawn below; load its persistent open state first
+    // so the headline knows whether to append the compact summary this frame.
+    let details_open = !details_first
+        && egui::collapsing_header::CollapsingState::load_with_default_open(
+            &ctx, details_id, false,
+        )
+        .is_open();
+
     ui.horizontal_wrapped(|ui| {
         match temp {
             Some(t) => {
@@ -930,18 +948,52 @@ fn current_conditions_ui(
                 }),
             );
         }
+        if !details_open {
+            let size = if cfg!(target_os = "android") {
+                13.0
+            } else {
+                14.5
+            };
+            let mut summary: Vec<String> = Vec::new();
+            if let Some(d) = f(o.dewpoint_c) {
+                summary.push(format!("Dew {d:.0}°F"));
+            }
+            if let Some(h) = o.humidity_pct {
+                summary.push(format!("{h:.0}%"));
+            }
+            if let (Some(_), Some(shown)) = (o.wind_speed_kmh, wind_shown) {
+                let dir = o
+                    .wind_direction_deg
+                    .map(|d| format!("{} ", super::map::compass16(d as f64)))
+                    .unwrap_or_default();
+                let gust = o
+                    .wind_gust_kmh
+                    .map(|g| format!(" gust {:.0}", g * 0.621371))
+                    .unwrap_or_default();
+                summary.push(format!("{dir}{shown:.0} mph{gust}"));
+            }
+            if let (Some(_), Some(shown)) = (o.pressure_pa, alt_shown) {
+                summary.push(format!("{shown:.2} inHg"));
+            }
+            if let Some(v) = o.visibility_m {
+                summary.push(format!("Vis {:.1} mi", v / 1609.344));
+            }
+            if let Some(mm) = o.precip_last_hour_mm
+                && mm > 0.0
+            {
+                summary.push(format!("{:.2} in/hr", mm / 25.4));
+            }
+            if let Some(feels) = f(o.wind_chill_c).or_else(|| f(o.heat_index_c)) {
+                summary.push(format!("Feels {feels:.0}°F"));
+            }
+            for part in summary {
+                ui.label(egui::RichText::new("·").weak().size(size));
+                ui.label(egui::RichText::new(part).size(size));
+            }
+        }
     });
     ui.add_space(2.0);
 
-    let wind_shown = o
-        .wind_speed_kmh
-        .map(|sp| ui.animate_value_with_time(egui::Id::new("cc-wind"), sp * 0.621371, 0.6));
-    let alt_shown = o
-        .pressure_pa
-        .map(|p| ui.animate_value_with_time(egui::Id::new("cc-alt"), p / 3386.389, 0.6));
-    let uv_shown = uv_index.map(|uv| ui.animate_value_with_time(egui::Id::new("cc-uv"), uv, 0.6));
-
-    let details_id = egui::Id::new("stormscope.forecast.conditions.details");
     egui::CollapsingHeader::new("Details")
         .id_salt(details_id)
         .default_open(false)

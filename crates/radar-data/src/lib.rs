@@ -48,7 +48,7 @@ pub use alerts::{AlertSource, ZoneSource};
 pub use ambient::{AmbientSource, AmbientStation};
 pub use cache::DiskCache;
 pub use ensemble::{EnsembleField, EnsembleSeries, EnsembleSource};
-pub use forecast::{ForecastSource, StationTotals};
+pub use forecast::{ForecastSource, StationTotals, WinterPointCheck};
 pub use hrrr_field::{FieldModel, HrrrField, HrrrFieldKind, HrrrFieldSource};
 pub use level3::{Level3Image, Level3Source};
 pub use lsrs::LsrSource;

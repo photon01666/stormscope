@@ -337,6 +337,31 @@ pub enum PwpfHit {
     Raster,
 }
 
+/// State captured before entering winter mode, so the Winter mode button and
+/// automatic mode can restore the user's normal setup when they leave it.
+#[derive(Clone, Debug)]
+pub struct WinterSnapshot {
+    pub moment: Moment,
+    pub tilt_deg: f32,
+    pub min_dbz: f32,
+    pub show_melting_layer: bool,
+    pub view3d_shell_preset: ShellPreset,
+    pub show_futurecast: bool,
+    pub show_tracks: bool,
+    pub show_rotation: bool,
+    pub show_hail_cores: bool,
+    pub show_outlook: bool,
+    pub show_alerts: bool,
+    pub show_watches: bool,
+    pub show_wpc: bool,
+    pub wpc_all_components: bool,
+    pub wpc_component: radar_core::wssi::WssiComponent,
+    pub wpc_period: radar_core::wssi::WssiPeriod,
+    pub show_pwpf: bool,
+    pub pwpf_product: radar_core::pwpf::PwpfProduct,
+    pub pwpf_day: radar_core::pwpf::PwpfDay,
+}
+
 /// Which set the alerts browser is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertsTab {
@@ -601,6 +626,9 @@ pub struct AppState {
     pub map_controls_tab: MapControlsTab,
     pub view3d_controls_open: bool,
     pub loop_state: LoopState,
+    /// Continuously loop the loaded radar frames. Off keeps the map on one
+    /// scan; the timeline scrubber still works. Persisted in the site prefs.
+    pub radar_animation: bool,
     /// Android: a map drag temporarily paused an active loop; resume it when
     /// the finger lifts. Without this, every playback frame rasterized under
     /// the drag and produced judder.
@@ -1507,6 +1535,7 @@ impl Default for AppState {
             .and_then(|pane| pane.product.as_deref())
             .and_then(moment_from_label)
             .unwrap_or(Moment::Reflectivity);
+        let saved_radar_animation = site_prefs.radar_animation.unwrap_or(true);
         let saved_pane_count = site_prefs.pane_count.clamp(1, max_radar_panes());
         let mut secondary_radar_panes: Vec<RadarPane> =
             (0..3).map(|_| RadarPane::default()).collect();
@@ -1556,6 +1585,7 @@ impl Default for AppState {
                 now.hour() * 60 + now.minute()
             },
             loop_state: LoopState::Paused,
+            radar_animation: saved_radar_animation,
             resume_loop_after_drag: false,
             timeline_scrubbing: false,
             timeline_scrub_last_touch: None,
@@ -2255,6 +2285,9 @@ struct SitePrefs {
     pane_count: usize,
     #[serde(default)]
     panes: Vec<PanePrefs>,
+    /// Continuous radar loop on/off. Shared by Linux, Windows and Android.
+    #[serde(default)]
+    radar_animation: Option<bool>,
 }
 
 fn load_site_prefs() -> SitePrefs {
@@ -2448,6 +2481,7 @@ impl AppState {
             // pre-FutureCast count so reopening the app restores both panes.
             pane_count: self.futurecast_pane_restore.unwrap_or(self.radar_panes),
             panes,
+            radar_animation: Some(self.radar_animation),
         };
         let Ok(json) = serde_json::to_string_pretty(&prefs) else {
             return;
@@ -2878,6 +2912,10 @@ impl AppState {
     /// the elapsed time since last tick.
     pub fn tick(&mut self, dt: std::time::Duration) {
         self.expire_timeline_hold();
+        if !self.radar_animation {
+            self.loop_state = LoopState::Paused;
+            return;
+        }
         if self.loop_state != LoopState::Playing || self.ring.len() < 2 {
             return;
         }

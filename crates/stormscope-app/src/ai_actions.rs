@@ -483,6 +483,9 @@ mod tests {
     #[test]
     fn applying_clamps_and_switches_product() {
         let mut state = AppState::default();
+        // Isolate from the developer's saved startup product: this test is
+        // about the action clamp/restore, not persisted site preferences.
+        state.moment = Moment::Reflectivity;
         let action: MapAction = serde_json::from_str(
             r#"{"center_lat":95,"center_lon":-400,"zoom":99,"product":"VEL","tilt_deg":-3,"pane":"split","view3d_pitch":120,"show_melting_layer":false,"annotations":[{"lat":38.9,"lon":-97.2,"radius_mi":2,"alt_kft":0,"label":"possible tornado","kind":"tornado"}]}"#,
         )

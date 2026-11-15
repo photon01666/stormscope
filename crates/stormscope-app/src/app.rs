@@ -11,6 +11,44 @@ use std::sync::{Arc, Mutex};
 /// prominent resume catch-up strip. Shorter app switches catch up silently.
 const RESUME_CATCHUP_NOTICE_MS: i64 = 120_000;
 
+/// Automatic winter mode: enter when a watched point is at or below 35 °F
+/// (1.7 °C), is cold and precipitating, or reports a wintry WMO code. Leave
+/// only after every watched point stays above 45 °F (7.2 °C) for 45 minutes.
+const AUTO_WINTER_TEMP_C: f64 = 1.7;
+const AUTO_WINTER_WARM_C: f64 = 7.2;
+const AUTO_WINTER_REFRESH: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const AUTO_WINTER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+const AUTO_WINTER_WARM_HOLD: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+
+fn is_wintry_code(code: u8) -> bool {
+    matches!(code, 56 | 57 | 66 | 67 | 71..=77 | 85 | 86)
+}
+
+/// Does one watched point currently support winter mode? Temperature at or
+/// below 35 °F is the primary trigger; near-freezing precipitation and WMO
+/// snow/ice codes cover marginal or mixed profiles.
+fn winter_point_fit(point: &radar_data::WinterPointCheck) -> bool {
+    let Some(temp_c) = point.temperature_c else {
+        return false;
+    };
+    if temp_c <= AUTO_WINTER_TEMP_C {
+        return true;
+    }
+    if temp_c <= 3.0 && point.precipitation_mm.unwrap_or(0.0) > 0.0 {
+        return true;
+    }
+    temp_c <= 5.0 && point.weather_code.is_some_and(is_wintry_code)
+}
+
+/// All watched points must be warm and free of wintry codes before automatic
+/// mode can leave winter mode.
+fn winter_point_warm(point: &radar_data::WinterPointCheck) -> bool {
+    point
+        .temperature_c
+        .is_some_and(|temp_c| temp_c >= AUTO_WINTER_WARM_C)
+        && !point.weather_code.is_some_and(is_wintry_code)
+}
+
 /// Force the native window frame dark, independent of the Windows app theme.
 ///
 /// The app is always dark, so a light titlebar and the Windows 11 border look
@@ -174,6 +212,9 @@ pub enum DataMsg {
     Wpc(Vec<radar_core::wssi::WssiLayer>),
     /// WPC probabilistic winter precipitation amount/probability layer.
     Pwpf(radar_core::pwpf::PwpfLayer),
+    /// Current surface conditions at the watched points for automatic winter
+    /// mode. The error string is log/status text, not a UI modal.
+    WinterCheck(Result<Vec<radar_data::WinterPointCheck>, String>),
     /// Forecaster discussion text for one outlook day.
     OutlookDiscussion(u8, String),
     Status(String),
@@ -398,6 +439,11 @@ pub enum DataCmd {
     LoadPwpf {
         product: radar_core::pwpf::PwpfProduct,
         day: radar_core::pwpf::PwpfDay,
+    },
+    /// Current surface temperature/weather at the watched points, used by
+    /// automatic winter mode (selected radar, GPS fix, forecast pin, markers).
+    LoadWinterCheck {
+        points: Vec<(f64, f64)>,
     },
     /// Rain/snow totals for the stations around (lat, lon).
     LoadTotals(f64, f64),
@@ -675,6 +721,20 @@ pub struct StormApp {
     /// Full independent radar apps for secondary panes (desktop up to three,
     /// Android one). Each owns its own data thread, ring, map and warnings.
     pub pane_apps: Vec<Option<Box<StormApp>>>,
+    /// Automatic winter mode: switches into the winter preset when any watched
+    /// point (radar, GPS, forecast pin or marker) is near freezing or reports
+    /// wintry weather. The Winter mode button turns this off as an override.
+    pub auto_winter_mode: bool,
+    /// Latest conditions fetched for the watched points; also shown in the
+    /// Controls status line.
+    pub auto_winter_check: Option<Vec<radar_data::WinterPointCheck>>,
+    pub auto_winter_error: Option<String>,
+    auto_winter_checked_at: Option<std::time::Instant>,
+    auto_winter_requested_at: Option<std::time::Instant>,
+    auto_winter_points: Vec<(f64, f64)>,
+    auto_winter_warm_since: Option<std::time::Instant>,
+    winter_snapshot: Option<crate::state::WinterSnapshot>,
+    winter_auto_active: bool,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -918,6 +978,15 @@ impl StormApp {
             live_ai: crate::live_ai::LiveAi::default(),
             is_secondary: false,
             pane_apps: Vec::new(),
+            auto_winter_mode: true,
+            auto_winter_check: None,
+            auto_winter_error: None,
+            auto_winter_checked_at: None,
+            auto_winter_requested_at: None,
+            auto_winter_points: Vec::new(),
+            auto_winter_warm_since: None,
+            winter_snapshot: None,
+            winter_auto_active: false,
         };
         // The data thread boots on the hard-coded default; if the user saved
         // a different startup site, switch it immediately.
@@ -1061,6 +1130,15 @@ impl StormApp {
             live_ai: crate::live_ai::LiveAi::default(),
             is_secondary: true,
             pane_apps: Vec::new(),
+            auto_winter_mode: false,
+            auto_winter_check: None,
+            auto_winter_error: None,
+            auto_winter_checked_at: None,
+            auto_winter_requested_at: None,
+            auto_winter_points: Vec::new(),
+            auto_winter_warm_since: None,
+            winter_snapshot: None,
+            winter_auto_active: false,
         };
         if site_id != radar_core::DEFAULT_SITE {
             let _ = app.tx.send(DataCmd::SetSite(site_id.to_string()));
@@ -1255,7 +1333,188 @@ impl StormApp {
     /// One-tap winter weather preset. Snowfall-rate radar, the low reflectivity
     /// floor snow lives in, the 0 °C level, winter 3D shells, WPC WSSI and
     /// PWPF snow amounts — with the convective-only overlays switched off.
-    pub fn winter_mode(&mut self) {
+    /// True when the winter preset is applied and can be toggled back off.
+    pub fn winter_mode_active(&self) -> bool {
+        self.winter_snapshot.is_some()
+    }
+
+    /// Manual Winter mode button: toggles the preset and acts as an override
+    /// for automatic mode. Pressing it disables Auto; check Auto to resume.
+    pub fn toggle_winter_mode(&mut self) {
+        self.auto_winter_mode = false;
+        if self.winter_mode_active() {
+            self.exit_winter_mode();
+        } else {
+            self.enter_winter_mode(false);
+        }
+    }
+
+    /// Turn automatic switching on/off. Re-enabling it while a manual winter
+    /// preset is active lets automation manage the exit from that point.
+    pub fn set_auto_winter_mode(&mut self, enabled: bool) {
+        self.auto_winter_mode = enabled;
+        if enabled {
+            self.winter_auto_active = self.winter_mode_active();
+            self.auto_winter_warm_since = None;
+        }
+    }
+
+    /// Watched points for automatic winter mode: the selected radar, GPS fix,
+    /// a pinned forecast point, then custom map markers. Duplicates (e.g. GPS
+    /// and a pin at the same spot) are removed, and the batch is capped so the
+    /// Open-Meteo request stays small.
+    fn auto_winter_points(&self) -> Vec<(f64, f64)> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut push = |lat: f64, lon: f64, out: &mut Vec<(f64, f64)>| {
+            let key = ((lat * 1000.0).round() as i64, (lon * 1000.0).round() as i64);
+            if seen.insert(key) {
+                out.push((lat, lon));
+            }
+        };
+        if let Some(site) = radar_core::sites::site(&self.state.site_id) {
+            push(site.latitude, site.longitude, &mut out);
+        }
+        if let Some(fix) = self.state.gps_fix {
+            push(fix.0, fix.1, &mut out);
+        }
+        if let Some(pin) = self.state.forecast_point {
+            push(pin.0, pin.1, &mut out);
+        }
+        for marker in &self.state.markers {
+            push(marker.lat, marker.lon, &mut out);
+        }
+        out.truncate(12);
+        out
+    }
+
+    /// Poll the watched points and enter/leave automatic winter mode. Called
+    /// once per UI frame; the actual network work is on a worker thread.
+    fn auto_winter_step(&mut self) {
+        if !self.auto_winter_mode || self.is_secondary {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let points = self.auto_winter_points();
+        let points_changed = points != self.auto_winter_points;
+        let due = self
+            .auto_winter_checked_at
+            .is_none_or(|checked| now.duration_since(checked) >= AUTO_WINTER_REFRESH);
+        let pending = self
+            .auto_winter_requested_at
+            .is_some_and(|requested| now.duration_since(requested) < AUTO_WINTER_REQUEST_TIMEOUT);
+        if !pending && (points_changed || due) {
+            self.auto_winter_points = points.clone();
+            self.auto_winter_requested_at = Some(now);
+            self.auto_winter_check = None;
+            self.auto_winter_error = None;
+            self.auto_winter_checked_at = None;
+            let _ = self.tx.send(DataCmd::LoadWinterCheck { points });
+        }
+
+        let Some(check) = self.auto_winter_check.as_ref() else {
+            return;
+        };
+        if check.is_empty() {
+            return;
+        }
+        if check.iter().any(winter_point_fit) {
+            self.auto_winter_warm_since = None;
+            if !self.winter_mode_active() {
+                self.enter_winter_mode(true);
+            }
+        } else if self.winter_mode_active() && self.winter_auto_active {
+            if check.iter().all(winter_point_warm) {
+                let started = *self.auto_winter_warm_since.get_or_insert(now);
+                if now.duration_since(started) >= AUTO_WINTER_WARM_HOLD {
+                    self.exit_winter_mode();
+                }
+            } else {
+                self.auto_winter_warm_since = None;
+            }
+        } else {
+            self.auto_winter_warm_since = None;
+        }
+    }
+
+    fn capture_winter_snapshot(&mut self) {
+        if self.winter_snapshot.is_some() {
+            return;
+        }
+        self.winter_snapshot = Some(crate::state::WinterSnapshot {
+            moment: self.state.moment,
+            tilt_deg: self.state.tilt_deg,
+            min_dbz: self.state.min_dbz,
+            show_melting_layer: self.state.show_melting_layer,
+            view3d_shell_preset: self.state.view3d_shell_preset,
+            show_futurecast: self.state.show_futurecast,
+            show_tracks: self.state.show_tracks,
+            show_rotation: self.state.show_rotation,
+            show_hail_cores: self.state.show_hail_cores,
+            show_outlook: self.state.show_outlook,
+            show_alerts: self.state.show_alerts,
+            show_watches: self.state.show_watches,
+            show_wpc: self.state.show_wpc,
+            wpc_all_components: self.state.wpc_all_components,
+            wpc_component: self.state.wpc_component,
+            wpc_period: self.state.wpc_period,
+            show_pwpf: self.state.show_pwpf,
+            pwpf_product: self.state.pwpf_product,
+            pwpf_day: self.state.pwpf_day,
+        });
+    }
+
+    fn enter_winter_mode(&mut self, automatic: bool) {
+        self.capture_winter_snapshot();
+        self.apply_winter_preset();
+        self.winter_auto_active = automatic;
+        self.auto_winter_warm_since = None;
+    }
+
+    fn exit_winter_mode(&mut self) {
+        let Some(snapshot) = self.winter_snapshot.take() else {
+            return;
+        };
+        self.state.moment = snapshot.moment;
+        self.state.tilt_deg = snapshot.tilt_deg;
+        self.state.min_dbz = snapshot.min_dbz;
+        self.state.show_melting_layer = snapshot.show_melting_layer;
+        self.state.view3d_shell_preset = snapshot.view3d_shell_preset;
+        self.state.show_tracks = snapshot.show_tracks;
+        self.state.show_rotation = snapshot.show_rotation;
+        self.state.show_hail_cores = snapshot.show_hail_cores;
+        self.state.show_outlook = snapshot.show_outlook;
+        self.state.show_alerts = snapshot.show_alerts;
+        self.state.show_watches = snapshot.show_watches;
+        self.state.show_wpc = snapshot.show_wpc;
+        self.state.wpc_all_components = snapshot.wpc_all_components;
+        self.state.wpc_component = snapshot.wpc_component;
+        self.state.wpc_period = snapshot.wpc_period;
+        self.state.show_pwpf = snapshot.show_pwpf;
+        self.state.pwpf_product = snapshot.pwpf_product;
+        self.state.pwpf_day = snapshot.pwpf_day;
+        self.set_futurecast(snapshot.show_futurecast);
+        self.state.wpc_layers.clear();
+        self.state.wpc_hover = None;
+        self.state.wpc_detail = None;
+        self.state.pwpf_layer = None;
+        self.state.pwpf_image = None;
+        self.state.pwpf_tex = None;
+        self.state.pwpf_hover = None;
+        self.state.pwpf_detail = None;
+        self.winter_auto_active = false;
+        self.auto_winter_warm_since = None;
+        if !self.is_secondary {
+            if self.state.show_wpc {
+                self.load_wpc();
+            }
+            if self.state.show_pwpf {
+                self.load_pwpf();
+            }
+        }
+    }
+
+    fn apply_winter_preset(&mut self) {
         if self.state.show_futurecast {
             self.set_futurecast(false);
         }
@@ -1291,7 +1550,6 @@ impl StormApp {
         if !self.is_secondary {
             self.load_wpc();
             self.load_pwpf();
-            self.state.persist_pane_defaults();
         }
     }
 
@@ -1716,6 +1974,41 @@ impl StormApp {
                         self.state.pwpf_image = image;
                         self.state.pwpf_tex = None;
                         self.state.pwpf_pending = false;
+                    }
+                }
+                DataMsg::WinterCheck(result) => {
+                    self.auto_winter_requested_at = None;
+                    match result {
+                        Ok(points) => {
+                            let matches = points.len() == self.auto_winter_points.len()
+                                && points.iter().zip(&self.auto_winter_points).all(
+                                    |(point, (lat, lon))| {
+                                        (point.lat - lat).abs() < 1e-3
+                                            && (point.lon - lon).abs() < 1e-3
+                                    },
+                                );
+                            if matches {
+                                self.auto_winter_checked_at = Some(std::time::Instant::now());
+                                self.auto_winter_error = None;
+                                log::debug!(
+                                    "auto winter: {} watched points, coldest {:.1}°C",
+                                    points.len(),
+                                    points
+                                        .iter()
+                                        .filter_map(|p| p.temperature_c)
+                                        .fold(f64::INFINITY, f64::min)
+                                );
+                                self.auto_winter_check = Some(points);
+                            } else {
+                                log::debug!("auto winter: ignoring a check for superseded points");
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("auto winter check: {error}");
+                            self.auto_winter_checked_at = Some(std::time::Instant::now());
+                            self.auto_winter_check = None;
+                            self.auto_winter_error = Some(error);
+                        }
                     }
                 }
                 DataMsg::AllAlerts(mut a) => {
@@ -4979,6 +5272,7 @@ impl StormApp {
             points: voice_points,
         });
         self.pump();
+        self.auto_winter_step();
         self.pump_srm();
         self.pump_mrms();
         self.pump_qpe();

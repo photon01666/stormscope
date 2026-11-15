@@ -1449,7 +1449,8 @@ fn product_doc(m: Moment) -> ProductDoc {
             what: "Snowfall rate in inches per hour from reflectivity, via a winter Z-S \
                    relation (20 dBZ ≈ 0.5 in/h, 30 dBZ ≈ 1.5 in/h, about a 10:1 ratio).",
             how: "A hint, not a gauge: it is masked above 38 dBZ (rain or hail, not snow) \
-                  and below 5 dBZ (noise). Use it for the banding structure, not totals.",
+                  and below 5 dBZ (noise), and wherever dual-pol classifies the targets as \
+                  rain, hail or clutter. The hover probe shows both in/h and the underlying dBZ.",
         },
         Moment::MeltingLayer => ProductDoc {
             name: "0 °C Level",
@@ -2068,17 +2069,87 @@ fn map_controls_analysis(ui: &mut egui::Ui, app: &mut StormApp) {
 fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8, egui::Rect)>) {
     use radar_core::wssi::{WssiComponent as C, WssiImpact, WssiPeriod as P};
 
-    if ui
-        .button("Winter mode")
-        .on_hover_text(
-            "Switch the map to winter weather: snowfall-rate radar, a 5 dBZ \
-             reflectivity floor, the 0 °C level, winter 3D shells, WPC WSSI \
-             impacts and PWPF snow amounts. Convective tracks, rotation, hail \
-             cores and the SPC outlook are turned off.",
-        )
-        .clicked()
-    {
-        app.winter_mode();
+    let winter_active = app.winter_mode_active();
+    let auto_on = app.auto_winter_mode;
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .selectable_label(winter_active, "Winter mode")
+            .on_hover_text(
+                "Toggle the winter preset manually. Pressing this turns automatic \
+                 mode off, so it also works as an override when you want normal \
+                 mode in winter (or winter mode on a warm day).",
+            )
+            .clicked()
+        {
+            app.toggle_winter_mode();
+        }
+        let auto_label = if auto_on {
+            "Disable automatic snow mode"
+        } else {
+            "Enable automatic snow mode"
+        };
+        if ui
+            .button(auto_label)
+            .on_hover_text(
+                "Automatic switching uses the selected radar, GPS fix, forecast \
+                 pin and map markers: 35 °F or wintry weather enters winter mode; \
+                 45 °F everywhere for 45 minutes leaves it. The Winter mode button \
+                 is a manual override.",
+            )
+            .clicked()
+        {
+            app.set_auto_winter_mode(!auto_on);
+        }
+        let (dot, text, color) = if auto_on {
+            ("●", "AUTO ON", egui::Color32::from_rgb(90, 210, 120))
+        } else {
+            ("○", "AUTO OFF", egui::Color32::from_gray(145))
+        };
+        ui.colored_label(color, egui::RichText::new(format!("{dot} {text}")).strong());
+    });
+    if auto_on {
+        if let Some(check) = app
+            .auto_winter_check
+            .as_ref()
+            .filter(|check| !check.is_empty())
+        {
+            let coldest = check
+                .iter()
+                .filter_map(|point| point.temperature_c)
+                .fold(f64::INFINITY, f64::min);
+            if coldest.is_finite() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Auto winter: coldest watched point {:.0}°F · {} point(s) · \
+                         35°F in / 45°F out",
+                        coldest * 9.0 / 5.0 + 32.0,
+                        check.len()
+                    ))
+                    .weak()
+                    .small(),
+                );
+            }
+        } else if let Some(error) = &app.auto_winter_error {
+            ui.label(
+                egui::RichText::new(format!("Auto winter: conditions unavailable ({error})"))
+                    .weak()
+                    .small(),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new("Auto winter: checking current conditions…")
+                    .weak()
+                    .small(),
+            );
+        }
+    } else {
+        ui.label(
+            egui::RichText::new(
+                "Automatic switching is off — Winter mode is manual until you enable it.",
+            )
+            .weak()
+            .small(),
+        );
     }
     ui.label(
         egui::RichText::new(
@@ -4466,6 +4537,24 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
             .weak()
             .small(),
     );
+    ui.add_space(10.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Radar playback").strong());
+    let mut animate = app.state.radar_animation;
+    if ui
+        .checkbox(&mut animate, "Animate radar sweep")
+        .on_hover_text(
+            "Loop the loaded radar frames. Turn this off to keep the map on one \
+             scan; the timeline scrubber still works for stepping manually.",
+        )
+        .changed()
+    {
+        app.state.radar_animation = animate;
+        if !animate {
+            app.state.loop_state = crate::state::LoopState::Paused;
+        }
+        app.state.persist_pane_defaults();
+    }
 }
 
 /// The Archive popup (opened from Settings): day + time-of-day pickers, the

@@ -153,6 +153,31 @@ impl ForecastSource {
         Ok(out)
     }
 
+    /// Current surface conditions at a set of points, for automatic winter
+    /// mode. One Open-Meteo request covers every watched point; the response
+    /// is an array when more than one coordinate is requested.
+    pub fn winter_check(&self, points: &[(f64, f64)]) -> Result<Vec<WinterPointCheck>> {
+        if points.is_empty() {
+            return Ok(Vec::new());
+        }
+        let lat = points
+            .iter()
+            .map(|(lat, _)| format!("{lat:.4}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let lon = points
+            .iter()
+            .map(|(_, lon)| format!("{lon:.4}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let url = format!(
+            "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}\
+             &current=temperature_2m,precipitation,weather_code&timezone=UTC"
+        );
+        let response = self.get_json(&url)?;
+        Ok(winter_points_from_json(&response, points))
+    }
+
     /// The `/points/{lat},{lon}` lookup both responses hang off.
     fn points(&self, lat: f64, lon: f64) -> Result<serde_json::Value> {
         self.get_json(&format!("{POINTS_URL}/{lat:.4},{lon:.4}"))
@@ -171,6 +196,51 @@ impl ForecastSource {
         }
         Ok(resp.json()?)
     }
+}
+
+/// Current conditions at one watched point for automatic winter mode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WinterPointCheck {
+    pub lat: f64,
+    pub lon: f64,
+    pub temperature_c: Option<f64>,
+    pub precipitation_mm: Option<f64>,
+    /// WMO weather code from Open-Meteo (71–77/85–86 snow, 56/57/66/67 ice).
+    pub weather_code: Option<u8>,
+}
+
+fn winter_points_from_json(
+    response: &serde_json::Value,
+    points: &[(f64, f64)],
+) -> Vec<WinterPointCheck> {
+    let entries: Vec<&serde_json::Value> = match response {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        other => vec![other],
+    };
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, (lat, lon))| {
+            let current = entries
+                .get(index)
+                .or_else(|| entries.first())
+                .and_then(|value| value.get("current"));
+            WinterPointCheck {
+                lat: *lat,
+                lon: *lon,
+                temperature_c: current
+                    .and_then(|c| c.get("temperature_2m"))
+                    .and_then(serde_json::Value::as_f64),
+                precipitation_mm: current
+                    .and_then(|c| c.get("precipitation"))
+                    .and_then(serde_json::Value::as_f64),
+                weather_code: current
+                    .and_then(|c| c.get("weather_code"))
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|code| code.min(u8::MAX as u64) as u8),
+            }
+        })
+        .collect()
 }
 
 /// Build a [`Forecast`] from the two API responses. Separated from the
@@ -937,5 +1007,31 @@ mod tests {
         assert_eq!(f.periods[0].name, "Tonight");
         assert!(f.periods[0].temperature.is_nan());
         assert!(f.periods[0].start <= Utc::now());
+    }
+
+    #[test]
+    fn winter_check_reads_each_watched_point() {
+        let points = [(35.0, -97.0), (39.0, -95.0)];
+        let response = serde_json::json!([
+            { "current": { "temperature_2m": 0.4, "precipitation": 0.2, "weather_code": 71 } },
+            { "current": { "temperature_2m": 8.1, "precipitation": 0.0, "weather_code": 1 } }
+        ]);
+        let parsed = winter_points_from_json(&response, &points);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].lat, 35.0);
+        assert_eq!(parsed[0].lon, -97.0);
+        assert_eq!(parsed[0].temperature_c, Some(0.4));
+        assert_eq!(parsed[0].weather_code, Some(71));
+        assert_eq!(parsed[1].temperature_c, Some(8.1));
+        assert_eq!(parsed[1].weather_code, Some(1));
+
+        // A single-location response is an object, not an array.
+        let one = serde_json::json!({
+            "current": { "temperature_2m": -3.0, "precipitation": null, "weather_code": 73 }
+        });
+        let parsed = winter_points_from_json(&one, &[(40.0, -100.0)]);
+        assert_eq!(parsed[0].temperature_c, Some(-3.0));
+        assert_eq!(parsed[0].precipitation_mm, None);
+        assert_eq!(parsed[0].weather_code, Some(73));
     }
 }

@@ -1477,6 +1477,9 @@ struct MapProbe {
     /// The displayed product's value under the pointer, when there is an
     /// echo drawn there (the probe's original subject).
     value: Option<f32>,
+    /// For snowfall rate: the reflectivity (dBZ) at the same gate, so the
+    /// winter probe shows both in/h and the dBZ it came from.
+    dbz: Option<f32>,
     /// Cut the value came from (degrees).
     elev_deg: f32,
     /// Beam height of that cut at the point (km).
@@ -1505,6 +1508,11 @@ impl MapProbe {
                 None => format!("{} {:.0} {}", moment.label(), value, unit),
             };
             out.push(format!("{value_text} · {:.1}°", self.elev_deg));
+            if moment == radar_core::Moment::SnowRate
+                && let Some(dbz) = self.dbz
+            {
+                out.push(format!("REF {dbz:.0} dBZ"));
+            }
             out.push(format!(
                 "{:.1}k ft · {} {}",
                 self.height_km * radar_render::FT_PER_KM / 1000.0,
@@ -1585,6 +1593,35 @@ fn map_probe_at(
         v.is_finite() && *v >= thresh && table.map(*v)[3] != 0
     });
 
+    // Snowfall rate is derived from the lowest reflectivity cut. Show that
+    // native dBZ too, so the probe answers both "how hard is it snowing?"
+    // and "what is the echo doing?" without switching products.
+    let dbz = if moment == radar_core::Moment::SnowRate {
+        volume
+            .sweeps
+            .iter()
+            .filter(|sweep| sweep.moment(radar_core::Moment::Reflectivity).is_some())
+            .min_by(|a, b| {
+                elevation(a)
+                    .partial_cmp(&elevation(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .and_then(|sweep| {
+                let md = sweep.moment(radar_core::Moment::Reflectivity)?;
+                let elev = elevation(sweep);
+                let h = radar_core::sampling::beam_height_km(range_km as f32, elev);
+                let slant = (range_km as f32).hypot(h);
+                let ray = radar_core::sampling::nearest_ray_index(
+                    &sweep.azimuths_deg,
+                    bearing_deg as f32,
+                )?;
+                let gate = radar_core::sampling::gate_index_at_slant(md, slant)?;
+                md.value(ray, gate).filter(|v| v.is_finite())
+            })
+    } else {
+        None
+    };
+
     // The 0 °C overlay answers on hover whatever product is selected: it is
     // on screen, so it should be readable without switching to MELT.
     let melting_kft = if want_melting {
@@ -1644,6 +1681,7 @@ fn map_probe_at(
 
     Some(MapProbe {
         value,
+        dbz,
         elev_deg,
         height_km,
         range_km,

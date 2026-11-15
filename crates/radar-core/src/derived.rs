@@ -369,20 +369,93 @@ fn classify_hydrometeor(z: f32, zdr: f32, cc: f32, kdp: Option<f32>) -> Option<H
 
 /// Snowfall rate (in/h) from the lowest cut's reflectivity, via a simple
 /// winter Z-S relation anchored at 20 dBZ ≈ 0.5 in/h and 30 dBZ ≈ 1.5 in/h
-/// (about a 10:1 snow ratio). Masked outside 5-38 dBZ: below is noise, above
-/// is rain or hail, not snow. A hint, not a gauge.
+/// (about a 10:1 snow ratio). Masked outside 5-38 dBZ and, when dual-pol is
+/// available, masked wherever the hydrometeor classification says rain,
+/// graupel/hail or clutter — reflectivity alone reads 30-40 dBZ rain as heavy
+/// snow. Without dual-pol, the melting-layer height is used as the fallback
+/// rain/snow gate. A hint, not a gauge.
 pub fn snow_rate_sweep(volume: &Volume) -> Option<Sweep> {
-    let shape = host_ref_cut(volume)?;
-    let values = column_map(volume, &shape, |profile, slant| {
-        let Some(z) = profile.value_at_slant(0, slant) else {
-            return f32::NAN;
-        };
-        if !(5.0..=38.0).contains(&z) {
-            return f32::NAN;
+    let hca = hydrometeor_sweep(volume);
+    let melt = melting_layer_sweep(volume);
+    snow_rate_sweep_with_context(volume, hca.as_ref(), melt.as_ref())
+}
+
+fn snow_rate_sweep_with_context(
+    volume: &Volume,
+    hca: Option<&Sweep>,
+    melt: Option<&Sweep>,
+) -> Option<Sweep> {
+    let (sweep, shape) = host_ref(volume)?;
+    let elev = if sweep.elevation_measured_deg.is_finite() && sweep.elevation_measured_deg != 0.0 {
+        sweep.elevation_measured_deg
+    } else {
+        sweep.elevation_deg
+    };
+    let hca_md = hca.and_then(|sweep| sweep.moment(Moment::Hydrometeor));
+    let melt_md = melt.and_then(|sweep| sweep.moment(Moment::MeltingLayer));
+    let (gates, rays) = (shape.gate_count, shape.ray_count);
+    let mut values = vec![f32::NAN; rays * gates];
+    if gates == 0 || rays == 0 {
+        return Some(synth(&shape, Moment::SnowRate, cal(100.0, 0.0), &values));
+    }
+    let sampler = VolumeSampler::new(volume, Moment::Reflectivity);
+    fill_rows(&mut values, gates, |ray, row| {
+        let profile = sampler.profile(shape.azimuth(ray));
+        for (g, out) in row.iter_mut().enumerate() {
+            let slant = (shape.range_start_m + g as f32 * shape.gate_size_m) / 1000.0;
+            let Some(z) = profile.value_at_slant(0, slant) else {
+                continue;
+            };
+            if !(5.0..=38.0).contains(&z) {
+                continue;
+            }
+            let class = hca_md
+                .and_then(|md| md.value(ray, g))
+                .and_then(HydrometeorClass::from_value);
+            let allowed = if hca_md.is_some() {
+                match class {
+                    Some(
+                        HydrometeorClass::DrySnow
+                        | HydrometeorClass::WetSnow
+                        | HydrometeorClass::IceCrystals,
+                    ) => true,
+                    Some(_) => false,
+                    // HCA exists but this gate is unclassified: fall through
+                    // to the melting-layer gate rather than assuming snow.
+                    None => melt_allows(melt_md, ray, g, slant, elev),
+                }
+            } else {
+                // No dual-pol: the bright band is the best available
+                // rain/snow discriminator.
+                melt_allows(melt_md, ray, g, slant, elev)
+            };
+            if !allowed {
+                continue;
+            }
+            *out = 0.0556 * 10f32.powf(0.1 * z).powf(0.48);
         }
-        0.0556 * 10f32.powf(0.1 * z).powf(0.48)
     });
     Some(synth(&shape, Moment::SnowRate, cal(100.0, 0.0), &values))
+}
+
+/// True when the lowest beam is at or above the melting layer (minus a
+/// small margin for the bright band itself). With no melting-layer data the
+/// gate stays open: there is nothing else to discriminate with.
+fn melt_allows(
+    melt: Option<&MomentData>,
+    ray: usize,
+    gate: usize,
+    slant_km: f32,
+    elev_deg: f32,
+) -> bool {
+    let Some(md) = melt else {
+        return true;
+    };
+    let Some(melt_kft) = md.value(ray, gate) else {
+        return true;
+    };
+    let beam_kft = beam_height_km(slant_km, elev_deg) * KFT_PER_KM;
+    beam_kft >= melt_kft - 1.0
 }
 
 /// Melting-layer height (kft): the core of the correlation-coefficient bright
@@ -465,9 +538,9 @@ pub fn attach_derived(volume: &mut Volume) {
         .collect();
     let tops_values = column_map(volume, &shape, echo_top_column);
     // Winter products, from the same host cut.
-    let hca = hydrometeor_sweep(volume);
-    let snow = snow_rate_sweep(volume);
     let melt = melting_layer_sweep(volume);
+    let hca = hydrometeor_sweep(volume);
+    let snow = snow_rate_sweep_with_context(volume, hca.as_ref(), melt.as_ref());
 
     volume
         .sweeps
@@ -896,6 +969,25 @@ mod tests {
         assert!((s30 - 1.50).abs() < 0.12, "30 dBZ → {s30}");
         assert!(at(2).is_none(), "3 dBZ is noise, not snow");
         assert!(at(3).is_none(), "45 dBZ is rain/hail, not snow");
+    }
+
+    /// 30 dBZ is heavy snow *or* moderate rain. When dual-pol says rain, the
+    /// snowfall-rate product must not paint it as inches of snow (the Seattle
+    /// false-positive case); dry-snow gates on the same volume still report.
+    #[test]
+    fn snow_rate_is_masked_where_hca_says_rain() {
+        let vol = dual_pol_volume(
+            &[30.0, 30.0, 30.0, 30.0],
+            &[1.5, 1.5, 0.2, 0.2],
+            &[0.99, 0.99, 0.99, 0.99],
+            &[0.2, 2.0, 0.0, 0.0],
+        );
+        let snow = snow_rate_sweep(&vol).expect("snow rate");
+        let at = |g| snow.moments[0].value(0, g);
+        assert!(at(0).is_none(), "rain gate must not read as snow");
+        assert!(at(1).is_none(), "heavy-rain gate must not read as snow");
+        assert!(at(2).is_some(), "dry-snow gate should report");
+        assert!(at(3).is_some(), "dry-snow gate should report");
     }
 
     /// The melting layer is the height of the CC dip: a synthetic column with

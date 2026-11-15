@@ -733,6 +733,15 @@ pub fn run(
                     last_pwpf = std::time::Instant::now();
                     refresh_pwpf(&pwpf, pwpf_product, pwpf_day, &out);
                 }
+                DataCmd::LoadWinterCheck { points } => {
+                    let out = out.clone();
+                    std::thread::spawn(move || {
+                        let result = radar_data::ForecastSource::new(USER_AGENT)
+                            .and_then(|source| source.winter_check(&points))
+                            .map_err(|error| format!("{error:#}"));
+                        let _ = out.send(DataMsg::WinterCheck(result));
+                    });
+                }
                 DataCmd::LoadMrms => {
                     // Its own worker: the newest file is a several-MB download
                     // plus a PNG-packed GRIB2 decode, which must not sit in

@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.9.7 — 2026-11-15
+
+**Winter mode, station totals, and current conditions**
+- Automatic winter mode now watches the selected radar, GPS fix, forecast
+  point and saved markers: it enters at 35°F or wintry conditions, and exits
+  only after every watched point stays above 45°F for 45 minutes. Manual
+  Winter mode remains an override; AUTO ON/OFF and a warm-hold countdown show
+  what automation is doing. The temporary winter preset no longer overwrites
+  the saved startup product.
+- SnowRate now masks rain, heavy rain, mixed precipitation, hail/graupel and
+  clutter using hydrometeor classification with a melting-layer fallback, and
+  the hover probe shows the source dBZ.
+- WPC PWPF snow/ice layers are interactive with in-app detail cards; their
+  legend only lists bands near the selected radar. WSSI stays off by default.
+- Clicking a rain/snow totals station opens its table without switching the
+  radar. Custom markers now paint above every station, report, totals and GPS
+  label.
+- Current conditions shows a larger compact dew point, humidity, wind,
+  altimeter, visibility, precipitation and feels-like summary while Details is
+  collapsed.
+- The Storm Watch notification now uses the same nearest-NWS-station
+  temperature and wind as the forecast panel. The current UV index loads
+  again after its request URL was fixed.
+- The radar sweep animation setting is now persisted and actually controls
+  the antenna sweep. Environmental potential severe, tornado and winter
+  scores were recalibrated around cold, saturated winter columns.
+- Android Storm Watch restarts after reboot or an app update and requests the
+  battery-optimization exemption it needs to keep polling.
+
 ## v1.9.6 — 2026-11-13
 
 **Forecast loads immediately**

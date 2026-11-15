@@ -306,8 +306,8 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                 app.state.lsr_detail = Some(r.id.clone());
                             } else if !futurecast_only
                                 && app.state.show_totals
-                                && let Some(t) =
-                                    super::totals::totals_at(&app.state.totals, &view, cx, cy)
+                                && super::totals::totals_at(&app.state.totals, &view, cx, cy)
+                                    .is_some()
                             {
                                 // 5) A station-total dot: the marker is the shortcut,
                                 // the window the table. Opening an observation

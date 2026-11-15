@@ -950,9 +950,9 @@ fn current_conditions_ui(
         }
         if !details_open {
             let size = if cfg!(target_os = "android") {
-                14.5
+                16.0
             } else {
-                16.5
+                18.0
             };
             let mut summary: Vec<String> = Vec::new();
             if let Some(d) = f(o.dewpoint_c) {
@@ -986,9 +986,14 @@ fn current_conditions_ui(
             if let Some(feels) = f(o.wind_chill_c).or_else(|| f(o.heat_index_c)) {
                 summary.push(format!("Feels {feels:.0}°F"));
             }
-            for part in summary {
-                ui.label(egui::RichText::new("·").weak().size(size));
-                ui.label(egui::RichText::new(part).size(size));
+            if !summary.is_empty() {
+                // One wrapping label rather than a widget per value: a narrow
+                // phone can break the line without stranding a separator at
+                // the end of it, and the compact text uses less horizontal
+                // room than individually spaced labels.
+                ui.add(
+                    egui::Label::new(egui::RichText::new(summary.join(" · ")).size(size)).wrap(),
+                );
             }
         }
     });

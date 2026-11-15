@@ -91,6 +91,15 @@ public class StormWatchService extends Service {
     private volatile long nwsConditionAt;
     private volatile String nwsStationUrl;
     private volatile long nwsStationAt;
+    /**
+     * Measurements from the same NWS station the forecast's Current
+     * conditions panel uses. Keeping temperature and wind on that source
+     * stops the notification and the in-app panel disagreeing by a couple of
+     * degrees because one was a model grid and the other a real observation.
+     */
+    private volatile double nwsTemperatureC = Double.NaN;
+    private volatile double nwsWindKmh = Double.NaN;
+    private volatile double nwsWindDirectionDeg = Double.NaN;
 
     private SharedPreferences prefs;
     private Handler main;
@@ -676,16 +685,26 @@ public class StormWatchService extends Service {
                 if (id.isEmpty()) {
                     return nwsCondition;
                 }
+                if (!id.equals(nwsStationUrl)) {
+                    // A moved GPS fix selected another station; never carry
+                    // the old station's temperature across.
+                    nwsTemperatureC = Double.NaN;
+                    nwsWindKmh = Double.NaN;
+                    nwsWindDirectionDeg = Double.NaN;
+                }
                 nwsStationUrl = id;
                 nwsStationAt = now;
             }
             JSONObject observation = new JSONObject(getJson(nwsStationUrl + "/observations/latest"));
             JSONObject props = observation.optJSONObject("properties");
             if (props != null) {
+                nwsTemperatureC = observationValue(props, "temperature");
+                nwsWindKmh = observationValue(props, "windSpeed");
+                nwsWindDirectionDeg = observationValue(props, "windDirection");
+                nwsConditionAt = now;
                 String text = props.optString("textDescription", "").trim();
                 if (!text.isEmpty()) {
                     nwsCondition = text;
-                    nwsConditionAt = now;
                     return text;
                 }
             }
@@ -693,6 +712,12 @@ public class StormWatchService extends Service {
             Log.w(TAG, "NWS observation fetch failed: " + e);
         }
         return nwsCondition;
+    }
+
+    /** One NWS observation measurement (`{value, unitCode}`), or NaN. */
+    private static double observationValue(JSONObject props, String key) {
+        JSONObject field = props.optJSONObject(key);
+        return field == null ? Double.NaN : field.optDouble("value", Double.NaN);
     }
 
     private String weatherSummary(double lat, double lon, boolean thunderNearby, boolean wetNearby) {
@@ -715,6 +740,19 @@ public class StormWatchService extends Service {
             double precip = current.optDouble("precipitation", 0.0);
             double showers = current.optDouble("showers", 0.0);
             String observed = nwsObservation(lat, lon);
+            // The in-app Current conditions panel reads the nearest NWS
+            // station. Use that same station's latest temperature and wind
+            // here instead of Open-Meteo's model grid, so the notification
+            // and the forecast cannot disagree about the current reading.
+            if (!Double.isNaN(nwsTemperatureC)) {
+                temp = nwsTemperatureC * 9.0 / 5.0 + 32.0;
+            }
+            if (!Double.isNaN(nwsWindKmh)) {
+                wind = nwsWindKmh * 0.621371;
+            }
+            if (!Double.isNaN(nwsWindDirectionDeg)) {
+                dir = nwsWindDirectionDeg;
+            }
             String word = observed != null && !observed.isEmpty()
                     ? observed : weatherWord(code);
             String lowerWord = word.toLowerCase(Locale.US);

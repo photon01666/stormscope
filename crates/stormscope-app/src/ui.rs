@@ -2101,6 +2101,10 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
         .changed();
     if toggled {
         app.state.wpc_layers.clear();
+        app.state.wpc_hover = None;
+        if !app.state.show_wpc {
+            app.state.wpc_detail = None;
+        }
         if app.state.show_wpc && !app.is_secondary {
             app.load_wpc();
         }
@@ -2230,6 +2234,8 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
         app.state.pwpf_layer = None;
         app.state.pwpf_image = None;
         app.state.pwpf_tex = None;
+        app.state.pwpf_hover = None;
+        app.state.pwpf_detail = None;
         if app.state.show_pwpf && !app.is_secondary {
             app.load_pwpf();
         }
@@ -2258,6 +2264,8 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
                     app.state.pwpf_layer = None;
                     app.state.pwpf_image = None;
                     app.state.pwpf_tex = None;
+                    app.state.pwpf_hover = None;
+                    app.state.pwpf_detail = None;
                     if !app.is_secondary {
                         app.load_pwpf();
                     }
@@ -2272,6 +2280,8 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
                     app.state.pwpf_layer = None;
                     app.state.pwpf_image = None;
                     app.state.pwpf_tex = None;
+                    app.state.pwpf_hover = None;
+                    app.state.pwpf_detail = None;
                     if !app.is_secondary {
                         app.load_pwpf();
                     }

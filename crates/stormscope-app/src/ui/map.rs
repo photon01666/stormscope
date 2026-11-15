@@ -1331,9 +1331,6 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         }
     }
 
-    // --- User-placed pins (above radar + warnings, below measure tool) ---
-    draw_markers(&painter, origin, &view, app);
-
     if !futurecast_only {
         // --- Ambient Weather: my personal station -------------------------
         if app.state.show_ambient {
@@ -1452,10 +1449,17 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
         );
     }
 
-    // --- The device's own position: always the topmost map mark ----------
+    // --- The device's own position ---------------------------------------
     // Drawn after every layer, probe plate and label so the blue "You" dot
     // is never buried by echoes, warnings, sites, annotations or reports.
     draw_gps_position(&painter, origin, &view, app);
+
+    // --- User-placed pins: the topmost map marks --------------------------
+    // Painted last, after stations, totals, reports, AI annotations and the
+    // GPS dot, so a custom marker and its pill are never buried by another
+    // layer's label (for example a station-total tag sitting on the same
+    // airport/radar site). Only the measure tool draws above them.
+    draw_markers(&painter, origin, &view, app);
 
     // Label editor popup for the selected/new marker (drawn in its own
     // egui layer; lives here so it has the map context).
@@ -6628,10 +6632,10 @@ fn draw_gps_position(painter: &egui::Painter, origin: egui::Pos2, view: &MapView
     );
 }
 
-/// User-placed pins: amber dot + ring with a pill-backed label. Drawn above
-/// radar, outlooks, warnings, tracks and site labels (below only the measure
-/// tool) so dropped markers are never buried; the dark pill keeps the label
-/// clear over bright echoes.
+/// User-placed pins: amber dot + ring with a pill-backed label. Drawn last,
+/// above radar, outlooks, warnings, tracks, sites, station/total labels and
+/// the GPS dot (below only the measure tool), so dropped markers are never
+/// buried; the dark pill keeps the label clear over bright echoes.
 fn draw_markers(painter: &egui::Painter, origin: egui::Pos2, view: &MapView, app: &StormApp) {
     let (w, h) = (view.width() as f64, view.height() as f64);
     const PAD: f64 = 60.0;

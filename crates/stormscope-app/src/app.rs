@@ -1421,12 +1421,17 @@ impl StormApp {
         if check.iter().any(winter_point_fit) {
             self.auto_winter_warm_since = None;
             if !self.winter_mode_active() {
+                log::info!(
+                    "auto winter: entering winter mode from {} watched point(s)",
+                    check.len()
+                );
                 self.enter_winter_mode(true);
             }
         } else if self.winter_mode_active() && self.winter_auto_active {
             if check.iter().all(winter_point_warm) {
                 let started = *self.auto_winter_warm_since.get_or_insert(now);
                 if now.duration_since(started) >= AUTO_WINTER_WARM_HOLD {
+                    log::info!("auto winter: leaving winter mode after the warm hold");
                     self.exit_winter_mode();
                 }
             } else {

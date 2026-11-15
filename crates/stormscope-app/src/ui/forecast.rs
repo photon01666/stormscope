@@ -950,9 +950,9 @@ fn current_conditions_ui(
         }
         if !details_open {
             let size = if cfg!(target_os = "android") {
-                13.0
-            } else {
                 14.5
+            } else {
+                16.5
             };
             let mut summary: Vec<String> = Vec::new();
             if let Some(d) = f(o.dewpoint_c) {

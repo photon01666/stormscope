@@ -634,7 +634,7 @@ pub fn build(input: &BriefInputs<'_>) -> Brief {
                     "score": round1(sounding.winter_potential()),
                     "label": radar_core::sounding::Sounding::potential_label(sounding.winter_potential()),
                     "type": sounding.winter_type(),
-                    "note": "Winter type is inferred from the thermal profile; the score is heuristic and not a forecast.",
+                    "note": "Winter score requires a cold, sufficiently saturated column; the type is inferred from the thermal profile. Heuristic, not a forecast.",
                 },
                 "levels": levels,
                 "note": "Open-Meteo model sounding, not an observed RAOB. Scores are environmental heuristics, not storm warnings.",

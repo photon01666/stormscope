@@ -504,9 +504,12 @@ pub(super) fn params(ui: &mut egui::Ui, s: &Sounding) {
     ui.label(egui::RichText::new("Environment potential").strong())
         .on_hover_text(
             "A heuristic 0–100 favorability score, not an official forecast or \n\
-             a substitute for SPC outlooks and warnings. It blends CAPE, shear, \n\
-             SRH and LCL height, and is gated to near zero when surface-based \n\
-             CAPE is negligible, CIN is strong, or the LFC is higher than 500 hPa.",
+             a substitute for SPC outlooks and warnings. Severe and tornado \n\
+             scores blend CAPE, shear, SRH and LCL height, and are gated to zero \n\
+             when surface-based CAPE is negligible, CIN is strong, or no LFC is \n\
+             reachable. Winter precipitation also requires a cold, nearly \n\
+             saturated column; a clear or dry profile scores minimal even when \n\
+             the thermal profile would support snow or ice.",
         );
     potential_bar(ui, "Severe storms", s.severe_potential());
     potential_bar(ui, "Tornadoes", s.tornado_potential());

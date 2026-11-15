@@ -120,21 +120,21 @@ impl Sounding {
 
     /// Heuristic 0–100 favorability for organized severe storms.
     ///
-    /// This is a display aid, not a forecast: it blends CAPE, 0–6 km shear,
-    /// and the LCL, then applies multiplicative gates for surface-based
-    /// buoyancy, CIN and LFC height. The exact weights are deliberately
-    /// simple so the number can be explained and tuned.
+    /// Calibrated anchors: ~5 at 100 J/kg CAPE even with strong shear, ~30 at
+    /// 500 J/kg with 20 m/s effective shear, ~60 at 1000 J/kg with 15 m/s,
+    /// ~80 at 2000 J/kg with 25 m/s, and ~95 at 3000 J/kg with 30 m/s. The
+    /// buoyancy gate ramps up to full strength at 1000 J/kg, so a strong wind
+    /// field cannot make a negligible-CAPE profile look favorable by itself.
     pub fn severe_potential(&self) -> f64 {
-        let cape = (self.sb_cape_jkg / 2500.0).clamp(0.0, 1.0).sqrt();
-        let shear = (self.shear_0_6km_ms / 25.0).clamp(0.0, 1.0);
+        let cape = (self.sb_cape_jkg.max(0.0) / 4000.0).clamp(0.0, 1.0).sqrt();
+        let shear = (self.shear_0_6km_ms / 30.0).clamp(0.0, 1.0);
         let lcl = self
             .lcl_height_m
             .map(|z| ((2500.0 - z) / 1500.0).clamp(0.0, 1.0))
             .unwrap_or(0.5);
-        // Shear, a low LCL and no CIN do not make severe storms without
-        // surface-based buoyancy and a reachable LFC.
-        let gate = (self.sb_cape_jkg.max(0.0) / 100.0).clamp(0.0, 1.0) * self.convective_gate();
-        (100.0 * (0.55 * cape + 0.30 * shear + 0.05 * lcl) * gate).clamp(0.0, 100.0)
+        let buoyancy_gate = (self.sb_cape_jkg.max(0.0) / 1000.0).clamp(0.0, 1.0);
+        let gate = buoyancy_gate * self.convective_gate();
+        (100.0 * (0.50 * cape + 0.35 * shear + 0.15 * lcl) * gate).clamp(0.0, 100.0)
     }
 
     /// Multiplicative gate for surface-based deep convection.
@@ -149,28 +149,34 @@ impl Sounding {
             Some(p) if p >= 600.0 => 1.0,
             Some(p) if p <= 500.0 => 0.0,
             Some(p) => ((p - 500.0) / 100.0).clamp(0.0, 1.0),
-            None => 1.0,
+            // No LFC means the parcel never becomes freely buoyant.
+            None => 0.0,
         };
         cin * lfc
     }
 
     /// Heuristic 0–100 tornado-environment favorability.
     ///
-    /// Leans on low-level SRH and shear, LCL height and CAPE. Positive SRH
-    /// favors right-moving supercells; negative SRH contributes zero (it is
-    /// not absolute-valued). Like the severe score, the result is gated by
-    /// surface-based CAPE, CIN and LFC height.
+    /// Calibrated anchors: ~10 at 100 J/kg CAPE even in a strongly sheared
+    /// profile, ~50 at 500 J/kg with 250 m²/s² 0–1 km SRH, ~80 at 1000 J/kg
+    /// with 300 m²/s², and >90 at 2000 J/kg with a low LCL. SRH and
+    /// low-level shear carry most of the weight, but the score is still
+    /// gated by buoyancy: tornadoes need updrafts.
     pub fn tornado_potential(&self) -> f64 {
-        let srh1 = (self.srh_0_1km.max(0.0) / 200.0).clamp(0.0, 1.0);
-        let srh3 = (self.srh_0_3km.max(0.0) / 300.0).clamp(0.0, 1.0);
-        let shear1 = (self.shear_0_1km_ms / 15.0).clamp(0.0, 1.0);
-        let cape = (self.sb_cape_jkg / 2000.0).clamp(0.0, 1.0);
+        let srh1 = (self.srh_0_1km.max(0.0) / 300.0).clamp(0.0, 1.0);
+        let srh3 = (self.srh_0_3km.max(0.0) / 400.0).clamp(0.0, 1.0);
+        let shear1 = (self.shear_0_1km_ms / 20.0).clamp(0.0, 1.0);
         let lcl = self
             .lcl_height_m
             .map(|z| ((2200.0 - z) / 1400.0).clamp(0.0, 1.0))
             .unwrap_or(0.5);
-        let gate = (self.sb_cape_jkg.max(0.0) / 100.0).clamp(0.0, 1.0) * self.convective_gate();
-        (100.0 * (0.30 * srh1 + 0.20 * srh3 + 0.20 * shear1 + 0.15 * lcl + 0.10 * cape) * gate)
+        let cape = (self.sb_cape_jkg.max(0.0) / 3000.0).clamp(0.0, 1.0).sqrt();
+        // Tornadoes can occur with less buoyancy than organized severe
+        // storms, so this gate reaches full strength at 750 J/kg rather than
+        // 1000 — but it still goes to zero with negligible CAPE.
+        let buoyancy_gate = (self.sb_cape_jkg.max(0.0) / 750.0).clamp(0.0, 1.0);
+        let gate = buoyancy_gate * self.convective_gate();
+        (100.0 * (0.28 * srh1 + 0.18 * srh3 + 0.18 * shear1 + 0.16 * lcl + 0.20 * cape) * gate)
             .clamp(0.0, 100.0)
     }
 
@@ -205,8 +211,10 @@ impl Sounding {
     /// Heuristic 0–100 favorability for winter precipitation.
     ///
     /// Cold surface wet-bulb, column moisture, low-level saturation and a
-    /// saturated snow-growth layer all contribute. The type (snow/mix/ice)
-    /// is reported separately by [`Self::winter_type`].
+    /// saturated snow-growth layer all contribute. Unlike the convective
+    /// scores, this is also gated by saturation: a cold but clear/dry column
+    /// cannot precipitate, so it scores near zero even when the thermal
+    /// profile would support snow or ice if a cloud were present.
     pub fn winter_potential(&self) -> f64 {
         let Some(sfc) = self.levels.first() else {
             return 0.0;
@@ -216,29 +224,42 @@ impl Sounding {
             return 0.0;
         }
         let cold = ((2.0 - tw) / 12.0).clamp(0.0, 1.0);
-        let moisture = (self.pwat_mm / 25.0).clamp(0.0, 1.0);
+        let moisture = (self.pwat_mm / 20.0).clamp(0.0, 1.0);
         let low_level: Vec<&SoundingLevel> = self
             .levels
             .iter()
             .filter(|l| l.height_m <= sfc.height_m + 4000.0)
             .collect();
-        let sat = if low_level.is_empty() {
-            0.0
+        let (sat_mean, sat_max) = if low_level.is_empty() {
+            (0.0, 0.0)
         } else {
-            low_level.iter().map(|l| l.rh_pct).sum::<f64>() / low_level.len() as f64 / 100.0
+            let mean =
+                low_level.iter().map(|l| l.rh_pct).sum::<f64>() / low_level.len() as f64 / 100.0;
+            let max = low_level.iter().map(|l| l.rh_pct).fold(0.0_f64, f64::max) / 100.0;
+            (mean, max)
         };
+        // A precipitating cloud needs a nearly saturated layer. Using only
+        // the mean gave a cold, clear profile half credit from modest RH;
+        // blend the mean with the wettest layer so a single saturated cloud
+        // still counts, but dry columns do not.
+        let saturation = 0.6 * sat_mean + 0.4 * sat_max;
         let sg: Vec<f64> = self
             .levels
             .iter()
             .filter(|l| l.temp_c <= -8.0 && l.temp_c >= -20.0)
             .map(|l| l.rh_pct)
             .collect();
+        // A coarse profile without a snow-growth layer cannot demonstrate
+        // that layer; do not hand it a default bonus.
         let snow_growth = if sg.is_empty() {
-            0.35
+            0.0
         } else {
             sg.iter().sum::<f64>() / sg.len() as f64 / 100.0
         };
-        let score = 100.0 * (0.35 * cold + 0.25 * moisture + 0.25 * sat + 0.15 * snow_growth);
+        let dry_gate = ((saturation - 0.55) / 0.35).clamp(0.0, 1.0);
+        let score = 100.0
+            * (0.30 * cold + 0.20 * moisture + 0.30 * saturation + 0.20 * snow_growth)
+            * dry_gate;
         if self.winter_type() == "rain" {
             0.0
         } else {
@@ -423,13 +444,16 @@ impl Sounding {
 }
 
 fn cin_factor(cin_jkg: f64) -> f64 {
-    // No inhibition is best; -150 J/kg or stronger shuts the door.
+    // No inhibition is best. A -200 J/kg cap or stronger is treated as
+    // effectively closed without mesoscale forcing, which this profile-only
+    // score does not know about. The earlier -150 cutoff zeroed many
+    // environments that routinely produce storms once a boundary arrives.
     if cin_jkg >= -25.0 {
         1.0
-    } else if cin_jkg <= -150.0 {
+    } else if cin_jkg <= -200.0 {
         0.0
     } else {
-        (cin_jkg + 150.0) / 125.0
+        (cin_jkg + 200.0) / 175.0
     }
 }
 
@@ -715,5 +739,139 @@ mod tests {
 
         assert!(s.severe_potential() > 20.0);
         assert!(s.tornado_potential() > 10.0);
+    }
+
+    /// A violent-looking wind profile with 100 J/kg CAPE is still a marginal
+    /// convective environment. The old 100 J/kg buoyancy gate let this read
+    /// as "high" tornado potential (85/100); it must stay in the low band.
+    #[test]
+    fn negligible_cape_cannot_produce_high_potential() {
+        let mut s = sounding(vec![
+            lvl(1000.0, 300.0, 24.0, 70.0),
+            lvl(850.0, 1500.0, 18.0, 65.0),
+            lvl(700.0, 3000.0, 8.0, 55.0),
+            lvl(500.0, 5500.0, -15.0, 40.0),
+        ]);
+        s.sb_cape_jkg = 100.0;
+        s.sb_cin_jkg = 0.0;
+        s.lfc_pressure_hpa = Some(700.0);
+        s.lcl_height_m = Some(900.0);
+        s.shear_0_6km_ms = 30.0;
+        s.shear_0_1km_ms = 20.0;
+        s.srh_0_1km = 300.0;
+        s.srh_0_3km = 400.0;
+
+        let severe = s.severe_potential();
+        let tornado = s.tornado_potential();
+        assert!(severe < 20.0, "severe {severe:.1} should stay minimal");
+        assert!(tornado < 20.0, "tornado {tornado:.1} should stay minimal");
+    }
+
+    /// Anchors for a solid organized-severe environment: moderate buoyancy
+    /// and strong effective shear should land in the high severe band, while
+    /// the tornado score stays moderate without exceptional low-level SRH.
+    #[test]
+    fn organized_severe_environment_reads_high() {
+        let mut s = sounding(vec![
+            lvl(1000.0, 300.0, 24.0, 70.0),
+            lvl(850.0, 1500.0, 18.0, 65.0),
+            lvl(700.0, 3000.0, 8.0, 55.0),
+            lvl(500.0, 5500.0, -15.0, 40.0),
+        ]);
+        s.sb_cape_jkg = 2000.0;
+        s.sb_cin_jkg = 0.0;
+        s.lfc_pressure_hpa = Some(700.0);
+        s.lcl_height_m = Some(1000.0);
+        s.shear_0_6km_ms = 25.0;
+        s.shear_0_1km_ms = 12.0;
+        s.srh_0_1km = 100.0;
+        s.srh_0_3km = 150.0;
+
+        let severe = s.severe_potential();
+        let tornado = s.tornado_potential();
+        assert!(
+            (60.0..95.0).contains(&severe),
+            "severe {severe:.1} should be high"
+        );
+        assert!(
+            (40.0..80.0).contains(&tornado),
+            "tornado {tornado:.1} should be moderate"
+        );
+    }
+
+    /// A high-end tornado profile (strong low-level SRH, low LCL, ample
+    /// CAPE) should reach the top of the scale.
+    #[test]
+    fn high_end_tornado_environment_reads_very_high() {
+        let mut s = sounding(vec![
+            lvl(1000.0, 300.0, 24.0, 70.0),
+            lvl(850.0, 1500.0, 18.0, 65.0),
+            lvl(700.0, 3000.0, 8.0, 55.0),
+            lvl(500.0, 5500.0, -15.0, 40.0),
+        ]);
+        s.sb_cape_jkg = 2000.0;
+        s.sb_cin_jkg = 0.0;
+        s.lfc_pressure_hpa = Some(700.0);
+        s.lcl_height_m = Some(500.0);
+        s.shear_0_1km_ms = 20.0;
+        s.srh_0_1km = 300.0;
+        s.srh_0_3km = 400.0;
+
+        let tornado = s.tornado_potential();
+        assert!(tornado > 85.0, "tornado {tornado:.1} should be very high");
+    }
+
+    /// If the parcel never reaches free convection there is no surface-based
+    /// severe or tornado potential, regardless of the wind profile.
+    #[test]
+    fn no_lfc_blocks_convective_potential() {
+        let mut s = sounding(vec![
+            lvl(1000.0, 300.0, 24.0, 70.0),
+            lvl(850.0, 1500.0, 18.0, 65.0),
+            lvl(700.0, 3000.0, 8.0, 55.0),
+            lvl(500.0, 5500.0, -15.0, 40.0),
+        ]);
+        s.sb_cape_jkg = 2000.0;
+        s.sb_cin_jkg = 0.0;
+        s.lfc_pressure_hpa = None;
+        s.lcl_height_m = Some(900.0);
+        s.shear_0_6km_ms = 30.0;
+        s.shear_0_1km_ms = 20.0;
+        s.srh_0_1km = 300.0;
+        s.srh_0_3km = 400.0;
+
+        assert_eq!(s.severe_potential(), 0.0);
+        assert_eq!(s.tornado_potential(), 0.0);
+    }
+
+    /// The reported case: a cold surface with a clear, dry column and only
+    /// 5.4 mm PWAT must not earn a "low" winter score. Saturation is the
+    /// gate — if nothing can precipitate, the thermal profile alone is not
+    /// winter potential.
+    #[test]
+    fn dry_clear_cold_profile_has_minimal_winter_potential() {
+        let dry = sounding(vec![
+            lvl(1000.0, 300.0, 1.0, 45.0),
+            lvl(925.0, 800.0, -1.0, 40.0),
+            lvl(850.0, 1500.0, -3.0, 35.0),
+            lvl(700.0, 3000.0, -9.0, 30.0),
+            lvl(500.0, 5500.0, -22.0, 25.0),
+        ]);
+        let winter = dry.winter_potential();
+        assert!(winter < 10.0, "winter {winter:.1} should be minimal");
+    }
+
+    /// A saturated, cold snow-growth column should still read high; the
+    /// saturation gate must not suppress genuine winter environments.
+    #[test]
+    fn saturated_snow_profile_reads_high() {
+        let snow = sounding(vec![
+            lvl(1000.0, 300.0, -5.0, 90.0),
+            lvl(850.0, 1500.0, -8.0, 90.0),
+            lvl(700.0, 3000.0, -15.0, 80.0),
+            lvl(500.0, 5500.0, -30.0, 60.0),
+        ]);
+        let winter = snow.winter_potential();
+        assert!(winter > 50.0, "winter {winter:.1} should be high");
     }
 }

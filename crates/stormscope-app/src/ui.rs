@@ -2368,7 +2368,6 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
         r.on_hover_text("Fill opacity for the WPC amount/probability bands.");
 
         let mut legend_pick: Option<PwpfHit> = None;
-        let mut legend_label: Option<String> = None;
         if app.state.pwpf_pending {
             ui.label(
                 egui::RichText::new("Loading WPC snow/ice amounts…")
@@ -2376,6 +2375,7 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
                     .small(),
             );
         } else if let Some(layer) = app.state.pwpf_layer.as_ref() {
+            let site = radar_core::sites::site(&app.state.site_id);
             if !layer.issue.is_empty() || !layer.valid.is_empty() {
                 ui.label(
                     egui::RichText::new(format!("Issued {} · valid {}", layer.issue, layer.valid))
@@ -2388,6 +2388,16 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
                     let mut seen = std::collections::HashSet::new();
                     let mut shown = 0usize;
                     for (index, feature) in features.iter().enumerate() {
+                        if let Some(site) = site
+                            && !map::pwpf_feature_near_site(
+                                feature,
+                                site.latitude,
+                                site.longitude,
+                                crate::state::STATION_ALERT_RADIUS_KM,
+                            )
+                        {
+                            continue;
+                        }
                         if !seen.insert((feature.label.clone(), feature.color)) {
                             continue;
                         }
@@ -2425,24 +2435,31 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
                                 );
                             if swatch.clicked() || row.clicked() {
                                 legend_pick = Some(PwpfHit::Feature(index));
-                                legend_label = Some(feature.label.clone());
                             }
                         });
                     }
                     if shown == 0 {
-                        ui.label(
-                            egui::RichText::new("No WPC bands for this product/day.")
-                                .weak()
-                                .small(),
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new(
-                                "Click a band to center the map and open its explanation.",
+                        let message = if let Some(site) = site {
+                            format!(
+                                "No WPC bands within {} mi of {}.",
+                                (crate::state::STATION_ALERT_RADIUS_KM * 0.621_371).round() as u32,
+                                site.id
                             )
-                            .weak()
-                            .small(),
-                        );
+                        } else {
+                            "No WPC bands for this product/day.".to_string()
+                        };
+                        ui.label(egui::RichText::new(message).weak().small());
+                    } else {
+                        let message = if let Some(site) = site {
+                            format!(
+                                "Nearby bands only (within {} mi of {}). Click one to center the map.",
+                                (crate::state::STATION_ALERT_RADIUS_KM * 0.621_371).round() as u32,
+                                site.id
+                            )
+                        } else {
+                            "Click a band to center the map and open its explanation.".to_string()
+                        };
+                        ui.label(egui::RichText::new(message).weak().small());
                     }
                 }
                 radar_core::pwpf::PwpfGeometry::Raster(_) => {
@@ -2477,11 +2494,7 @@ fn map_controls_wpc(ui: &mut egui::Ui, app: &mut StormApp, sliders: &mut Vec<(u8
         }
         if let Some(hit) = legend_pick {
             match hit {
-                PwpfHit::Feature(_) => {
-                    if let Some(label) = legend_label.as_deref() {
-                        map::focus_pwpf_label(app, label);
-                    }
-                }
+                PwpfHit::Feature(index) => map::focus_pwpf_feature(app, index),
                 PwpfHit::Raster => map::focus_pwpf_raster(app),
             }
             app.state.pwpf_detail = Some(hit);

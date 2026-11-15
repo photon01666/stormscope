@@ -6034,31 +6034,57 @@ fn pwpf_feature_bounds(feature: &radar_core::pwpf::PwpfFeature) -> Option<(f64, 
     bounds
 }
 
+/// Is any part of this PWPF band within `radius_km` of the selected radar?
+/// Used to keep the legend to bands that actually affect the station's area.
+pub(super) fn pwpf_feature_near_site(
+    feature: &radar_core::pwpf::PwpfFeature,
+    site_lat: f64,
+    site_lon: f64,
+    radius_km: f64,
+) -> bool {
+    let km_per_deg_lat = 110.57;
+    let km_per_deg_lon = 111.32 * site_lat.to_radians().cos().abs().max(0.15);
+    for polygon in &feature.polygons {
+        let Some(outer) = polygon.first() else {
+            continue;
+        };
+        if lonlat_in_ring(site_lon, site_lat, outer) {
+            return true;
+        }
+        for ring in polygon {
+            for i in 0..ring.len() {
+                let a = ring[i];
+                let b = ring[(i + 1) % ring.len()];
+                let ax = (a.0 - site_lon) * km_per_deg_lon;
+                let ay = (a.1 - site_lat) * km_per_deg_lat;
+                let bx = (b.0 - site_lon) * km_per_deg_lon;
+                let by = (b.1 - site_lat) * km_per_deg_lat;
+                if point_segment_distance(0.0, 0.0, ax, ay, bx, by) <= radius_km {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Center the map on every polygon carrying this legend label. The same
 /// amount band can be split into several geographic Placemarks, so the union
 /// is what the legend row represents.
-pub(super) fn focus_pwpf_label(app: &mut StormApp, label: &str) {
+/// Center the map on one PWPF band. The legend row already represents the
+/// nearby feature, so focus that feature instead of every same-label polygon
+/// across the national product.
+pub(super) fn focus_pwpf_feature(app: &mut StormApp, index: usize) {
     let Some(layer) = app.state.pwpf_layer.as_ref() else {
         return;
     };
     let radar_core::pwpf::PwpfGeometry::Vector(features) = &layer.geometry else {
         return;
     };
-    let mut bounds: Option<(f64, f64, f64, f64)> = None;
-    for feature in features.iter().filter(|feature| feature.label == label) {
-        if let Some(feature_bounds) = pwpf_feature_bounds(feature) {
-            bounds = Some(match bounds {
-                Some((west, south, east, north)) => (
-                    west.min(feature_bounds.0),
-                    south.min(feature_bounds.1),
-                    east.max(feature_bounds.2),
-                    north.max(feature_bounds.3),
-                ),
-                None => feature_bounds,
-            });
-        }
-    }
-    if let Some((west, south, east, north)) = bounds {
+    let Some(feature) = features.get(index) else {
+        return;
+    };
+    if let Some((west, south, east, north)) = pwpf_feature_bounds(feature) {
         fit_view_to_bounds(app, west, south, east, north);
     }
 }

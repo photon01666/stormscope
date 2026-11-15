@@ -310,12 +310,13 @@ pub fn map(ui: &mut egui::Ui, app: &mut StormApp) {
                                     super::totals::totals_at(&app.state.totals, &view, cx, cy)
                             {
                                 // 5) A station-total dot: the marker is the shortcut,
-                                // the window the table — and the station's radar is
-                                // the radar that covers it, so switch to that too.
+                                // the window the table. Opening an observation
+                                // station's totals must not change which radar is
+                                // being watched — the list is already loaded for the
+                                // current site, and switching radars made the whole
+                                // map jump east when clicking a station near another
+                                // site's coverage.
                                 app.state.totals_open = true;
-                                if let (Some(lat), Some(lon)) = (t.lat, t.lon) {
-                                    select_nearest_radar(app, lat, lon);
-                                }
                             } else if !futurecast_only {
                                 // 6) A warning polygon under the click — inside it, or
                                 // on its outline (8 px of reach, so a polygon drawn
@@ -4320,9 +4321,11 @@ fn place_outlook_labels(
 
 /// Switch to the NEXRAD site nearest a clicked observation station.
 ///
-/// Station markers (synoptic, Ambient, rain/snow totals) are not radars, but
-/// the user clicking one expects the radar that covers it. Same "nearest
-/// radar" rule the historical-warning jump uses, without moving the view.
+/// Used by the synoptic and Ambient station popups, whose detail fetch follows
+/// the selected radar's coverage. Rain/snow totals deliberately do not call
+/// this: their table is for the current site and clicking a station there must
+/// leave the watched radar alone. Same "nearest radar" rule the
+/// historical-warning jump uses, without moving the view.
 fn select_nearest_radar(app: &mut StormApp, lat: f64, lon: f64) {
     let Some(site) = radar_core::sites::SITES.iter().min_by(|a, b| {
         let da = radar_render::surface_distance_m(a.longitude, a.latitude, lon, lat);

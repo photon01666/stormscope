@@ -4213,7 +4213,9 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                     .checkbox(&mut storm, "Storm Watch in the background")
                     .on_hover_text(
                         "Keeps a persistent notification and speaks new warnings while \
-                         Stormscope is closed. Uses the last GPS fix.",
+                         Stormscope is closed. Uses the last GPS fix and restarts after a \
+                         reboot. Android may ask to exempt Stormscope from battery \
+                         optimization so it is not stopped in the background.",
                     )
                     .changed()
                 {
@@ -4225,7 +4227,8 @@ fn settings_body(ui: &mut egui::Ui, app: &mut StormApp) {
                     egui::RichText::new(
                         "Persistent notification; new alerts within 50 miles of the last GPS fix. \
                          While backgrounded, live radar downloads only while a watch or warning \
-                         covers your GPS fix or a map marker.",
+                         covers your GPS fix or a map marker. Restarts after reboot; allow the \
+                         battery-optimization prompt so Android does not stop alerts.",
                     )
                     .weak()
                     .small(),

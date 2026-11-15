@@ -16,6 +16,7 @@ import android.location.LocationManager;
 import android.media.AudioAttributes;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
@@ -603,11 +604,7 @@ public class MainActivity extends GameActivity {
         } else if (requestCode == NOTIFICATION_REQUEST
                 && sPrefs != null
                 && sPrefs.getBoolean("storm_watch_enabled", false)) {
-            try {
-                StormWatchService.start(this);
-            } catch (Exception e) {
-                Log.w(TAG, "Storm Watch could not start after notification grant: " + e);
-            }
+            startStormWatch();
         } else if (requestCode == AUDIO_REQUEST) {
             sLivePermissionPending = false;
             boolean granted = grantResults.length > 0
@@ -642,14 +639,49 @@ public class MainActivity extends GameActivity {
                 requestPermissions(
                         new String[]{Manifest.permission.POST_NOTIFICATIONS},
                         NOTIFICATION_REQUEST);
-            }
-            try {
-                StormWatchService.start(this);
-            } catch (Exception e) {
-                Log.w(TAG, "Storm Watch could not start: " + e);
+            } else {
+                startStormWatch();
             }
         } else {
             StormWatchService.stop(this);
+        }
+    }
+
+    /**
+     * Start the foreground watcher and ask for the battery-optimization
+     * exemption it needs to keep polling while the screen is off. The prompt
+     * only appears when the user turns Storm Watch on and the app is not
+     * already exempt.
+     */
+    private void startStormWatch() {
+        try {
+            StormWatchService.start(this);
+        } catch (Exception e) {
+            Log.w(TAG, "Storm Watch could not start: " + e);
+        }
+        requestBatteryOptimizationExemption();
+    }
+
+    private void requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return;
+        }
+        PowerManager power = getSystemService(PowerManager.class);
+        if (power == null || power.isIgnoringBatteryOptimizations(getPackageName())) {
+            return;
+        }
+        try {
+            startActivity(new Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Exception error) {
+            // Some OEM builds do not implement the direct request; open the
+            // optimization list instead so the user can exempt Stormscope.
+            try {
+                startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (Exception ignored) {
+            }
+            Log.w(TAG, "Battery optimization request failed: " + error);
         }
     }
 

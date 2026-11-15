@@ -630,6 +630,9 @@ pub struct AppState {
     /// the site marker static and stops its continuous repaint. Persisted in
     /// the shared site prefs on Linux, Windows and Android.
     pub radar_sweep_animation: bool,
+    /// Product to save for pane 1 while winter mode is active. The preset is
+    /// temporary, so a settings save must not make SNOW the startup product.
+    pub persist_product_override: Option<Moment>,
     /// Android: a map drag temporarily paused an active loop; resume it when
     /// the finger lifts. Without this, every playback frame rasterized under
     /// the drag and produced judder.
@@ -1587,6 +1590,7 @@ impl Default for AppState {
             },
             loop_state: LoopState::Paused,
             radar_sweep_animation: saved_radar_sweep_animation,
+            persist_product_override: None,
             resume_loop_after_drag: false,
             timeline_scrubbing: false,
             timeline_scrub_last_touch: None,
@@ -2468,7 +2472,12 @@ impl AppState {
         let mut panes = Vec::new();
         panes.push(PanePrefs {
             site: Some(self.site_id.clone()),
-            product: Some(self.moment.label().to_string()),
+            product: Some(
+                self.persist_product_override
+                    .unwrap_or(self.moment)
+                    .label()
+                    .to_string(),
+            ),
         });
         for pane in &self.secondary_radar_panes {
             panes.push(PanePrefs {

@@ -734,7 +734,6 @@ pub struct StormApp {
     auto_winter_points: Vec<(f64, f64)>,
     auto_winter_warm_since: Option<std::time::Instant>,
     winter_snapshot: Option<crate::state::WinterSnapshot>,
-    winter_auto_active: bool,
 }
 
 /// One marker's storm-arrival estimate: the earliest incoming cell.
@@ -986,7 +985,6 @@ impl StormApp {
             auto_winter_points: Vec::new(),
             auto_winter_warm_since: None,
             winter_snapshot: None,
-            winter_auto_active: false,
         };
         // The data thread boots on the hard-coded default; if the user saved
         // a different startup site, switch it immediately.
@@ -1138,7 +1136,6 @@ impl StormApp {
             auto_winter_points: Vec::new(),
             auto_winter_warm_since: None,
             winter_snapshot: None,
-            winter_auto_active: false,
         };
         if site_id != radar_core::DEFAULT_SITE {
             let _ = app.tx.send(DataCmd::SetSite(site_id.to_string()));
@@ -1345,7 +1342,7 @@ impl StormApp {
         if self.winter_mode_active() {
             self.exit_winter_mode();
         } else {
-            self.enter_winter_mode(false);
+            self.enter_winter_mode();
         }
     }
 
@@ -1354,7 +1351,6 @@ impl StormApp {
     pub fn set_auto_winter_mode(&mut self, enabled: bool) {
         self.auto_winter_mode = enabled;
         if enabled {
-            self.winter_auto_active = self.winter_mode_active();
             self.auto_winter_warm_since = None;
         }
     }
@@ -1425,9 +1421,9 @@ impl StormApp {
                     "auto winter: entering winter mode from {} watched point(s)",
                     check.len()
                 );
-                self.enter_winter_mode(true);
+                self.enter_winter_mode();
             }
-        } else if self.winter_mode_active() && self.winter_auto_active {
+        } else if self.winter_mode_active() {
             if check.iter().all(winter_point_warm) {
                 let started = *self.auto_winter_warm_since.get_or_insert(now);
                 if now.duration_since(started) >= AUTO_WINTER_WARM_HOLD {
@@ -1467,12 +1463,12 @@ impl StormApp {
             pwpf_product: self.state.pwpf_product,
             pwpf_day: self.state.pwpf_day,
         });
+        self.state.persist_product_override = self.winter_snapshot.as_ref().map(|s| s.moment);
     }
 
-    fn enter_winter_mode(&mut self, automatic: bool) {
+    fn enter_winter_mode(&mut self) {
         self.capture_winter_snapshot();
         self.apply_winter_preset();
-        self.winter_auto_active = automatic;
         self.auto_winter_warm_since = None;
     }
 
@@ -1507,7 +1503,7 @@ impl StormApp {
         self.state.pwpf_tex = None;
         self.state.pwpf_hover = None;
         self.state.pwpf_detail = None;
-        self.winter_auto_active = false;
+        self.state.persist_product_override = None;
         self.auto_winter_warm_since = None;
         if !self.is_secondary {
             if self.state.show_wpc {
@@ -5278,6 +5274,12 @@ impl StormApp {
         });
         self.pump();
         self.auto_winter_step();
+        if self.auto_winter_mode {
+            // Keep the warm-hold timer alive even when the sweep animation is
+            // off and nothing else is forcing frames.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(60));
+        }
         self.pump_srm();
         self.pump_mrms();
         self.pump_qpe();

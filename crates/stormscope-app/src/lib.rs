@@ -46,3 +46,26 @@ mod video_embed;
 mod voice;
 
 pub use app::StormApp;
+
+/// Release-facing version. Cargo only accepts three-part semver, so a hotfix
+/// built as `1.9.7+1` is shown in the release's four-part form (`1.9.7.1`).
+pub fn display_version() -> String {
+    dotted_build_version(env!("CARGO_PKG_VERSION"))
+}
+
+fn dotted_build_version(raw: &str) -> String {
+    raw.split_once('+')
+        .map(|(base, build)| format!("{base}.{build}"))
+        .unwrap_or_else(|| raw.to_string())
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::dotted_build_version;
+
+    #[test]
+    fn build_metadata_is_shown_with_a_dot() {
+        assert_eq!(dotted_build_version("1.9.7+1"), "1.9.7.1");
+        assert_eq!(dotted_build_version("1.9.8"), "1.9.8");
+    }
+}

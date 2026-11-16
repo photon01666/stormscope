@@ -3601,7 +3601,7 @@ fn sidebar_header(ui: &mut egui::Ui, app: &mut StormApp) {
             app.state.site_id,
             app.state.moment.label(),
             app.state.tilt_deg,
-            env!("CARGO_PKG_VERSION")
+            crate::display_version()
         ))
         .weak()
         .small(),
@@ -4824,7 +4824,7 @@ pub fn update_dialog(ctx: &egui::Context, app: &mut StormApp) {
         app.state.update_dialog_open = false;
         return;
     };
-    let current = env!("CARGO_PKG_VERSION");
+    let current = crate::display_version();
     let response = egui::Modal::new(egui::Id::new("stormscope.update"))
         .backdrop_color(egui::Color32::from_black_alpha(150))
         .show(ctx, |ui| {

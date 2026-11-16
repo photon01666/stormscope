@@ -1,6 +1,18 @@
 # Changelog
 
-## v1.9.7 — 2026-11-15
+## v1.9.7.1 — 2026-11-16
+
+**Storm Watch matches the forecast exactly**
+- The persistent notification now reads the current observation the NWS
+  forecast window is displaying, including its station, temperature, wind and
+  day/night glyph. The two can no longer drift apart while both are open.
+- If the app is closed or watching another point, the notification falls back
+  to the nearest NWS station first, and only then Open-Meteo. A slow
+  Open-Meteo request can no longer replace the notification with "Current
+  weather unavailable".
+- Current conditions refresh every five minutes instead of fifteen, so a
+  station's newest report reaches both the window and the notification
+  promptly.
 
 **Winter mode, station totals, and current conditions**
 - Automatic winter mode now watches the selected radar, GPS fix, forecast
@@ -20,9 +32,7 @@
 - Current conditions shows a larger compact dew point, humidity, wind,
   altimeter, visibility, precipitation and feels-like summary while Details is
   collapsed.
-- The Storm Watch notification now uses the same nearest-NWS-station
-  temperature and wind as the forecast panel. The current UV index loads
-  again after its request URL was fixed.
+- The current UV index loads again after its request URL was fixed.
 - The radar sweep animation toggle.
 - Environmental potential severe, tornado and winter
   scores were recalibrated around cold, saturated winter columns.

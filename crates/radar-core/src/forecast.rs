@@ -60,6 +60,8 @@ pub struct Observation {
     pub timestamp: Option<DateTime<Utc>>,
     /// Short text, e.g. "Light Rain", "Overcast".
     pub text: String,
+    /// Day/night from the station's NWS icon, when it reports one.
+    pub is_day: Option<bool>,
     pub temperature_c: Option<f32>,
     pub dewpoint_c: Option<f32>,
     pub wind_speed_kmh: Option<f32>,

@@ -156,6 +156,8 @@ mod tests {
         assert!(is_newer("1.5.10", "1.5.9"));
         assert!(is_newer("1.5.11", "1.5.10"));
         assert!(is_newer("1.6.0", "1.5.99"));
+        assert!(is_newer("1.9.7.1", "1.9.7"));
+        assert!(is_newer("1.9.7.1", "1.9.7+1"));
         assert!(!is_newer("1.5.11", "1.5.11"));
         assert!(!is_newer("1.5.9", "1.5.10"));
         assert!(!is_newer("v1.5.11-beta", "1.5.11"));

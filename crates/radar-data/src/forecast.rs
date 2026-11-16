@@ -669,6 +669,10 @@ pub(crate) fn observation_from_json(
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
+        is_day: p
+            .and_then(|p| p.pointer("/icon"))
+            .and_then(|v| v.as_str())
+            .map(|icon| !icon.contains("/night/")),
         temperature_c: num("temperature"),
         dewpoint_c: num("dewpoint"),
         wind_speed_kmh: num("windSpeed"),
@@ -851,6 +855,7 @@ mod tests {
             "properties": {
                 "timestamp": "2026-10-15T21:53:00+00:00",
                 "textDescription": "Light Rain",
+                "icon": "https://api.weather.gov/icons/land/day/rain?size=medium",
                 "temperature": { "value": 18.3, "unitCode": "wmoUnit:degC" },
                 "dewpoint": { "value": 16.1, "unitCode": "wmoUnit:degC" },
                 "windSpeed": { "value": 22.2, "unitCode": "wmoUnit:km_h-1" },
@@ -873,6 +878,7 @@ mod tests {
         assert_eq!(obs.station_id, "KTOP");
         assert!(obs.station_name.contains("Topeka"));
         assert_eq!(obs.text, "Light Rain");
+        assert_eq!(obs.is_day, Some(true));
         assert_eq!(obs.temperature_c, Some(18.3));
         assert_eq!(obs.dewpoint_c, Some(16.1));
         assert_eq!(obs.wind_speed_kmh, Some(22.2));

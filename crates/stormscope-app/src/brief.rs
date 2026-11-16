@@ -2939,6 +2939,7 @@ mod tests {
             station_name: "Topeka".into(),
             timestamp: Some(chrono::Utc::now()),
             text: "Mostly Cloudy".into(),
+            is_day: Some(true),
             temperature_c: Some(17.2), // 63 F
             dewpoint_c: Some(10.0),
             wind_speed_kmh: None,

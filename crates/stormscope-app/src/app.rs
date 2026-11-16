@@ -140,8 +140,13 @@ pub enum DataMsg {
     Mcds(Vec<radar_data::mcds::Mcd>),
     /// NWS gridpoint forecast for a requested point.
     Forecast(radar_core::forecast::Forecast),
-    /// Latest observation from the nearest reporting station.
-    Observation(radar_core::forecast::Observation),
+    /// Latest observation from the nearest reporting station and the point
+    /// it was requested for.
+    Observation {
+        observation: radar_core::forecast::Observation,
+        latitude: f64,
+        longitude: f64,
+    },
     /// Rain/snow totals for the stations around a requested point.
     Totals(Vec<radar_data::StationTotals>),
     /// Model sounding for a requested point.
@@ -2039,7 +2044,11 @@ impl StormApp {
                     );
                     self.announce_nearby_alerts();
                 }
-                DataMsg::Observation(o) => {
+                DataMsg::Observation {
+                    observation: o,
+                    latitude,
+                    longitude,
+                } => {
                     // Freshness is stamped by the forecast message that shares
                     // the same request; keep the older stamp if one is set.
                     self.state
@@ -2054,6 +2063,7 @@ impl StormApp {
                         o.temperature_c.unwrap_or(f32::NAN),
                         o.text
                     );
+                    crate::state::persist_current_conditions(&o, latitude, longitude);
                     self.state.observation = Some(o);
                 }
                 DataMsg::Totals(v) => {

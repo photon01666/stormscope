@@ -9,11 +9,12 @@ use crate::app::StormApp;
 
 /// How long the forecast and current conditions stay fresh before the window
 /// refetches them. The NWS API is open data with unpublished "generous"
-/// limits and asks clients to be reasonable; four small requests every 15
-/// minutes while the window is open is far inside that. Upstream, gridpoint
-/// forecasts update several times an hour and ASOS observations report about
-/// hourly, so this cadence keeps up without hammering.
-pub(super) const FORECAST_REFRESH_SECS: f64 = 15.0 * 60.0;
+/// limits and asks clients to be reasonable; a handful of small requests every
+/// five minutes while the window is open is still well inside that. Airport
+/// observations update every few minutes at larger stations, so the shorter
+/// cadence keeps the current-conditions line from visibly lagging the Storm
+/// Watch notification.
+pub(super) const FORECAST_REFRESH_SECS: f64 = 5.0 * 60.0;
 
 /// Should the data on screen be refetched? Either the target moved (station
 /// switch or a new picked point) or what is loaded has aged past the cadence.
@@ -1167,7 +1168,7 @@ mod tests {
     }
 
     /// The cadence rule: refetch when the target moved, when nothing is
-    /// loaded, or when the data aged past 15 minutes — not otherwise (the
+    /// loaded, or when the data aged past five minutes — not otherwise (the
     /// window asks on every frame).
     #[test]
     fn refresh_cadence_follows_the_target_and_the_clock() {
@@ -1177,7 +1178,11 @@ mod tests {
             "target moved"
         );
         assert!(!forecast_needs_refresh(Some(60.0), true, true), "fresh");
-        assert!(!forecast_needs_refresh(Some(14.0 * 60.0), true, true));
+        assert!(!forecast_needs_refresh(
+            Some(FORECAST_REFRESH_SECS - 1.0),
+            true,
+            true
+        ));
         assert!(
             forecast_needs_refresh(Some(FORECAST_REFRESH_SECS), true, true),
             "cadence elapsed"

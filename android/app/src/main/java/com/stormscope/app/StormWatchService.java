@@ -83,7 +83,7 @@ public class StormWatchService extends Service {
     private final ArrayDeque<String> pendingSpeech = new ArrayDeque<>();
     /** Last successful current-weather line, shown in the notification. */
     private volatile String weatherLine;
-    /** Latest Open-Meteo condition, used to pick the animated notification glyph. */
+    /** Latest condition code, used to pick the animated notification glyph. */
     private volatile int lastWeatherCode = -1;
     private volatile boolean lastIsDay = true;
     /** Cached NWS surface observation text and station URL. */
@@ -100,6 +100,8 @@ public class StormWatchService extends Service {
     private volatile double nwsTemperatureC = Double.NaN;
     private volatile double nwsWindKmh = Double.NaN;
     private volatile double nwsWindDirectionDeg = Double.NaN;
+    /** Day/night flag from the NWS observation's icon path. */
+    private volatile boolean nwsIsDay = true;
 
     private SharedPreferences prefs;
     private Handler main;
@@ -655,12 +657,7 @@ public class StormWatchService extends Service {
         }
     }
 
-    /**
-     * Current conditions for the notification line from Open-Meteo (NWS has
-     * no single current-weather endpoint as cheap as this): a compact
-     * "63°F · Clear · wind ESE 6 mph" string, or null when unavailable.
-     */
-    /** Nearest NWS surface observation text, cached for five minutes. */
+    /** Nearest NWS surface observation text and measurements, cached for five minutes. */
     private String nwsObservation(double lat, double lon) {
         long now = System.currentTimeMillis();
         if (nwsCondition != null && now - nwsConditionAt < 5 * 60_000L) {
@@ -701,6 +698,10 @@ public class StormWatchService extends Service {
                 nwsTemperatureC = observationValue(props, "temperature");
                 nwsWindKmh = observationValue(props, "windSpeed");
                 nwsWindDirectionDeg = observationValue(props, "windDirection");
+                String icon = props.optString("icon", "");
+                if (!icon.isEmpty()) {
+                    nwsIsDay = !icon.contains("/night/");
+                }
                 nwsConditionAt = now;
                 String text = props.optString("textDescription", "").trim();
                 if (!text.isEmpty()) {
@@ -720,30 +721,110 @@ public class StormWatchService extends Service {
         return field == null ? Double.NaN : field.optDouble("value", Double.NaN);
     }
 
-    private String weatherSummary(double lat, double lon, boolean thunderNearby, boolean wetNearby) {
-        try {
-            String url = String.format(Locale.US,
-                    "https://api.open-meteo.com/v1/forecast"
-                            + "?latitude=%.4f&longitude=%.4f"
-                            + "&current=temperature_2m,weather_code,is_day,wind_speed_10m,"
-                            + "wind_direction_10m,precipitation,rain,showers"
-                            + "&temperature_unit=fahrenheit&wind_speed_unit=mph",
-                    lat, lon);
-            JSONObject current = new JSONObject(getJson(url)).optJSONObject("current");
-            if (current == null) {
+    /**
+     * The forecast panel's on-screen observation, published as a small JSON
+     * file. It is only usable for the same point: a pinned point or another
+     * radar site must not leak its temperature into this GPS watcher.
+     */
+    private JSONObject sharedWeather(double lat, double lon) {
+        File file = new File(getFilesDir(), "config/stormscope/current-conditions.json");
+        if (!file.isFile()) {
+            return null;
+        }
+        long age = System.currentTimeMillis() - file.lastModified();
+        if (age < 0 || age > 20 * 60_000L) {
+            return null;
+        }
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+            StringBuilder body = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                body.append(line);
+            }
+            JSONObject json = new JSONObject(body.toString());
+            double fileLat = json.optDouble("latitude", Double.NaN);
+            double fileLon = json.optDouble("longitude", Double.NaN);
+            if (Double.isNaN(fileLat) || Double.isNaN(fileLon)
+                    || Math.abs(fileLat - lat) > 0.02
+                    || Math.abs(fileLon - lon) > 0.02) {
                 return null;
             }
-            double temp = current.optDouble("temperature_2m", Double.NaN);
-            double wind = current.optDouble("wind_speed_10m", Double.NaN);
-            double dir = current.optDouble("wind_direction_10m", Double.NaN);
-            int code = current.optInt("weather_code", -1);
-            double precip = current.optDouble("precipitation", 0.0);
-            double showers = current.optDouble("showers", 0.0);
-            String observed = nwsObservation(lat, lon);
-            // The in-app Current conditions panel reads the nearest NWS
-            // station. Use that same station's latest temperature and wind
-            // here instead of Open-Meteo's model grid, so the notification
-            // and the forecast cannot disagree about the current reading.
+            return json;
+        } catch (Exception e) {
+            Log.w(TAG, "forecast-panel conditions unavailable: " + e);
+            return null;
+        }
+    }
+
+    /**
+     * Current conditions for the persistent notification. The forecast panel
+     * publishes the observation it is showing, so the notification reads that
+     * exact reading first; when the app is closed or on another point, fall
+     * back to the nearest NWS station and finally Open-Meteo.
+     */
+    private String weatherSummary(double lat, double lon, boolean thunderNearby, boolean wetNearby) {
+        String observed;
+        double temp = Double.NaN;
+        double wind = Double.NaN;
+        double dir = Double.NaN;
+        int code = -1;
+        double precip = 0.0;
+        double showers = 0.0;
+        boolean isDay = nwsIsDay;
+
+        JSONObject shared = sharedWeather(lat, lon);
+        if (shared != null) {
+            // Same observation, same timestamp, same units as the forecast
+            // panel. No second network race against the NWS API.
+            observed = shared.optString("text", "").trim();
+            double tempC = shared.optDouble("temperature_c", Double.NaN);
+            if (!Double.isNaN(tempC)) {
+                temp = tempC * 9.0 / 5.0 + 32.0;
+            }
+            double windKmh = shared.optDouble("wind_speed_kmh", Double.NaN);
+            if (!Double.isNaN(windKmh)) {
+                wind = windKmh * 0.621371;
+            }
+            dir = shared.optDouble("wind_direction_deg", Double.NaN);
+            isDay = shared.optBoolean("is_day", nwsIsDay);
+            Log.d(TAG, "weather from forecast panel: " + observed);
+        } else {
+            observed = nwsObservation(lat, lon);
+            boolean haveObservation = observed != null && !observed.trim().isEmpty();
+            boolean haveStationReading = haveObservation
+                    && (!Double.isNaN(nwsTemperatureC) || !Double.isNaN(nwsWindKmh));
+
+            // Open-Meteo is only a fallback when the station has no reading
+            // at all. It also supplies a weather code when NWS has no text.
+            JSONObject current = null;
+            if (!haveStationReading) {
+                try {
+                    String url = String.format(Locale.US,
+                            "https://api.open-meteo.com/v1/forecast"
+                                    + "?latitude=%.4f&longitude=%.4f"
+                                    + "&current=temperature_2m,weather_code,is_day,wind_speed_10m,"
+                                    + "wind_direction_10m,precipitation,rain,showers"
+                                    + "&temperature_unit=fahrenheit&wind_speed_unit=mph",
+                            lat, lon);
+                    current = new JSONObject(getJson(url)).optJSONObject("current");
+                } catch (Exception e) {
+                    Log.w(TAG, "Open-Meteo fallback failed: " + e);
+                }
+            }
+
+            temp = current == null
+                    ? Double.NaN : current.optDouble("temperature_2m", Double.NaN);
+            wind = current == null
+                    ? Double.NaN : current.optDouble("wind_speed_10m", Double.NaN);
+            dir = current == null
+                    ? Double.NaN : current.optDouble("wind_direction_10m", Double.NaN);
+            code = current == null ? -1 : current.optInt("weather_code", -1);
+            precip = current == null ? 0.0 : current.optDouble("precipitation", 0.0);
+            showers = current == null ? 0.0 : current.optDouble("showers", 0.0);
+
+            // Prefer the NWS station measurements, exactly like the forecast,
+            // so the notification and the in-app panel cannot disagree.
             if (!Double.isNaN(nwsTemperatureC)) {
                 temp = nwsTemperatureC * 9.0 / 5.0 + 32.0;
             }
@@ -753,61 +834,61 @@ public class StormWatchService extends Service {
             if (!Double.isNaN(nwsWindDirectionDeg)) {
                 dir = nwsWindDirectionDeg;
             }
-            String word = observed != null && !observed.isEmpty()
-                    ? observed : weatherWord(code);
-            String lowerWord = word.toLowerCase(Locale.US);
-            if (lowerWord.contains("thunder")) {
-                word = "Thunderstorms";
-                code = 95;
-            } else if (lowerWord.contains("snow") || lowerWord.contains("sleet")
-                    || lowerWord.contains("ice")) {
-                code = 71;
-            } else if (lowerWord.contains("rain") || lowerWord.contains("shower")) {
-                code = 61;
-            } else if (lowerWord.contains("clear")) {
-                code = lowerWord.contains("mostly") ? 1 : 0;
-            } else if (lowerWord.contains("partly")) {
-                code = 2;
-            } else if (lowerWord.contains("cloud") || lowerWord.contains("overcast")) {
-                code = 3;
-            } else if (lowerWord.contains("fog") || lowerWord.contains("mist")) {
-                code = 45;
-            }
-            if (thunderNearby) {
-                word = "Thunderstorms";
-                code = 95;
-            } else if (wetNearby || precip > 0.05) {
-                if (word.equals("Overcast") || word.equals("Cloudy") || word.isEmpty()) {
-                    word = showers > 0.05 ? "Showers" : "Rain";
-                    code = 61;
-                }
-            }
-            lastWeatherCode = code;
-            lastIsDay = current.optInt("is_day", 1) != 0;
-            StringBuilder line = new StringBuilder();
-            if (!Double.isNaN(temp)) {
-                line.append(String.format(Locale.US, "%.0f°F", temp));
-            }
-            if (!word.isEmpty()) {
-                if (line.length() > 0) {
-                    line.append(" · ");
-                }
-                line.append(word);
-            }
-            if (!Double.isNaN(wind) && !Double.isNaN(dir)) {
-                // A second line reads better than a long dot-separated run in
-                // the notification's larger type.
-                if (line.length() > 0) {
-                    line.append('\n');
-                }
-                line.append("Wind ").append(compass16(dir))
-                        .append(String.format(Locale.US, " %.0f mph", wind));
-            }
-            return line.length() == 0 ? null : line.toString();
-        } catch (Exception e) {
-            Log.w(TAG, "current weather fetch failed: " + e);
-            return null;
+            isDay = current == null
+                    ? nwsIsDay : current.optInt("is_day", 1) != 0;
         }
+
+        boolean haveObservation = observed != null && !observed.trim().isEmpty();
+        String word = haveObservation ? observed.trim() : weatherWord(code);
+        String lowerWord = word.toLowerCase(Locale.US);
+        if (lowerWord.contains("thunder")) {
+            word = "Thunderstorms";
+            code = 95;
+        } else if (lowerWord.contains("snow") || lowerWord.contains("sleet")
+                || lowerWord.contains("ice")) {
+            code = 71;
+        } else if (lowerWord.contains("rain") || lowerWord.contains("shower")) {
+            code = 61;
+        } else if (lowerWord.contains("clear")) {
+            code = lowerWord.contains("mostly") ? 1 : 0;
+        } else if (lowerWord.contains("partly")) {
+            code = 2;
+        } else if (lowerWord.contains("cloud") || lowerWord.contains("overcast")) {
+            code = 3;
+        } else if (lowerWord.contains("fog") || lowerWord.contains("mist")) {
+            code = 45;
+        }
+        if (thunderNearby) {
+            word = "Thunderstorms";
+            code = 95;
+        } else if (wetNearby || precip > 0.05) {
+            if (word.equals("Overcast") || word.equals("Cloudy") || word.isEmpty()) {
+                word = showers > 0.05 ? "Showers" : "Rain";
+                code = 61;
+            }
+        }
+        lastWeatherCode = code;
+        lastIsDay = isDay;
+        StringBuilder line = new StringBuilder();
+        if (!Double.isNaN(temp)) {
+            line.append(String.format(Locale.US, "%.0f°F", temp));
+        }
+        if (!word.isEmpty()) {
+            if (line.length() > 0) {
+                line.append(" · ");
+            }
+            line.append(word);
+        }
+        if (!Double.isNaN(wind) && !Double.isNaN(dir)) {
+            // A second line reads better than a long dot-separated run in
+            // the notification's larger type.
+            if (line.length() > 0) {
+                line.append('\n');
+            }
+            line.append("Wind ").append(compass16(dir))
+                    .append(String.format(Locale.US, " %.0f mph", wind));
+        }
+        return line.length() == 0 ? null : line.toString();
     }
 
     private static String weatherWord(int code) {

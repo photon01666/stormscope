@@ -2513,7 +2513,11 @@ fn refresh_forecast(
     // Current conditions are a bonus: not every point has a close station.
     match observation {
         Some(Ok(o)) => {
-            let _ = out.send(DataMsg::Observation(o));
+            let _ = out.send(DataMsg::Observation {
+                observation: o,
+                latitude: lat,
+                longitude: lon,
+            });
         }
         Some(Err(e)) => log::debug!("observation fetch failed: {e:#}"),
         None => {}

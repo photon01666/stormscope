@@ -2100,6 +2100,44 @@ fn private_writer(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     opts.open(path)
 }
 
+/// Publish the observation the forecast panel is showing so the Android
+/// Storm Watch notification can read the exact same reading instead of
+/// racing the NWS API on its own refresh.
+pub(crate) fn persist_current_conditions(
+    observation: &radar_core::forecast::Observation,
+    latitude: f64,
+    longitude: f64,
+) {
+    let payload = serde_json::json!({
+        "latitude": latitude,
+        "longitude": longitude,
+        "station_id": &observation.station_id,
+        "station_name": &observation.station_name,
+        "timestamp": observation.timestamp.map(|t| t.to_rfc3339()),
+        "text": &observation.text,
+        "is_day": observation.is_day,
+        "temperature_c": observation.temperature_c,
+        "wind_speed_kmh": observation.wind_speed_kmh,
+        "wind_direction_deg": observation.wind_direction_deg,
+        "written_at": Utc::now().timestamp(),
+    });
+    let path = config_dir().join("current-conditions.json");
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        log::debug!("could not create {}: {e}", parent.display());
+        return;
+    }
+    match private_writer(&path) {
+        Ok(file) => {
+            if let Err(e) = serde_json::to_writer(file, &payload) {
+                log::warn!("could not persist current conditions: {e}");
+            }
+        }
+        Err(e) => log::debug!("could not open {}: {e}", path.display()),
+    }
+}
+
 /// `~/.config/stormscope/markers.json`, where user pins are persisted.
 fn markers_path() -> std::path::PathBuf {
     config_dir().join("markers.json")

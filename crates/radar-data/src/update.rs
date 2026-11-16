@@ -134,8 +134,12 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 fn version_parts(version: &str) -> Vec<u64> {
+    // Cargo only accepts three-part semver, so a hotfix release is built as
+    // `1.9.7+1` but tagged `1.9.7.1`. Treat the build metadata as the fourth
+    // dotted component, otherwise the app offers to update to itself.
     version
         .trim_start_matches('v')
+        .replace('+', ".")
         .split('.')
         .map(|part| {
             part.split(|c: char| !c.is_ascii_digit())
@@ -157,7 +161,8 @@ mod tests {
         assert!(is_newer("1.5.11", "1.5.10"));
         assert!(is_newer("1.6.0", "1.5.99"));
         assert!(is_newer("1.9.7.1", "1.9.7"));
-        assert!(is_newer("1.9.7.1", "1.9.7+1"));
+        assert!(!is_newer("1.9.7.1", "1.9.7+1"));
+        assert!(is_newer("1.9.7.2", "1.9.7+1"));
         assert!(!is_newer("1.5.11", "1.5.11"));
         assert!(!is_newer("1.5.9", "1.5.10"));
         assert!(!is_newer("v1.5.11-beta", "1.5.11"));

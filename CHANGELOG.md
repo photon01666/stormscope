@@ -23,7 +23,7 @@
 - The Storm Watch notification now uses the same nearest-NWS-station
   temperature and wind as the forecast panel. The current UV index loads
   again after its request URL was fixed.
-- The radar sweep animation toggle
+- The radar sweep animation toggle.
 - Environmental potential severe, tornado and winter
   scores were recalibrated around cold, saturated winter columns.
 - Android Storm Watch restarts after reboot or an app update and requests the

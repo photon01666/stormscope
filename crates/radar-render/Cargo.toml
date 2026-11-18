@@ -13,7 +13,7 @@ chrono.workspace = true
 log.workspace = true
 egui = "0.36"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-lru = "0.12"
+lru = "0.16"
 reqwest = { version = "0.12", default-features = false, features = [
     "blocking",
     "rustls-tls",

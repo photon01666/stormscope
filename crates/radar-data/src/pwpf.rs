@@ -102,11 +102,15 @@ impl PwpfSource {
 
 fn kmz_kml(bytes: &[u8]) -> Result<String> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("opening WPC PWPF KMZ")?;
-    let name = archive
-        .file_names()
-        .find(|name| name.ends_with(".kml"))
-        .map(str::to_string)
-        .context("WPC PWPF KMZ has no KML file")?;
+    let mut name = None;
+    for entry in archive.file_names() {
+        let entry = entry.context("reading WPC PWPF KMZ entry name")?;
+        if entry.ends_with(".kml") {
+            name = Some(entry.into_owned());
+            break;
+        }
+    }
+    let name = name.context("WPC PWPF KMZ has no KML file")?;
     let mut file = archive.by_name(&name)?;
     let mut kml = String::new();
     file.read_to_string(&mut kml)?;
@@ -279,7 +283,23 @@ fn kml_rgb(hex: &str) -> Option<[u8; 3]> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
+
+    #[test]
+    fn reads_kml_from_kmz() {
+        let mut data = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut data);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("doc.kml", options).unwrap();
+            zip.write_all(b"<kml/>").unwrap();
+            zip.finish().unwrap();
+        }
+        assert_eq!(kmz_kml(data.get_ref()).unwrap(), "<kml/>");
+    }
 
     #[test]
     fn parses_vector_bands_and_colors() {

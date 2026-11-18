@@ -66,6 +66,12 @@ winresource = "0.1"
 # In-app YouTube playback uses a platform WebView parented to the main
 # window. Linux is X11/XWayland only for this child view; the app selects the
 # X11 backend before eframe starts (see main.rs).
+#
+# glib 0.18 (via gtk 0.18) is EOL and carries RUSTSEC-2024-0429. The fix only
+# exists in glib 0.20+, while wry's GTK3 backend pins gtk 0.18. The affected
+# VariantStrIter helper is not called by Stormscope directly; the Dependabot
+# alert is dismissed as a tolerable risk until wry migrates to gtk-rs 0.19/0.20
+# (tauri-apps/wry#1843).
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 raw-window-handle = "0.6"
